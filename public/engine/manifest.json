@@ -1,0 +1,90 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-09-14T04:37:24.128Z",
+  "artifact": "threaded",
+  "engine": {
+    "simcVersion": "1210-01",
+    "upstreamCommit": "c01572044af513f9d85b79080b8d14619f1c00c5",
+    "upstreamRemote": "https://github.com/simulationcraft/simc.git",
+    "upstreamBranch": "midnight",
+    "license": "GPL-3.0-only"
+  },
+  "wow": {
+    "clientDataVersion": "12.1.0.69814",
+    "hotfixDate": "2026-09-12",
+    "hotfixBuild": 69814,
+    "hotfixHash": "dca34b3038a3611b988b81eb90f7dd81e929268ebe05b6ac4a07ccdffb621163",
+    "ptr": false
+  },
+  "capabilities": {
+    "threads": true,
+    "pthreadPoolSize": 16,
+    "maxThreads": 16,
+    "profilesets": true,
+    "networking": false,
+    "reportVersions": [
+      2
+    ],
+    "requiresSharedArrayBuffer": true
+  },
+  "build": {
+    "type": "Release",
+    "sourceTree": "vendor/simc",
+    "patches": [],
+    "cxxFlags": "-DSC_USE_PTR=0 -pthread -fwasm-exceptions",
+    "linkFlags": "-pthread -sPTHREAD_POOL_SIZE=16 -fwasm-exceptions -sINITIAL_MEMORY=134217728 -sALLOW_MEMORY_GROWTH=1   -sMAXIMUM_MEMORY=4gb -sMODULARIZE=1 -sEXPORT_NAME=createSimc -sENVIRONMENT=worker   -sINVOKE_RUN=0 -sEXIT_RUNTIME=0 -sEXPORTED_RUNTIME_METHODS=callMain,FS -sSTACK_SIZE=4mb",
+    "artifactFlags": {
+      "pthreadPoolSize": 16,
+      "initialMemory": 134217728,
+      "es6Module": false,
+      "exportName": "createSimc"
+    },
+    "toolchain": {
+      "emcc": null,
+      "cmake": "4.4.3",
+      "ninja": "1.13.2",
+      "node": "26.8.2",
+      "platform": "darwin-arm64"
+    },
+    "lockedToolchain": {
+      "emsdk": {
+        "version": "6.0.9",
+        "releaseHash": "f04ea239d533260dd1db760dd2d668d5f9a88d6b",
+        "install": "cd ~/emsdk && EMSDK_PYTHON=/opt/homebrew/bin/python3.13 ./emsdk install 6.0.9 && EMSDK_PYTHON=/opt/homebrew/bin/python3.13 ./emsdk activate 6.0.9",
+        "activate": "source ~/emsdk/emsdk_env.sh",
+        "note": "emsdk needs Python >= 3.10. macOS ships 3.9.6 first on PATH, so EMSDK_PYTHON must be exported for install/activate. emcc itself does not need it afterwards."
+      },
+      "node": "26.8.2",
+      "npm": "11.19.1",
+      "install": "npm ci",
+      "cmakeMinimum": "3.20",
+      "ninjaMinimum": "1.10",
+      "verifiedOn": {
+        "_comment": "Versions this baseline was actually produced with (2026-09-13, macOS arm64). Minimums above are the supported floor; these are the observed ones.",
+        "cmake": "4.4.3",
+        "ninja": "1.13.2",
+        "emcc": "6.0.9",
+        "clang": "24.0.0git",
+        "node": "26.8.2",
+        "npm": "11.19.1",
+        "platform": "darwin-arm64"
+      }
+    }
+  },
+  "files": {
+    "simc.js": {
+      "bytes": 79724,
+      "sha256": "e7c7a54cd69ca6f3ff8d25f4c5b6c4ceff2c8d4eee99db75ffc84f3d1010eff6",
+      "gzipBytes": 21867,
+      "brotliBytes": 19347
+    },
+    "simc.wasm": {
+      "bytes": 63275426,
+      "sha256": "73bb78cee654e505fcc70fa2cdf74f9d93ae1f9be0f32308fed79b38db96d050",
+      "gzipBytes": 10446035,
+      "brotliBytes": 6833234
+    }
+  },
+  "lockMismatches": [],
+  "buildTreeMismatches": []
+}

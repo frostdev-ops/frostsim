@@ -1,0 +1,614 @@
+{
+  "build": "12.1.0.69814",
+  "engineCommit": "c01572044af513f9d85b79080b8d14619f1c00c5",
+  "season": {
+    "id": 18,
+    "name": "Mythic+ Dungeons (Midnight Season 2)"
+  },
+  "sources": [
+    {
+      "url": "https://wago.tools/db2/ItemBonusListGroupEntry/csv?build=12.1.0.69814",
+      "sha256": "f07be2bfe219aa9ebd0d2fcfffe716678d951cc8b7b9fd01d7bed5a3cb5ec31c"
+    },
+    {
+      "url": "https://wago.tools/db2/ItemBonus/csv?build=12.1.0.69814",
+      "sha256": "d20586f4243a90369e4fc8c2ad378e1dd174d78d694ac46d739b407f9b459b43"
+    },
+    {
+      "url": "https://wago.tools/db2/ItemScalingConfig/csv?build=12.1.0.69814",
+      "sha256": "be2c75953355d803b6ece70e1a1f5a9a86b0bdf6c25ebda6eae53354bf82444e"
+    },
+    {
+      "url": "https://wago.tools/db2/ItemOffsetCurve/csv?build=12.1.0.69814",
+      "sha256": "9f8f4a1e2f76003ebe7d68480a14b371741a4e1e048649a787331c1b8a45e0e3"
+    },
+    {
+      "url": "https://wago.tools/db2/ItemNameDescription/csv?build=12.1.0.69814",
+      "sha256": "a0cea9fe288c74aa8f38e41f54aaddfe78f620ee70fc0afc4c57ae75d7ce9714"
+    },
+    {
+      "url": "https://wago.tools/db2/ItemBonusListGroup/csv?build=12.1.0.69814",
+      "sha256": "64a3f77c0b92bcf63b1ae169f14834fe5ec5fcd95514c2a83fdc31449c752c3b"
+    }
+  ],
+  "tracks": [
+    {
+      "id": 608,
+      "label": "Adventurer",
+      "seasonId": 17,
+      "max": 6,
+      "ranks": [
+        {
+          "rank": 1,
+          "itemLevel": 220,
+          "bonusId": 12769,
+          "extended": false
+        },
+        {
+          "rank": 2,
+          "itemLevel": 224,
+          "bonusId": 12770,
+          "extended": false
+        },
+        {
+          "rank": 3,
+          "itemLevel": 227,
+          "bonusId": 12771,
+          "extended": false
+        },
+        {
+          "rank": 4,
+          "itemLevel": 230,
+          "bonusId": 12772,
+          "extended": false
+        },
+        {
+          "rank": 5,
+          "itemLevel": 233,
+          "bonusId": 12773,
+          "extended": false
+        },
+        {
+          "rank": 6,
+          "itemLevel": 237,
+          "bonusId": 12774,
+          "extended": false
+        },
+        {
+          "rank": 7,
+          "itemLevel": 240,
+          "bonusId": 12775,
+          "extended": true
+        },
+        {
+          "rank": 8,
+          "itemLevel": 243,
+          "bonusId": 12776,
+          "extended": true
+        }
+      ]
+    },
+    {
+      "id": 609,
+      "label": "Veteran",
+      "seasonId": 17,
+      "max": 6,
+      "ranks": [
+        {
+          "rank": 1,
+          "itemLevel": 233,
+          "bonusId": 12777,
+          "extended": false
+        },
+        {
+          "rank": 2,
+          "itemLevel": 237,
+          "bonusId": 12778,
+          "extended": false
+        },
+        {
+          "rank": 3,
+          "itemLevel": 240,
+          "bonusId": 12779,
+          "extended": false
+        },
+        {
+          "rank": 4,
+          "itemLevel": 243,
+          "bonusId": 12780,
+          "extended": false
+        },
+        {
+          "rank": 5,
+          "itemLevel": 246,
+          "bonusId": 12781,
+          "extended": false
+        },
+        {
+          "rank": 6,
+          "itemLevel": 250,
+          "bonusId": 12782,
+          "extended": false
+        },
+        {
+          "rank": 7,
+          "itemLevel": 253,
+          "bonusId": 12783,
+          "extended": true
+        },
+        {
+          "rank": 8,
+          "itemLevel": 256,
+          "bonusId": 12784,
+          "extended": true
+        }
+      ]
+    },
+    {
+      "id": 610,
+      "label": "Champion",
+      "seasonId": 17,
+      "max": 6,
+      "ranks": [
+        {
+          "rank": 1,
+          "itemLevel": 246,
+          "bonusId": 12785,
+          "extended": false
+        },
+        {
+          "rank": 2,
+          "itemLevel": 250,
+          "bonusId": 12786,
+          "extended": false
+        },
+        {
+          "rank": 3,
+          "itemLevel": 253,
+          "bonusId": 12787,
+          "extended": false
+        },
+        {
+          "rank": 4,
+          "itemLevel": 256,
+          "bonusId": 12788,
+          "extended": false
+        },
+        {
+          "rank": 5,
+          "itemLevel": 259,
+          "bonusId": 12789,
+          "extended": false
+        },
+        {
+          "rank": 6,
+          "itemLevel": 263,
+          "bonusId": 12790,
+          "extended": false
+        },
+        {
+          "rank": 7,
+          "itemLevel": 266,
+          "bonusId": 12791,
+          "extended": true
+        },
+        {
+          "rank": 8,
+          "itemLevel": 269,
+          "bonusId": 12792,
+          "extended": true
+        }
+      ]
+    },
+    {
+      "id": 611,
+      "label": "Hero",
+      "seasonId": 17,
+      "max": 6,
+      "ranks": [
+        {
+          "rank": 1,
+          "itemLevel": 259,
+          "bonusId": 12793,
+          "extended": false
+        },
+        {
+          "rank": 2,
+          "itemLevel": 263,
+          "bonusId": 12794,
+          "extended": false
+        },
+        {
+          "rank": 3,
+          "itemLevel": 266,
+          "bonusId": 12795,
+          "extended": false
+        },
+        {
+          "rank": 4,
+          "itemLevel": 269,
+          "bonusId": 12796,
+          "extended": false
+        },
+        {
+          "rank": 5,
+          "itemLevel": 272,
+          "bonusId": 12797,
+          "extended": false
+        },
+        {
+          "rank": 6,
+          "itemLevel": 276,
+          "bonusId": 12798,
+          "extended": false
+        },
+        {
+          "rank": 7,
+          "itemLevel": 279,
+          "bonusId": 12799,
+          "extended": true
+        },
+        {
+          "rank": 8,
+          "itemLevel": 282,
+          "bonusId": 12800,
+          "extended": true
+        },
+        {
+          "rank": 9,
+          "itemLevel": 285,
+          "bonusId": 13653,
+          "extended": true
+        }
+      ]
+    },
+    {
+      "id": 612,
+      "label": "Myth",
+      "seasonId": 17,
+      "max": 6,
+      "ranks": [
+        {
+          "rank": 1,
+          "itemLevel": 272,
+          "bonusId": 12801,
+          "extended": false
+        },
+        {
+          "rank": 2,
+          "itemLevel": 276,
+          "bonusId": 12802,
+          "extended": false
+        },
+        {
+          "rank": 3,
+          "itemLevel": 279,
+          "bonusId": 12803,
+          "extended": false
+        },
+        {
+          "rank": 4,
+          "itemLevel": 282,
+          "bonusId": 12804,
+          "extended": false
+        },
+        {
+          "rank": 5,
+          "itemLevel": 285,
+          "bonusId": 12805,
+          "extended": false
+        },
+        {
+          "rank": 6,
+          "itemLevel": 289,
+          "bonusId": 12806,
+          "extended": false
+        },
+        {
+          "rank": 7,
+          "itemLevel": 292,
+          "bonusId": 12807,
+          "extended": true
+        },
+        {
+          "rank": 8,
+          "itemLevel": 295,
+          "bonusId": 12808,
+          "extended": true
+        },
+        {
+          "rank": 9,
+          "itemLevel": 298,
+          "bonusId": 13654,
+          "extended": true
+        }
+      ]
+    },
+    {
+      "id": 614,
+      "label": "Adventurer",
+      "seasonId": 18,
+      "max": 6,
+      "ranks": [
+        {
+          "rank": 1,
+          "itemLevel": 266,
+          "bonusId": 12817,
+          "extended": false
+        },
+        {
+          "rank": 2,
+          "itemLevel": 269,
+          "bonusId": 12818,
+          "extended": false
+        },
+        {
+          "rank": 3,
+          "itemLevel": 272,
+          "bonusId": 12819,
+          "extended": false
+        },
+        {
+          "rank": 4,
+          "itemLevel": 276,
+          "bonusId": 12820,
+          "extended": false
+        },
+        {
+          "rank": 5,
+          "itemLevel": 279,
+          "bonusId": 12821,
+          "extended": false
+        },
+        {
+          "rank": 6,
+          "itemLevel": 282,
+          "bonusId": 12822,
+          "extended": false
+        },
+        {
+          "rank": 7,
+          "itemLevel": 285,
+          "bonusId": 12823,
+          "extended": true
+        },
+        {
+          "rank": 8,
+          "itemLevel": 289,
+          "bonusId": 12824,
+          "extended": true
+        }
+      ]
+    },
+    {
+      "id": 615,
+      "label": "Veteran",
+      "seasonId": 18,
+      "max": 6,
+      "ranks": [
+        {
+          "rank": 1,
+          "itemLevel": 279,
+          "bonusId": 12825,
+          "extended": false
+        },
+        {
+          "rank": 2,
+          "itemLevel": 282,
+          "bonusId": 12826,
+          "extended": false
+        },
+        {
+          "rank": 3,
+          "itemLevel": 285,
+          "bonusId": 12827,
+          "extended": false
+        },
+        {
+          "rank": 4,
+          "itemLevel": 289,
+          "bonusId": 12828,
+          "extended": false
+        },
+        {
+          "rank": 5,
+          "itemLevel": 292,
+          "bonusId": 12829,
+          "extended": false
+        },
+        {
+          "rank": 6,
+          "itemLevel": 295,
+          "bonusId": 12830,
+          "extended": false
+        },
+        {
+          "rank": 7,
+          "itemLevel": 298,
+          "bonusId": 12831,
+          "extended": true
+        },
+        {
+          "rank": 8,
+          "itemLevel": 302,
+          "bonusId": 12832,
+          "extended": true
+        }
+      ]
+    },
+    {
+      "id": 616,
+      "label": "Champion",
+      "seasonId": 18,
+      "max": 6,
+      "ranks": [
+        {
+          "rank": 1,
+          "itemLevel": 292,
+          "bonusId": 12833,
+          "extended": false
+        },
+        {
+          "rank": 2,
+          "itemLevel": 295,
+          "bonusId": 12834,
+          "extended": false
+        },
+        {
+          "rank": 3,
+          "itemLevel": 298,
+          "bonusId": 12835,
+          "extended": false
+        },
+        {
+          "rank": 4,
+          "itemLevel": 302,
+          "bonusId": 12836,
+          "extended": false
+        },
+        {
+          "rank": 5,
+          "itemLevel": 305,
+          "bonusId": 12837,
+          "extended": false
+        },
+        {
+          "rank": 6,
+          "itemLevel": 308,
+          "bonusId": 12838,
+          "extended": false
+        },
+        {
+          "rank": 7,
+          "itemLevel": 311,
+          "bonusId": 12839,
+          "extended": true
+        },
+        {
+          "rank": 8,
+          "itemLevel": 315,
+          "bonusId": 12840,
+          "extended": true
+        }
+      ]
+    },
+    {
+      "id": 617,
+      "label": "Hero",
+      "seasonId": 18,
+      "max": 6,
+      "ranks": [
+        {
+          "rank": 1,
+          "itemLevel": 305,
+          "bonusId": 12841,
+          "extended": false
+        },
+        {
+          "rank": 2,
+          "itemLevel": 308,
+          "bonusId": 12842,
+          "extended": false
+        },
+        {
+          "rank": 3,
+          "itemLevel": 311,
+          "bonusId": 12843,
+          "extended": false
+        },
+        {
+          "rank": 4,
+          "itemLevel": 315,
+          "bonusId": 12844,
+          "extended": false
+        },
+        {
+          "rank": 5,
+          "itemLevel": 318,
+          "bonusId": 12845,
+          "extended": false
+        },
+        {
+          "rank": 6,
+          "itemLevel": 321,
+          "bonusId": 12846,
+          "extended": false
+        },
+        {
+          "rank": 7,
+          "itemLevel": 324,
+          "bonusId": 12847,
+          "extended": true
+        },
+        {
+          "rank": 8,
+          "itemLevel": 328,
+          "bonusId": 12848,
+          "extended": true
+        }
+      ]
+    },
+    {
+      "id": 618,
+      "label": "Myth",
+      "seasonId": 18,
+      "max": 6,
+      "ranks": [
+        {
+          "rank": 1,
+          "itemLevel": 318,
+          "bonusId": 12849,
+          "extended": false
+        },
+        {
+          "rank": 2,
+          "itemLevel": 321,
+          "bonusId": 12850,
+          "extended": false
+        },
+        {
+          "rank": 3,
+          "itemLevel": 324,
+          "bonusId": 12851,
+          "extended": false
+        },
+        {
+          "rank": 4,
+          "itemLevel": 328,
+          "bonusId": 12852,
+          "extended": false
+        },
+        {
+          "rank": 5,
+          "itemLevel": 331,
+          "bonusId": 12853,
+          "extended": false
+        },
+        {
+          "rank": 6,
+          "itemLevel": 334,
+          "bonusId": 12854,
+          "extended": false
+        },
+        {
+          "rank": 7,
+          "itemLevel": 337,
+          "bonusId": 12855,
+          "extended": true
+        },
+        {
+          "rank": 8,
+          "itemLevel": 340,
+          "bonusId": 12856,
+          "extended": true
+        },
+        {
+          "rank": 9,
+          "itemLevel": 344,
+          "bonusId": 13848,
+          "extended": true
+        }
+      ]
+    }
+  ]
+}

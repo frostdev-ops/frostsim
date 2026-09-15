@@ -1,0 +1,47 @@
+{
+  "_note": "STRUCTURE verified against the live /data/wow/item/{itemId} endpoint on 2026-09-14 (a trinket with an on-use effect). Values are synthetic: Blizzard's API terms cap retention of API-derived data at 30 days, so a committed capture of real item data would outlive its permitted life. Key names, nesting and types are exactly as the live response returned them.",
+  "_links": { "self": { "href": "https://REDACTED/data/wow/item/1" } },
+  "id": 900001,
+  "name": "Fixture Trinket",
+  "quality": { "type": "EPIC", "name": "Epic" },
+  "level": 219,
+  "required_level": 80,
+  "media": { "key": { "href": "https://REDACTED/data/wow/media/item/900001" }, "id": 900001 },
+  "item_class": { "key": { "href": "https://REDACTED" }, "name": "Armor", "id": 4 },
+  "item_subclass": { "key": { "href": "https://REDACTED" }, "name": "Miscellaneous", "id": 0 },
+  "inventory_type": { "type": "TRINKET", "name": "Trinket" },
+  "purchase_price": 0,
+  "sell_price": 12345,
+  "max_count": 0,
+  "is_equippable": true,
+  "is_stackable": false,
+  "purchase_quantity": 1,
+  "preview_item": {
+    "item": { "key": { "href": "https://REDACTED" }, "id": 900001 },
+    "quality": { "type": "EPIC", "name": "Epic" },
+    "name": "Fixture Trinket",
+    "media": { "key": { "href": "https://REDACTED" }, "id": 900001 },
+    "item_class": { "key": { "href": "https://REDACTED" }, "name": "Armor", "id": 4 },
+    "item_subclass": { "key": { "href": "https://REDACTED" }, "name": "Miscellaneous", "id": 0 },
+    "inventory_type": { "type": "TRINKET", "name": "Trinket" },
+    "is_subclass_hidden": true,
+    "binding": { "type": "ON_ACQUIRE", "name": "Binds when picked up" },
+    "unique_equipped": "Unique-Equipped",
+    "level": { "value": 219, "display_string": "Item Level 219" },
+    "requirements": { "level": { "value": 80, "display_string": "Requires Level 80" } },
+    "sell_price": { "value": 12345, "display_strings": { "header": "Sell Price:", "gold": "1", "silver": "23", "copper": "45" } },
+    "stats": [
+      {
+        "type": { "type": "INTELLECT", "name": "Intellect" },
+        "value": 65,
+        "display": { "display_string": "+65 Intellect", "color": { "r": 255, "g": 255, "b": 255, "a": 1 } }
+      }
+    ],
+    "spells": [
+      {
+        "spell": { "key": { "href": "https://REDACTED" }, "name": "Fixture Effect", "id": 111111 },
+        "description": "Use: Do a fixture thing for 1,234 damage. (2 Min Cooldown)"
+      }
+    ]
+  }
+}

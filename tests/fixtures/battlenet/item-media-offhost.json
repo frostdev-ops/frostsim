@@ -1,0 +1,7 @@
+{
+  "_note": "Synthetic. A media response whose asset points somewhere that is NOT a Blizzard render host. The proxy must refuse it: this is the SSRF case.",
+  "assets": [
+    { "key": "icon", "value": "https://attacker.example.com/payload.jpg", "file_data_id": 1 }
+  ],
+  "id": 900004
+}

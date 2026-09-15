@@ -1,0 +1,145 @@
+# Builds the WebAssembly engine and its manifest (P14.14). Expensive — a cold build compiles
+# 6 MB of class modules and 150 MB of DBC tables — so it runs on demand and on tags, never on
+# every push.
+#
+# NOT YET EXECUTED. This workflow has never run: the engine has only ever been built on the
+# maintainer's machine (macOS arm64, emsdk 6.0.9). The flags, the cache key and the artifact
+# names are taken from scripts/build-engine.sh, which is the authority and has been verified
+# locally — but "the same script on ubuntu-latest under GitHub's runner" is an untested claim
+# until a run turns green. Treat the first execution as the test.
+#
+# It uploads build artifacts to the workflow run. It does not publish anything anywhere.
+name: engine
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: Which artifact to build
+        type: choice
+        options: [threaded, fallback, both]
+        default: both
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Read the locked toolchain
+        id: lock
+        run: |
+          node -e '
+            const lock = JSON.parse(require("fs").readFileSync("engine.lock.json", "utf8"));
+            const out = require("fs");
+            const lines = [
+              `emsdk=${lock.toolchain.emsdk.version}`,
+              `commit=${lock.upstream.commit}`,
+              `remote=${lock.upstream.remote}`,
+            ];
+            out.appendFileSync(process.env.GITHUB_OUTPUT, lines.join("\n") + "\n");
+          '
+
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: ${{ steps.lock.outputs.emsdk }}
+
+      - name: Fetch the locked engine source
+        run: npm run engine:bootstrap
+
+      # Reads only vendor/simc/engine/dbc/generated, so it needs the checkout above and nothing
+      # that has been compiled. With no loot credentials configured it makes no network call.
+      - name: Build the game-data catalogs
+        run: npm run catalog:build
+
+      # Several suites read artifacts that are correctly gitignored — the catalogs just built
+      # and the upstream checkout — so on a clean clone they skip themselves and say so
+      # (tests/artifact-gate.js). This is the one job where both exist, so a skip here means
+      # the gate has rotted, not that the artifact is optional. That is the whole reason the
+      # coverage does not quietly disappear.
+      - name: Artifact-gated suites must not skip here
+        shell: bash
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee /tmp/gated-tests.log
+          if grep -q 'MISSING ARTIFACT' /tmp/gated-tests.log; then
+            echo "::error::a suite skipped itself although its artifact exists in this job"
+            grep 'MISSING ARTIFACT' /tmp/gated-tests.log
+            exit 1
+          fi
+
+      # Compiler work is keyed on what actually determines the output: the upstream commit, the
+      # SDK version, the build script (which holds every flag) and the patches. A change to any
+      # of them must miss the cache; a change to the app must not.
+      - name: Cache the build tree
+        uses: actions/cache@v4
+        with:
+          path: |
+            build/wasm
+            build/wasm-fallback
+          key: engine-${{ runner.os }}-${{ steps.lock.outputs.commit }}-${{ steps.lock.outputs.emsdk }}-${{ hashFiles('scripts/build-engine.sh', 'patches/*.patch') }}
+
+      - name: Build threaded artifact
+        if: inputs.variant != 'fallback'
+        run: npm run engine:build
+
+      - name: Build fallback artifact
+        if: inputs.variant != 'threaded'
+        run: npm run engine:build -- --fallback
+
+      # The build script already fails on a lock or build-tree mismatch. This repeats the check
+      # after the fact so the failure is visible as its own step rather than buried in a log.
+      - name: Manifest agrees with the lock
+        run: npm run engine:manifest
+
+      - name: Engine runs and produces a report
+        run: |
+          npm run engine:smoke -- vendor/simc/profiles/MID2/MID2_Mage_Frost.simc \
+            iterations=50 threads=4 json=/tmp/ci-report.json,version=2
+          node -e '
+            const r = JSON.parse(require("fs").readFileSync("/tmp/ci-report.json", "utf8"));
+            const dps = r.sim.players[0].collected_data.dps;
+            if (!(dps.mean > 0) || !(dps.count > 0)) {
+              console.error("engine produced no usable result", JSON.stringify({ mean: dps.mean, count: dps.count }));
+              process.exit(1);
+            }
+            console.log(`engine ok: ${Math.round(dps.mean)} dps over ${dps.count} collected iterations, WoW ${r.sim.options.dbc.Live.wow_version}`);
+          '
+
+      # The only job in CI that has an engine, so the only one that can run the tests which
+      # need one. These are opt-in everywhere else (FROSTSIM_ENGINE=1 plus the relink having
+      # been built) because they cost seconds and a 60 MB artifact; here both are already true.
+      # They exist because a silent wrong answer got through everything else: candidate lines
+      # appended after a fight preset's `enemy=` block equipped the target dummy instead of the
+      # player, and every candidate came back with the player's baseline number.
+      - name: Real-engine regressions
+        run: |
+          npm run engine:smoke -- --fallback vendor/simc/profiles/MID2/MID2_Mage_Frost.simc \
+            iterations=10 json=/tmp/ci-fallback.json,version=2
+          FROSTSIM_ENGINE=1 npx vitest run src/lib/simc/fallback-compare.engine.test.ts
+
+      # Generated from upstream source, so it can only be checked where upstream exists — which
+      # is this job and not `checks.yml`, where the drift test skips itself. A stale actor-scope
+      # list does not fail loudly: it makes a misplaced option line silently ignored.
+      - name: Generated sources still match upstream
+        run: node scripts/gen-actor-options.mjs --check
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engine-${{ steps.lock.outputs.commit }}
+          path: |
+            public/engine/simc.js
+            public/engine/simc.wasm
+            public/engine/manifest.json
+            public/engine/fallback/
+          retention-days: 14

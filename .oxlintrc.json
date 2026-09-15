@@ -1,0 +1,15 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "overrides": [
+    {
+      // Svelte 5 registers an effect's dependencies by reading them. A bare `avatar;` inside
+      // `$effect(() => { ... })` is the declaration, not a stray expression, and rewriting it
+      // to satisfy the rule silently removes the dependency and breaks reactivity. Off for
+      // .svelte files only; it still applies to .ts, .js and .mjs.
+      "files": ["**/*.svelte"],
+      "rules": {
+        "no-unused-expressions": "off"
+      }
+    }
+  ]
+}

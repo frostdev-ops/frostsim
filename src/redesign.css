@@ -1,0 +1,67 @@
+/* Shared Warcraft-inspired surfaces. Imported after the base tokens. */
+:root { --font: 'Inter Variable', ui-sans-serif, system-ui, sans-serif; --font-display: 'Chakra Petch', 'Inter Variable', sans-serif; }
+h1, h2, h3, h4, .section-title { font-family: var(--font-display); font-weight: 600; }
+h1 { font-weight: 700; font-size: 26px; letter-spacing: -.025em; }
+h2 { letter-spacing: -.015em; }
+button, input, select, textarea { font-family: var(--font); }
+label.check { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; min-height: 28px; }
+label.check input { flex: none; }
+:root[data-theme='light'] .brand img { filter: brightness(.5) saturate(1.2); }
+[data-class='warrior'] { --class-color: #c69b6d; }
+[data-class='paladin'] { --class-color: #f48cba; }
+[data-class='hunter'] { --class-color: #aad372; }
+[data-class='rogue'] { --class-color: #fff468; }
+[data-class='priest'] { --class-color: #fff; }
+[data-class='death_knight'] { --class-color: #c41e3a; }
+[data-class='shaman'] { --class-color: #429afa; }
+[data-class='mage'] { --class-color: #69ccf0; }
+[data-class='warlock'] { --class-color: #a59bf4; }
+[data-class='monk'] { --class-color: #00ff98; }
+[data-class='druid'] { --class-color: #ff9b44; }
+[data-class='demon_hunter'] { --class-color: #c266ea; }
+[data-class='evoker'] { --class-color: #61bda6; }
+:root[data-theme='light'] [data-class] { --class-color: var(--text); }
+:root:not([data-theme='light']) {
+  color-scheme: dark;
+  --bg: #1b1d22;
+  --surface: #25282e;
+  --surface-2: #202228;
+  --surface-3: #363a43;
+  --glass: #25282e;
+  --glass-blur: 0px;
+  --border: #383c45;
+  --border-strong: #555b68;
+  --rim: transparent;
+  --text: #f0f1f5;
+  --text-muted: #adb2bf;
+  --text-faint: #9299a7;
+  --text-on-accent: #10212a;
+  --accent: #65cbe5;
+  --accent-hi: #93def0;
+  --accent-soft: #253e47;
+  --accent-border: #4b7a88;
+  --accent-glow: transparent;
+  --bar-track: #383c45;
+  --q-common: #e6e7eb;
+  --q-uncommon: #40cf64;
+  --q-rare: #66a8fa;
+  --q-epic: #bf88f5;
+  --q-legendary: #ffad4b;
+  --q-artifact: #e6cc80;
+  --good: #62d5a1;
+  --gain: #62d5a1;
+  --warn: #efc56c;
+  --warn-soft: #403627;
+}
+body::before, .panel::before { display: none; }
+[hidden] { display: none !important; }
+input:not([type='checkbox']):not([type='radio']), select { min-height: 40px; }
+.report-layout { display: grid; grid-template-columns: minmax(0, 1fr) 290px; gap: 20px; align-items: start; }
+.report-main { min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+.report-sidebar { display: flex; flex-direction: column; gap: 16px; }
+.report-sidebar .panel { padding: 18px; }
+.action-bar { display: flex; align-items: center; gap: 20px; padding: 16px 0; }
+.action-bar .primary { min-width: 160px; }
+.section-title { font-size: 13px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.game-icon { display: grid; place-items: center; flex: none; width: 24px; height: 24px; border: 1px solid var(--border-strong); background: var(--surface-2); border-radius: 3px; }
+@media (max-width: 960px) { .report-layout { grid-template-columns: minmax(0, 1fr); } }

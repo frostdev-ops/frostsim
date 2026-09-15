@@ -1,0 +1,43 @@
+{
+  "_note": "STRUCTURE verified against the live /data/wow/item/{itemId} endpoint on 2026-09-14 (a tier set head piece). Values synthetic; see item-trinket.json for why. Note preview_item.bonus_list: the API returns a DEFAULT bonus list, not the player's, which is why base data and instance data must not be mixed.",
+  "id": 900002,
+  "name": "Fixture Crown",
+  "quality": { "type": "EPIC", "name": "Epic" },
+  "level": 219,
+  "required_level": 80,
+  "media": { "key": { "href": "https://REDACTED" }, "id": 900002 },
+  "item_class": { "key": { "href": "https://REDACTED" }, "name": "Armor", "id": 4 },
+  "item_subclass": { "key": { "href": "https://REDACTED" }, "name": "Cloth", "id": 1 },
+  "inventory_type": { "type": "HEAD", "name": "Head" },
+  "is_equippable": true,
+  "is_stackable": false,
+  "appearances": [ { "key": { "href": "https://REDACTED" }, "id": 222222 } ],
+  "preview_item": {
+    "item": { "key": { "href": "https://REDACTED" }, "id": 900002 },
+    "context": 0,
+    "bonus_list": [13692, 13698],
+    "quality": { "type": "EPIC", "name": "Epic" },
+    "name": "Fixture Crown",
+    "binding": { "type": "ON_ACQUIRE", "name": "Binds when picked up" },
+    "armor": { "value": 100, "display": { "display_string": "100 Armor" } },
+    "level": { "value": 219, "display_string": "Item Level 219" },
+    "requirements": { "level": { "value": 80, "display_string": "Requires Level 80" } },
+    "durability": { "value": 165, "display_string": "Durability 165 / 165" },
+    "stats": [
+      { "type": { "type": "INTELLECT", "name": "Intellect" }, "value": 65, "display": { "display_string": "+65 Intellect" } },
+      { "type": { "type": "CRIT_RATING", "name": "Critical Strike" }, "value": 30, "display": { "display_string": "+30 Critical Strike" } }
+    ],
+    "set": {
+      "item_set": { "key": { "href": "https://REDACTED" }, "name": "Fixture Regalia", "id": 1234 },
+      "items": [
+        { "item": { "key": { "href": "https://REDACTED" }, "name": "Fixture Crown", "id": 900002 }, "is_equipped": true },
+        { "item": { "key": { "href": "https://REDACTED" }, "name": "Fixture Robe", "id": 900003 } }
+      ],
+      "effects": [
+        { "display_string": "(2) Set: A fixture bonus.", "required_count": 2, "is_active": true },
+        { "display_string": "(4) Set: A larger fixture bonus.", "required_count": 4 }
+      ],
+      "display_string": "Fixture Regalia (1/5)"
+    }
+  }
+}

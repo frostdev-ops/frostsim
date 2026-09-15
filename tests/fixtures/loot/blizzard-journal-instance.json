@@ -1,0 +1,12 @@
+{
+  "_note": "Shape of a /data/wow/journal-instance/{id} response, reduced to the fields the adapter reads.",
+  "id": 1273,
+  "name": "Example Raid",
+  "category": { "type": "RAID" },
+  "modes": [
+    { "mode": { "type": "LFR", "name": "Raid Finder" }, "is_tracked": true },
+    { "mode": { "type": "NORMAL", "name": "Normal" }, "is_tracked": true },
+    { "mode": { "type": "HEROIC", "name": "Heroic" }, "is_tracked": true },
+    { "mode": { "type": "MYTHIC", "name": "Mythic" }, "is_tracked": true }
+  ]
+}

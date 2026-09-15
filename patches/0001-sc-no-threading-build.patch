@@ -1,0 +1,140 @@
+Fix the SC_NO_THREADING build.
+
+Upstream advertises SC_NO_THREADING=ON as a supported configuration, and PLAN D4/P02.7 needs
+it: the fallback artifact for browsers and hosts that cannot deliver cross-origin isolation,
+where SharedArrayBuffer and therefore emscripten pthreads are unavailable.
+
+At c015720 that configuration does not compile. The profileset HTML/text/chart reporting code
+reaches into profileset types that only exist in a threaded build (profileset.hpp declares
+statistical_data_t and profile_set_t as incomplete types under SC_NO_THREADING), and
+profileset.cpp's no-threading stub block defines profilesets_t::output_html/output_text, which
+match no declaration in the header — dead code from an earlier refactor.
+
+This guards the reporting paths that cannot exist without threading and deletes the two
+undeclared stubs. It changes nothing in a threaded build: every hunk is inside
+#ifndef SC_NO_THREADING or removes code that is only compiled when SC_NO_THREADING is set.
+
+Not sent upstream from here — it is a build fix for a configuration we depend on, and the
+project does not fork simc. If it is upstreamed, drop this file and bump engine.lock.json.
+
+Applied by scripts/build-engine.sh --fallback only, and reversed when the build finishes.
+diff --git a/engine/report/charts.cpp b/engine/report/charts.cpp
+index 33daae3..c78e193 100644
+--- a/engine/report/charts.cpp
++++ b/engine/report/charts.cpp
+@@ -430,6 +430,7 @@ std::string get_metric_value_name( metric_value_e val )
+ }
+ 
+ 
++#ifndef SC_NO_THREADING
+ void profilesets_insert_data( highchart::bar_chart_t& chart,
+                   std::string_view name,
+                   const color::rgb c,
+@@ -516,6 +517,7 @@ void profilesets_populate_chart_data( highchart::bar_chart_t& profileset,
+       profilesets_insert_data( profileset, base_name, c, baseline_data, true, baseline_value, mean );
+     }
+ }
++#endif  // SC_NO_THREADING
+ 
+ }  // anonymous namespace ====================================================
+ 
+@@ -1725,6 +1727,7 @@ highchart::time_series_t& chart::generate_actor_timeline(
+   return ts;
+ }
+ 
++#ifndef SC_NO_THREADING
+ void chart::generate_profilesets_chart( highchart::bar_chart_t& chart, const sim_t& sim, size_t chart_id,
+                                         util::span<const profileset::profile_set_t*> results,
+                                         util::span<const profileset::profile_set_t*> results_mean )
+@@ -1832,3 +1835,4 @@ void chart::generate_profilesets_chart( highchart::bar_chart_t& chart, const sim
+   profilesets_populate_chart_data( chart, base_offset, MAX_PROFILESET_CHART_ENTRIES, results_mean, baseline,
+                                    base_name, sim.profileset_metric.front(), c, true );
+ }
++#endif  // SC_NO_THREADING
+diff --git a/engine/report/charts.hpp b/engine/report/charts.hpp
+index 6c4d59d..f7bbfe3 100644
+--- a/engine/report/charts.hpp
++++ b/engine/report/charts.hpp
+@@ -62,7 +62,9 @@ namespace chart
+ 
+   // Profilesets
+   constexpr size_t MAX_PROFILESET_CHART_ENTRIES = 500;
++#ifndef SC_NO_THREADING
+   void generate_profilesets_chart( highchart::bar_chart_t& chart, const sim_t& sim, size_t chart_id,
+                                    util::span<const profileset::profile_set_t*> results,
+                                    util::span<const profileset::profile_set_t*> results_mean );
++#endif
+ }  // namespace chart
+diff --git a/engine/report/report_html_sim.cpp b/engine/report/report_html_sim.cpp
+index 386b910..6d92081 100644
+--- a/engine/report/report_html_sim.cpp
++++ b/engine/report/report_html_sim.cpp
+@@ -1127,6 +1127,7 @@ void print_nothing_to_report( report::sc_html_stream& os, std::string_view reaso
+      << "</div>\n\n";
+ }
+ 
++#ifndef SC_NO_THREADING
+ void print_profilesets_chart( std::ostream& out, const sim_t& sim )
+ {
+   size_t chart_id                              = 0;
+@@ -1169,6 +1170,7 @@ void print_profilesets( std::ostream& out, const profileset::profilesets_t& prof
+   out << "</div>";
+   out << "</div>";
+ }
++#endif  // SC_NO_THREADING
+ 
+ /* Main function building the html document and calling subfunctions
+  */
+@@ -1232,7 +1234,9 @@ void print_html_( report::sc_html_stream& os, sim_t& sim )
+     print_html_scale_factors( os, sim );
+   }
+ 
++#ifndef SC_NO_THREADING
+   print_profilesets( os, *sim.profilesets, sim );
++#endif
+ 
+   // Report Players
+   for ( auto& player : sim.players_by_name )
+diff --git a/engine/report/report_text.cpp b/engine/report/report_text.cpp
+index 68d7eaa..1b1775a 100644
+--- a/engine/report/report_text.cpp
++++ b/engine/report/report_text.cpp
+@@ -1230,6 +1230,7 @@ void print_player_sequence( std::ostream& os, sim_t* sim, const std::vector<play
+   }
+ }
+ 
++#ifndef SC_NO_THREADING
+ void print_profilesets( std::ostream& out, const profileset::profilesets_t& profilesets, const sim_t& sim )
+ {
+   if ( profilesets.n_profilesets() == 0 )
+@@ -1246,6 +1247,7 @@ void print_profilesets( std::ostream& out, const profileset::profilesets_t& prof
+     fmt::print( out, "    {:-10.3f} : {:s}\n", profileset->result().median(), profileset->name() );
+   } );
+ }
++#endif  // SC_NO_THREADING
+ 
+ void print_text_report( std::ostream& os, sim_t* sim, bool detail )
+ {
+@@ -1321,7 +1323,9 @@ void print_text_report( std::ostream& os, sim_t* sim, bool detail )
+     print_player_sequence( os, sim, sim->targets_by_name, detail );
+   }
+ 
++#ifndef SC_NO_THREADING
+   print_profilesets( os, *sim->profilesets, *sim );
++#endif
+ 
+   sim_summary_performance( os, sim );
+ 
+diff --git a/engine/sim/profileset.cpp b/engine/sim/profileset.cpp
+index a7d0631..22664d6 100644
+--- a/engine/sim/profileset.cpp
++++ b/engine/sim/profileset.cpp
+@@ -1169,8 +1169,6 @@ void profilesets_t::initialize( sim_t* ) {}
+ std::string profilesets_t::current_profileset_name() { return "DUMMY"; }
+ void profilesets_t::cancel() {}
+ bool profilesets_t::iterate( sim_t*  ) { return true ;}
+-void profilesets_t::output_html( const sim_t&, std::ostream& ) const {}
+-void profilesets_t::output_text( const sim_t&, std::ostream& ) const {}
+ size_t profilesets_t::n_profilesets() const { return 0; }
+ bool profilesets_t::is_running() const { return false; }
+ }

@@ -1,0 +1,347 @@
+{
+  "schemaVersion": 1,
+  "catalogId": "12.1.0.69814-dca34b3038a3-c015720",
+  "generatedAt": "2026-09-14T18:42:03.056Z",
+  "generator": {
+    "script": "scripts/catalog/build-catalogs.mjs",
+    "node": "v26.8.2",
+    "elapsedMs": 16194
+  },
+  "engine": {
+    "simcVersion": "1210-01",
+    "upstreamCommit": "c01572044af513f9d85b79080b8d14619f1c00c5",
+    "clientDataVersion": "12.1.0.69814",
+    "simcWowVersion": "1210",
+    "hotfixDate": "2026-09-12",
+    "hotfixBuild": 69814,
+    "hotfixHash": "dca34b3038a3611b988b81eb90f7dd81e929268ebe05b6ac4a07ccdffb621163",
+    "ptr": false
+  },
+  "counts": {
+    "items": 109896,
+    "gear": 106143,
+    "gems": 2826,
+    "bonusIds": 10090,
+    "nameDescriptions": 1056,
+    "permanentEnchants": 1062,
+    "temporaryEnchants": 117,
+    "consumables": 927,
+    "embellishments": 54,
+    "sets": 1183,
+    "traitNodes": 3435,
+    "specs": 43,
+    "talentClasses": 14,
+    "curves": 503
+  },
+  "files": [
+    {
+      "path": "items.json",
+      "bytes": 15037553,
+      "brotliBytes": 1054927,
+      "sha256": "75f89d16ed001fb57a96e50783fefd41e3bd984bb61f6febe67c50727027fcd6"
+    },
+    {
+      "path": "item-bonus.json",
+      "bytes": 474874,
+      "brotliBytes": 55891,
+      "sha256": "5bc877a3b87ecd93bc2f530b61422870a901b66e3445bffb2daa53249085349c"
+    },
+    {
+      "path": "scaling.json",
+      "bytes": 425696,
+      "brotliBytes": 54640,
+      "sha256": "da5bfbe6037d8eab64e7de8ecffb6f945280f1118b3012dbe0c6a9396c4b222c"
+    },
+    {
+      "path": "enchants.json",
+      "bytes": 1434170,
+      "brotliBytes": 77808,
+      "sha256": "a391e2f4b6c44f680a6ae8f8fa1ef605df1bc46193263fb86d3b2dea909a46ca"
+    },
+    {
+      "path": "gems.json",
+      "bytes": 125068,
+      "brotliBytes": 10519,
+      "sha256": "918361619e0316fe49848435834e90a6ea11d98ef7a19ef694822ccf73cfc6db"
+    },
+    {
+      "path": "sets.json",
+      "bytes": 266226,
+      "brotliBytes": 10350,
+      "sha256": "896e6f36da40369e60fbe9a1d63d0d627203dd55d464f44de13b90d0c5a41589"
+    },
+    {
+      "path": "embellishments.json",
+      "bytes": 6350,
+      "brotliBytes": 1794,
+      "sha256": "11eb9577e4ffed6ed0179a81edcc67c078b1ca7784a4f6de019f93a49ccb988d"
+    },
+    {
+      "path": "consumables.json",
+      "bytes": 131301,
+      "brotliBytes": 17305,
+      "sha256": "76cac8a7f7fdd936692415e43821707aba696ec286fb082b85de02e1d7c81c79"
+    },
+    {
+      "path": "specs.json",
+      "bytes": 3458,
+      "brotliBytes": 915,
+      "sha256": "ce731bc1c0d5489cdc9d3097615bdfa9520c2103b55c9b23dd7e8d3e77fa9bcd"
+    },
+    {
+      "path": "talents/class-0.json",
+      "bytes": 3793,
+      "brotliBytes": 501,
+      "sha256": "67a969a72502671c937838ec58e08a3c8d2316a6d2dc7e9fe5842df43747af6b"
+    },
+    {
+      "path": "talents/class-1.json",
+      "bytes": 69685,
+      "brotliBytes": 6376,
+      "sha256": "8803a5180154781933bbb1f6dc3e7002bb12472a3c91e35461cae78da7b9d5e4"
+    },
+    {
+      "path": "talents/class-2.json",
+      "bytes": 81982,
+      "brotliBytes": 7481,
+      "sha256": "59d7ce1beb4bb135d0dd18b76ba50e2783b6eacf96736652e4f42bf332f899ca"
+    },
+    {
+      "path": "talents/class-3.json",
+      "bytes": 69752,
+      "brotliBytes": 6491,
+      "sha256": "954f2d730a6fa7a6bffb851376f002c757ad6081338848a028af4fe80200be48"
+    },
+    {
+      "path": "talents/class-4.json",
+      "bytes": 69951,
+      "brotliBytes": 6507,
+      "sha256": "382d0fe68f2645458e90bf4aa9268a2a27ff317a03094b4bf36e8c0950330cfe"
+    },
+    {
+      "path": "talents/class-5.json",
+      "bytes": 74295,
+      "brotliBytes": 6917,
+      "sha256": "1f65fcd5c0af72d101e99cd72cd69ef0eb7948d479346c9bd165a608b82fa5df"
+    },
+    {
+      "path": "talents/class-6.json",
+      "bytes": 65135,
+      "brotliBytes": 6029,
+      "sha256": "62e8cd3f5b497a628c3a7e9b0f89eb7a14b46083b276e0732a2ca1232a1e4351"
+    },
+    {
+      "path": "talents/class-7.json",
+      "bytes": 71903,
+      "brotliBytes": 6394,
+      "sha256": "b8f522a4282c2ac981bc8984d1e91148e5b8ce938a4d5c9840949e94c39a198f"
+    },
+    {
+      "path": "talents/class-8.json",
+      "bytes": 69173,
+      "brotliBytes": 6385,
+      "sha256": "579b03978ec33fd61c48e539d061e7ac45aa961eb476c13eb4b8a73e3a626065"
+    },
+    {
+      "path": "talents/class-9.json",
+      "bytes": 67576,
+      "brotliBytes": 6224,
+      "sha256": "eef7d634d2523aa28692fb058105aad9e266d864361e009bbae6db3e80a68918"
+    },
+    {
+      "path": "talents/class-10.json",
+      "bytes": 90465,
+      "brotliBytes": 8064,
+      "sha256": "df5cd4f85d96ce4d9b7b74b6eaaa01c341326d142411fa204c3be8d2f9bbaeb6"
+    },
+    {
+      "path": "talents/class-11.json",
+      "bytes": 96554,
+      "brotliBytes": 8811,
+      "sha256": "575cf609e2fbbc8b513b1a6aa5ddf8b96960e5306d74b9d99566273b01493eae"
+    },
+    {
+      "path": "talents/class-12.json",
+      "bytes": 73569,
+      "brotliBytes": 6412,
+      "sha256": "8d80132caa46bfdba66332b3e2453985f6d1e4ca8013907ddc44e8d796bd988f"
+    },
+    {
+      "path": "talents/class-13.json",
+      "bytes": 70449,
+      "brotliBytes": 6404,
+      "sha256": "15914349538a21a76f1ad3ee0d9c9f0653a9dd791fc6e7dbf66ffd21b0c3a675"
+    },
+    {
+      "path": "loot.json",
+      "bytes": 13897,
+      "brotliBytes": 2513,
+      "sha256": "28728446946fd01a4c707b2987d45e73948d19968b435ccbcc2284cf1808ae30"
+    }
+  ],
+  "totals": {
+    "bytes": 18892875,
+    "brotliBytes": 1375658,
+    "fileCount": 24
+  },
+  "loot": {
+    "path": "loot.json",
+    "expiresAt": "2026-10-15T05:18:25.062Z",
+    "sources": 37,
+    "providers": [
+      "blizzard-journal",
+      "raiderio"
+    ]
+  },
+  "lootAdaptersAttempted": [
+    "blizzard-journal"
+  ],
+  "warnings": [],
+  "coverage": [
+    {
+      "field": "item identity and base stats",
+      "status": "verified",
+      "source": "vendor/simc/engine/dbc/generated (upstream DB2 export)/item_data.inc",
+      "count": 109896
+    },
+    {
+      "field": "item bonus ids (ilevel, stats, sockets, quality, crafting)",
+      "status": "verified",
+      "source": "vendor/simc/engine/dbc/generated (upstream DB2 export)/item_bonus.inc",
+      "count": 10090
+    },
+    {
+      "field": "item level scaling curves",
+      "status": "verified",
+      "source": "vendor/simc/engine/dbc/generated (upstream DB2 export)/item_scaling.inc, rand_prop_points.inc, sc_scale_data.inc"
+    },
+    {
+      "field": "item name descriptors (track labels)",
+      "status": "verified",
+      "source": "vendor/simc/engine/dbc/generated (upstream DB2 export)/item_naming.inc",
+      "count": 1056,
+      "notes": "Reached through ITEM_BONUS_DESC entries. Gives the label (\"Champion Equipment\"), not a track/step model."
+    },
+    {
+      "field": "equip restrictions (class, race, slot, subclass)",
+      "status": "verified",
+      "source": "vendor/simc/engine/dbc/generated (upstream DB2 export)/item_data.inc class_mask/race_mask/inventory_type"
+    },
+    {
+      "field": "sockets and gems",
+      "status": "verified",
+      "source": "vendor/simc/engine/dbc/generated (upstream DB2 export)/item_data.inc socket_color, gem_data.inc, spell_item_enchantment.inc"
+    },
+    {
+      "field": "permanent enchants",
+      "status": "verified",
+      "source": "vendor/simc/engine/dbc/generated (upstream DB2 export)/permanent_enchant.inc",
+      "count": 1062
+    },
+    {
+      "field": "temporary enchants (weapon oils/stones)",
+      "status": "verified",
+      "source": "vendor/simc/engine/dbc/generated (upstream DB2 export)/temporary_enchant.inc",
+      "count": 117
+    },
+    {
+      "field": "consumables (flask, potion, food, elixir)",
+      "status": "verified",
+      "source": "vendor/simc/engine/dbc/generated (upstream DB2 export)/item_data.inc item_class=0",
+      "count": 927,
+      "notes": "Option token is util::tokenize of the item name; simc matches on that plus crafting quality."
+    },
+    {
+      "field": "embellishments",
+      "status": "verified",
+      "source": "vendor/simc/engine/dbc/generated (upstream DB2 export)/embellishment_data.inc",
+      "count": 54
+    },
+    {
+      "field": "set membership and set bonuses",
+      "status": "verified",
+      "source": "vendor/simc/engine/dbc/generated (upstream DB2 export)/item_set_bonus.inc",
+      "count": 1183
+    },
+    {
+      "field": "talent tree structure (nodes, ranks, hero trees)",
+      "status": "verified",
+      "source": "vendor/simc/engine/dbc/generated (upstream DB2 export)/trait_data.inc",
+      "count": 3435,
+      "notes": "Nodes, entries, ranks, req_points, row/col positions and hero sub-trees. Prerequisite EDGES are not included; see below."
+    },
+    {
+      "field": "talent prerequisite edges",
+      "status": "unavailable",
+      "source": "none",
+      "notes": "trait_data_t has row, col and req_points but no parent link, and simc ships no trait edge table. Loadout validity is checked for ranks, spec, req_points and hero tree only; connectivity is not checked."
+    },
+    {
+      "field": "talent point budgets (how many points a character has)",
+      "status": "unavailable",
+      "source": "none",
+      "notes": "A level- and patch-dependent game rule, in no DB2 table simc exports. Enforced only against a caller-supplied budget."
+    },
+    {
+      "field": "specializations (id, class, name)",
+      "status": "verified",
+      "source": "vendor/simc/engine/dbc/generated (upstream DB2 export)/sc_specialization_data.inc + sc_spec_list.inc + util/util.cpp",
+      "count": 43
+    },
+    {
+      "field": "embellishment slot applicability and per-character cap",
+      "status": "unavailable",
+      "source": "none",
+      "notes": "embellishment_data.inc carries name, bonus id, effect id and spell id only. Which slots accept one, and how many may be worn, are not in the engine data."
+    },
+    {
+      "field": "loot source membership (which boss/dungeon drops an item)",
+      "status": "partial",
+      "source": "Blizzard Game Data API, /data/wow/journal-encounter, us region, static-us namespace. Current Season journal tier 505; Mythic+ Dungeons (Midnight Season 2). | Current raid and Mythic+ membership from https://raider.io/api, matched to Blizzard season and regional dates.",
+      "count": 37,
+      "notes": "Supplied by a configured loot adapter, not by the engine source. The journal does not list every variant of an item, so item level and bonus ids are not covered. Instance zone drops, trash loot and bind-on-equip items are not in the journal and are absent here. The journal does not state drop probabilities, so no expected value can be computed from this data. Great Vault reward levels, upgrade currency costs and Catalyst mappings are not exposed by this API. Non-equippable rewards are excluded. Tier tokens are not expanded into class-set rewards. Delve loot tables are not exposed by the Blizzard journal API and are unavailable. Delve loot is unavailable. Raider.IO supplies membership, not item drops or reward levels. This data must not be used after 2026-10-15T05:18:25.062Z."
+    },
+    {
+      "field": "drop probabilities and eligible denominators",
+      "status": "unavailable",
+      "source": "none",
+      "notes": "Requires loot tables plus per-difficulty drop rates. Droptimizer shows deterministic hypothetical gains only (P09.8)."
+    },
+    {
+      "field": "Great Vault reward levels",
+      "status": "unavailable",
+      "source": "none",
+      "notes": "Reward-level to item-level mapping is not in the engine data. Vault scenarios need the user to supply an item level."
+    },
+    {
+      "field": "upgrade currency costs and discounts",
+      "status": "unavailable",
+      "source": "none",
+      "notes": "Crest/valorstone costs are not in DB2 exports simc ships. Affordability constraints stay off; the optimizer reports cost as unknown rather than zero."
+    },
+    {
+      "field": "Catalyst conversion mapping",
+      "status": "unavailable",
+      "source": "none",
+      "notes": "Slot-to-tier-item mapping is not in the engine data. Catalyst candidates are only generated from an explicit user-supplied target item id."
+    },
+    {
+      "field": "item upgrade track steps (e.g. Champion 3/8)",
+      "status": "partial",
+      "source": "scripts/catalog/generate-upgrades.mjs: engine-pinned ItemBonusListGroupEntry, ItemBonus and ItemScalingConfig DB2s",
+      "notes": "The matching generated upgrade module identifies Midnight Season 1 and 2 Adventurer through Myth tracks by bonus identity, with ordinary ranks and restricted imported drops. Other groups remain unknown. Custom item levels and explicitly chosen hypothetical tracks are supported; currency costs and unlock eligibility are not inferred. Regenerate upgrades after changing the engine pin."
+    },
+    {
+      "field": "item icons",
+      "status": "unavailable",
+      "source": "none",
+      "notes": "No icon ids in the engine data. UI falls back to slot/quality indicators; icons are never a simulation dependency (P05.10)."
+    },
+    {
+      "field": "crafting reagent requirements and profession restrictions",
+      "status": "unavailable",
+      "source": "none",
+      "notes": "Crafted item stats and quality are supported (crafted_stats/crafting_quality); the resource cost of crafting is not."
+    }
+  ]
+}

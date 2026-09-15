@@ -1,0 +1,54 @@
+{
+  "version": 1,
+  "routes": [
+    {
+      "id": "voidscar-arena-10-to-15",
+      "name": "Skandar Tank - Voidscar Arena Season 2 (+10 to +15)",
+      "path": "/routes/voidscar-arena-10-to-15.simc",
+      "source": "User-provided Keystone.guru SimulationCraft export",
+      "pulls": 12
+    },
+    {
+      "id": "ruby-life-pools",
+      "name": "Skandar Tank - Ruby Life Pools (+10 to +15)",
+      "path": "/routes/ruby-life-pools.simc",
+      "source": "User-provided Keystone.guru SimulationCraft export",
+      "pulls": 11
+    },
+    {
+      "id": "kings-rest",
+      "name": "Skandar Tank - King's Rest (+10 to +15)",
+      "path": "/routes/kings-rest.simc",
+      "source": "User-provided Keystone.guru SimulationCraft export",
+      "pulls": 16
+    },
+    {
+      "id": "temple-of-sethraliss",
+      "name": "Skandar Tank - Temple of Sethraliss (+10 to +15)",
+      "path": "/routes/temple-of-sethraliss.simc",
+      "source": "User-provided Keystone.guru SimulationCraft export",
+      "pulls": 17
+    },
+    {
+      "id": "altar-of-fangs",
+      "name": "Skandar Tank - Altar of Fangs (+10 to +15 Keys)",
+      "path": "/routes/altar-of-fangs.simc",
+      "source": "User-provided Keystone.guru SimulationCraft export",
+      "pulls": 14
+    },
+    {
+      "id": "den-of-nalorakk-10-to-15",
+      "name": "Skandar Tank - Den of Nalorakk Season 2 (+10 to +15)",
+      "path": "/routes/den-of-nalorakk-10-to-15.simc",
+      "source": "User-provided Keystone.guru SimulationCraft export",
+      "pulls": 14
+    },
+    {
+      "id": "murder-row-10-to-15",
+      "name": "Skandar Tank - Murder Row Season 2 (+10 to +15)",
+      "path": "/routes/murder-row-10-to-15.simc",
+      "source": "User-provided Keystone.guru SimulationCraft export",
+      "pulls": 14
+    }
+  ]
+}

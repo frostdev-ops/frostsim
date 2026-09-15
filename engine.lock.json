@@ -1,0 +1,44 @@
+{
+  "_comment": "Source and toolchain lock for the WebAssembly engine build (PLAN P00.3, P00.4). scripts/bootstrap-engine.sh and scripts/build-engine.sh read this file; nothing retypes these values. Releases build from upstream.commit, never from a moving branch HEAD.",
+  "schemaVersion": 1,
+  "upstream": {
+    "remote": "https://github.com/simulationcraft/simc.git",
+    "branch": "midnight",
+    "commit": "c01572044af513f9d85b79080b8d14619f1c00c5",
+    "commitDate": "2026-09-14T01:09:02+02:00",
+    "path": "vendor/simc",
+    "license": "GPL-3.0-only",
+    "licenseFile": "vendor/simc/LICENSE"
+  },
+  "expected": {
+    "_comment": "Cross-checked by scripts/engine-manifest.mjs against the checkout. A mismatch means the lock and the tree disagree; fix the lock deliberately, do not silently accept the tree.",
+    "simcVersion": "1210-01",
+    "clientDataWowVersion": "12.1.0.69814",
+    "clientDataHotfixDate": "2026-09-12",
+    "clientDataHotfixHash": "dca34b3038a3611b988b81eb90f7dd81e929268ebe05b6ac4a07ccdffb621163"
+  },
+  "toolchain": {
+    "emsdk": {
+      "version": "6.0.9",
+      "releaseHash": "f04ea239d533260dd1db760dd2d668d5f9a88d6b",
+      "install": "cd ~/emsdk && EMSDK_PYTHON=/opt/homebrew/bin/python3.13 ./emsdk install 6.0.9 && EMSDK_PYTHON=/opt/homebrew/bin/python3.13 ./emsdk activate 6.0.9",
+      "activate": "source ~/emsdk/emsdk_env.sh",
+      "note": "emsdk needs Python >= 3.10. macOS ships 3.9.6 first on PATH, so EMSDK_PYTHON must be exported for install/activate. emcc itself does not need it afterwards."
+    },
+    "node": "26.8.2",
+    "npm": "11.19.1",
+    "install": "npm ci",
+    "cmakeMinimum": "3.20",
+    "ninjaMinimum": "1.10",
+    "verifiedOn": {
+      "_comment": "Versions this baseline was actually produced with (2026-09-13, macOS arm64). Minimums above are the supported floor; these are the observed ones.",
+      "cmake": "4.4.3",
+      "ninja": "1.13.2",
+      "emcc": "6.0.9",
+      "clang": "24.0.0git",
+      "node": "26.8.2",
+      "npm": "11.19.1",
+      "platform": "darwin-arm64"
+    }
+  }
+}

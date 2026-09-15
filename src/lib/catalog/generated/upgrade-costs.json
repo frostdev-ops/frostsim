@@ -1,0 +1,707 @@
+{
+  "schemaVersion": 1,
+  "build": "12.1.0.69814",
+  "engineCommit": "c01572044af513f9d85b79080b8d14619f1c00c5",
+  "season": {
+    "id": 18,
+    "name": "Mythic+ Dungeons (Midnight Season 2)",
+    "startsAt": "2026-08-18T15:00:00.000Z",
+    "region": "us"
+  },
+  "seasonCapSource": null,
+  "capSearch": {
+    "checkedAt": "2026-09-15T17:36:33.613Z",
+    "articles": [
+      {
+        "url": "https://news.blizzard.com/en-us/article/24294369/the-shadows-deepen-midnight-season-2-begins-august-18",
+        "sha256": "0901a3928996fd36010c2bf521ff6edb2f887b2039cd6f029aef861d60923e2b",
+        "statesCap": false,
+        "excerpt": null
+      },
+      {
+        "url": "https://news.blizzard.com/en-us/article/24294369/midnight-season-2-is-now-live",
+        "sha256": "0901a3928996fd36010c2bf521ff6edb2f887b2039cd6f029aef861d60923e2b",
+        "statesCap": false,
+        "excerpt": null
+      },
+      {
+        "url": "https://news.blizzard.com/en-us/article/24295090/midnight-curse-of-ula-tek-pre-season-details",
+        "sha256": "8f6af81bf778514031a612258b1732945cd5388011b4199a45d4da0bb0616f8f",
+        "statesCap": false,
+        "excerpt": null
+      },
+      {
+        "url": "https://news.blizzard.com/en-us/article/24293281/curse-of-ula-tek-content-update-notes",
+        "sha256": "26050f4e6d3c03d154c6a8a147257363fdb4d7dc7c7bbc654784e9f47faf48ec",
+        "statesCap": false,
+        "excerpt": null
+      },
+      {
+        "url": "https://news.blizzard.com/en-us/article/24296142/hotfixes-september-10-2026",
+        "sha256": "87261a83ca1d401d6a5b33f33d06eb80b1bf8b9d6d2be8f70b8f461d1acdf5a5",
+        "statesCap": false,
+        "excerpt": null
+      }
+    ],
+    "note": "No official Blizzard article checked states a Midnight Season 2 crest weekly cap. The only numeric crest cap in Blizzard news is the Dragonflight 10.1 Embers of Neltharion system (ten crests of each kind per week), which is a different expansion and must not be reused here."
+  },
+  "watermarkSlots": [
+    {
+      "index": 0,
+      "name": "Head"
+    },
+    {
+      "index": 1,
+      "name": "Neck"
+    },
+    {
+      "index": 2,
+      "name": "Shoulder"
+    },
+    {
+      "index": 3,
+      "name": "Chest"
+    },
+    {
+      "index": 4,
+      "name": "Waist"
+    },
+    {
+      "index": 5,
+      "name": "Legs"
+    },
+    {
+      "index": 6,
+      "name": "Feet"
+    },
+    {
+      "index": 7,
+      "name": "Wrist"
+    },
+    {
+      "index": 8,
+      "name": "Hand"
+    },
+    {
+      "index": 9,
+      "name": "Finger"
+    },
+    {
+      "index": 10,
+      "name": "Trinket"
+    },
+    {
+      "index": 11,
+      "name": "Cloak"
+    },
+    {
+      "index": 12,
+      "name": "Twohand"
+    },
+    {
+      "index": 13,
+      "name": "MainhandWeapon"
+    },
+    {
+      "index": 14,
+      "name": "OnehandWeapon"
+    },
+    {
+      "index": 15,
+      "name": "OnehandWeaponSecond"
+    },
+    {
+      "index": 16,
+      "name": "Offhand"
+    }
+  ],
+  "watermarkSource": {
+    "enum": {
+      "url": "https://raw.githubusercontent.com/Gethe/wow-ui-source/4e3cbb8c5609e4bfc332c0aebbfa4d79731fab59/Interface/AddOns/Blizzard_APIDocumentationGenerated/ItemConstants_MainlineDocumentation.lua",
+      "commit": "4e3cbb8c5609e4bfc332c0aebbfa4d79731fab59",
+      "sha256": "f475f8e10048b77c1ea8f7b9d04176976a67b39e6242ee6eae2cdc6f682f297d",
+      "count": 17
+    },
+    "addon": {
+      "url": "https://raw.githubusercontent.com/simulationcraft/simc-addon/305f97962d94428727d6b359199c5f8c2d998c76/core.lua",
+      "commit": "305f97962d94428727d6b359199c5f8c2d998c76",
+      "sha256": "3bc3f9c2feda1ab59c2acd0358b9b2610e60870c079514f009723711c04e77e5",
+      "fields": [
+        "slotIndex",
+        "characterHighWatermark",
+        "accountHighWatermark"
+      ],
+      "range": [
+        0,
+        16
+      ]
+    }
+  },
+  "generatedAt": "2026-09-15T17:36:33.617Z",
+  "sources": [
+    {
+      "url": "https://wago.tools/db2/ItemBonusListGroupEntry/csv?build=12.1.0.69814",
+      "sha256": "f07be2bfe219aa9ebd0d2fcfffe716678d951cc8b7b9fd01d7bed5a3cb5ec31c"
+    },
+    {
+      "url": "https://wago.tools/db2/ItemExtendedCost/csv?build=12.1.0.69814",
+      "sha256": "40c326e263b6ec8b6ff99899bbe45ed35dcda8dfccaa5dde98418189a1c01597"
+    },
+    {
+      "url": "https://wago.tools/db2/CurrencyTypes/csv?build=12.1.0.69814",
+      "sha256": "ba492bb64c255de227e693bbca421561c2c6806cfba514861685723a8c210d35"
+    },
+    {
+      "url": "https://raider.io/api/v1/mythic-plus/static-data?expansion_id=11",
+      "sha256": "2eb0aaf30dcfcad996b515efc25d9f71e7b6a043d02337a669e7c787e2395672"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/Gethe/wow-ui-source/4e3cbb8c5609e4bfc332c0aebbfa4d79731fab59/Interface/AddOns/Blizzard_APIDocumentationGenerated/ItemConstants_MainlineDocumentation.lua",
+      "sha256": "f475f8e10048b77c1ea8f7b9d04176976a67b39e6242ee6eae2cdc6f682f297d"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/simulationcraft/simc-addon/305f97962d94428727d6b359199c5f8c2d998c76/core.lua",
+      "sha256": "3bc3f9c2feda1ab59c2acd0358b9b2610e60870c079514f009723711c04e77e5"
+    }
+  ],
+  "unavailable": [
+    "crest weekly cap: no DB2 field and no official Blizzard article states it; see capSearch",
+    "valorstones: no non-crest currency appears in any season upgrade ItemExtendedCost at this build; the non-crest part of every step is CurrencyTypes-free gold (the Money field)"
+  ],
+  "crests": [
+    {
+      "id": 3442,
+      "name": "Adventurer Mistcrest",
+      "trackId": 614,
+      "trackLabel": "Adventurer",
+      "orderIndex": 1,
+      "categoryId": 282,
+      "flags": [
+        35913922,
+        1
+      ],
+      "cap": {
+        "maxQty": 100,
+        "perWeek": null,
+        "rechargeAmount": null,
+        "cycleMs": null,
+        "startQuantity": null,
+        "maxQtyWorldStateId": 30933,
+        "unavailable": [
+          "perWeek: CurrencyTypes.MaxEarnablePerWeek and the recharging fields are 0; the cap is driven by world state 30933, which no DB2 exposes",
+          "startQuantity: no DB2 field encodes a season-start grant"
+        ]
+      },
+      "tier": 1
+    },
+    {
+      "id": 3443,
+      "name": "Veteran Mistcrest",
+      "trackId": 615,
+      "trackLabel": "Veteran",
+      "orderIndex": 2,
+      "categoryId": 282,
+      "flags": [
+        35913922,
+        1
+      ],
+      "cap": {
+        "maxQty": 100,
+        "perWeek": null,
+        "rechargeAmount": null,
+        "cycleMs": null,
+        "startQuantity": null,
+        "maxQtyWorldStateId": 30933,
+        "unavailable": [
+          "perWeek: CurrencyTypes.MaxEarnablePerWeek and the recharging fields are 0; the cap is driven by world state 30933, which no DB2 exposes",
+          "startQuantity: no DB2 field encodes a season-start grant"
+        ]
+      },
+      "tier": 2
+    },
+    {
+      "id": 3444,
+      "name": "Champion Mistcrest",
+      "trackId": 616,
+      "trackLabel": "Champion",
+      "orderIndex": 3,
+      "categoryId": 282,
+      "flags": [
+        35913922,
+        1
+      ],
+      "cap": {
+        "maxQty": 100,
+        "perWeek": null,
+        "rechargeAmount": null,
+        "cycleMs": null,
+        "startQuantity": null,
+        "maxQtyWorldStateId": 30933,
+        "unavailable": [
+          "perWeek: CurrencyTypes.MaxEarnablePerWeek and the recharging fields are 0; the cap is driven by world state 30933, which no DB2 exposes",
+          "startQuantity: no DB2 field encodes a season-start grant"
+        ]
+      },
+      "tier": 3
+    },
+    {
+      "id": 3445,
+      "name": "Hero Mistcrest",
+      "trackId": 617,
+      "trackLabel": "Hero",
+      "orderIndex": 4,
+      "categoryId": 282,
+      "flags": [
+        35913922,
+        1
+      ],
+      "cap": {
+        "maxQty": 100,
+        "perWeek": null,
+        "rechargeAmount": null,
+        "cycleMs": null,
+        "startQuantity": null,
+        "maxQtyWorldStateId": 30934,
+        "unavailable": [
+          "perWeek: CurrencyTypes.MaxEarnablePerWeek and the recharging fields are 0; the cap is driven by world state 30934, which no DB2 exposes",
+          "startQuantity: no DB2 field encodes a season-start grant"
+        ]
+      },
+      "tier": 4
+    },
+    {
+      "id": 3446,
+      "name": "Myth Mistcrest",
+      "trackId": 618,
+      "trackLabel": "Myth",
+      "orderIndex": 5,
+      "categoryId": 282,
+      "flags": [
+        35913922,
+        1
+      ],
+      "cap": {
+        "maxQty": 100,
+        "perWeek": null,
+        "rechargeAmount": null,
+        "cycleMs": null,
+        "startQuantity": null,
+        "maxQtyWorldStateId": 30934,
+        "unavailable": [
+          "perWeek: CurrencyTypes.MaxEarnablePerWeek and the recharging fields are 0; the cap is driven by world state 30934, which no DB2 exposes",
+          "startQuantity: no DB2 field encodes a season-start grant"
+        ]
+      },
+      "tier": 5
+    }
+  ],
+  "otherCurrencies": [],
+  "tracks": [
+    {
+      "trackId": 614,
+      "label": "Adventurer",
+      "seasonId": 18,
+      "steps": [
+        {
+          "fromRank": 1,
+          "toRank": 2,
+          "itemLevel": 269,
+          "extendedCostId": 11457,
+          "currencies": {
+            "3442": 20
+          },
+          "money": 100000
+        },
+        {
+          "fromRank": 2,
+          "toRank": 3,
+          "itemLevel": 272,
+          "extendedCostId": 11458,
+          "currencies": {
+            "3442": 20
+          },
+          "money": 100000
+        },
+        {
+          "fromRank": 3,
+          "toRank": 4,
+          "itemLevel": 276,
+          "extendedCostId": 11459,
+          "currencies": {
+            "3442": 20
+          },
+          "money": 100000
+        },
+        {
+          "fromRank": 4,
+          "toRank": 5,
+          "itemLevel": 279,
+          "extendedCostId": 11460,
+          "currencies": {
+            "3442": 20
+          },
+          "money": 100000
+        },
+        {
+          "fromRank": 5,
+          "toRank": 6,
+          "itemLevel": 282,
+          "extendedCostId": 11461,
+          "currencies": {
+            "3442": 20
+          },
+          "money": 100000
+        },
+        {
+          "fromRank": 6,
+          "toRank": 7,
+          "itemLevel": 285,
+          "extendedCostId": null,
+          "currencies": null,
+          "money": null,
+          "unavailable": [
+            "ItemBonusListGroupEntry.ItemExtendedCostID is 0: this rank is not purchasable, it only drops"
+          ]
+        },
+        {
+          "fromRank": 7,
+          "toRank": 8,
+          "itemLevel": 289,
+          "extendedCostId": null,
+          "currencies": null,
+          "money": null,
+          "unavailable": [
+            "ItemBonusListGroupEntry.ItemExtendedCostID is 0: this rank is not purchasable, it only drops"
+          ]
+        }
+      ]
+    },
+    {
+      "trackId": 615,
+      "label": "Veteran",
+      "seasonId": 18,
+      "steps": [
+        {
+          "fromRank": 1,
+          "toRank": 2,
+          "itemLevel": 282,
+          "extendedCostId": 11462,
+          "currencies": {
+            "3443": 20
+          },
+          "money": 200000
+        },
+        {
+          "fromRank": 2,
+          "toRank": 3,
+          "itemLevel": 285,
+          "extendedCostId": 11463,
+          "currencies": {
+            "3443": 20
+          },
+          "money": 200000
+        },
+        {
+          "fromRank": 3,
+          "toRank": 4,
+          "itemLevel": 289,
+          "extendedCostId": 11464,
+          "currencies": {
+            "3443": 20
+          },
+          "money": 200000
+        },
+        {
+          "fromRank": 4,
+          "toRank": 5,
+          "itemLevel": 292,
+          "extendedCostId": 11465,
+          "currencies": {
+            "3443": 20
+          },
+          "money": 200000
+        },
+        {
+          "fromRank": 5,
+          "toRank": 6,
+          "itemLevel": 295,
+          "extendedCostId": 11466,
+          "currencies": {
+            "3443": 20
+          },
+          "money": 200000
+        },
+        {
+          "fromRank": 6,
+          "toRank": 7,
+          "itemLevel": 298,
+          "extendedCostId": null,
+          "currencies": null,
+          "money": null,
+          "unavailable": [
+            "ItemBonusListGroupEntry.ItemExtendedCostID is 0: this rank is not purchasable, it only drops"
+          ]
+        },
+        {
+          "fromRank": 7,
+          "toRank": 8,
+          "itemLevel": 302,
+          "extendedCostId": null,
+          "currencies": null,
+          "money": null,
+          "unavailable": [
+            "ItemBonusListGroupEntry.ItemExtendedCostID is 0: this rank is not purchasable, it only drops"
+          ]
+        }
+      ]
+    },
+    {
+      "trackId": 616,
+      "label": "Champion",
+      "seasonId": 18,
+      "steps": [
+        {
+          "fromRank": 1,
+          "toRank": 2,
+          "itemLevel": 295,
+          "extendedCostId": 11467,
+          "currencies": {
+            "3444": 20
+          },
+          "money": 300000
+        },
+        {
+          "fromRank": 2,
+          "toRank": 3,
+          "itemLevel": 298,
+          "extendedCostId": 11468,
+          "currencies": {
+            "3444": 20
+          },
+          "money": 300000
+        },
+        {
+          "fromRank": 3,
+          "toRank": 4,
+          "itemLevel": 302,
+          "extendedCostId": 11469,
+          "currencies": {
+            "3444": 20
+          },
+          "money": 300000
+        },
+        {
+          "fromRank": 4,
+          "toRank": 5,
+          "itemLevel": 305,
+          "extendedCostId": 11470,
+          "currencies": {
+            "3444": 20
+          },
+          "money": 300000
+        },
+        {
+          "fromRank": 5,
+          "toRank": 6,
+          "itemLevel": 308,
+          "extendedCostId": 11471,
+          "currencies": {
+            "3444": 20
+          },
+          "money": 300000
+        },
+        {
+          "fromRank": 6,
+          "toRank": 7,
+          "itemLevel": 311,
+          "extendedCostId": null,
+          "currencies": null,
+          "money": null,
+          "unavailable": [
+            "ItemBonusListGroupEntry.ItemExtendedCostID is 0: this rank is not purchasable, it only drops"
+          ]
+        },
+        {
+          "fromRank": 7,
+          "toRank": 8,
+          "itemLevel": 315,
+          "extendedCostId": null,
+          "currencies": null,
+          "money": null,
+          "unavailable": [
+            "ItemBonusListGroupEntry.ItemExtendedCostID is 0: this rank is not purchasable, it only drops"
+          ]
+        }
+      ]
+    },
+    {
+      "trackId": 617,
+      "label": "Hero",
+      "seasonId": 18,
+      "steps": [
+        {
+          "fromRank": 1,
+          "toRank": 2,
+          "itemLevel": 308,
+          "extendedCostId": 11472,
+          "currencies": {
+            "3445": 20
+          },
+          "money": 400000
+        },
+        {
+          "fromRank": 2,
+          "toRank": 3,
+          "itemLevel": 311,
+          "extendedCostId": 11473,
+          "currencies": {
+            "3445": 20
+          },
+          "money": 400000
+        },
+        {
+          "fromRank": 3,
+          "toRank": 4,
+          "itemLevel": 315,
+          "extendedCostId": 11474,
+          "currencies": {
+            "3445": 20
+          },
+          "money": 400000
+        },
+        {
+          "fromRank": 4,
+          "toRank": 5,
+          "itemLevel": 318,
+          "extendedCostId": 11475,
+          "currencies": {
+            "3445": 20
+          },
+          "money": 400000
+        },
+        {
+          "fromRank": 5,
+          "toRank": 6,
+          "itemLevel": 321,
+          "extendedCostId": 11476,
+          "currencies": {
+            "3445": 20
+          },
+          "money": 400000
+        },
+        {
+          "fromRank": 6,
+          "toRank": 7,
+          "itemLevel": 324,
+          "extendedCostId": null,
+          "currencies": null,
+          "money": null,
+          "unavailable": [
+            "ItemBonusListGroupEntry.ItemExtendedCostID is 0: this rank is not purchasable, it only drops"
+          ]
+        },
+        {
+          "fromRank": 7,
+          "toRank": 8,
+          "itemLevel": 328,
+          "extendedCostId": null,
+          "currencies": null,
+          "money": null,
+          "unavailable": [
+            "ItemBonusListGroupEntry.ItemExtendedCostID is 0: this rank is not purchasable, it only drops"
+          ]
+        }
+      ]
+    },
+    {
+      "trackId": 618,
+      "label": "Myth",
+      "seasonId": 18,
+      "steps": [
+        {
+          "fromRank": 1,
+          "toRank": 2,
+          "itemLevel": 321,
+          "extendedCostId": 11477,
+          "currencies": {
+            "3446": 20
+          },
+          "money": 500000
+        },
+        {
+          "fromRank": 2,
+          "toRank": 3,
+          "itemLevel": 324,
+          "extendedCostId": 11478,
+          "currencies": {
+            "3446": 20
+          },
+          "money": 500000
+        },
+        {
+          "fromRank": 3,
+          "toRank": 4,
+          "itemLevel": 328,
+          "extendedCostId": 11479,
+          "currencies": {
+            "3446": 20
+          },
+          "money": 500000
+        },
+        {
+          "fromRank": 4,
+          "toRank": 5,
+          "itemLevel": 331,
+          "extendedCostId": 11480,
+          "currencies": {
+            "3446": 20
+          },
+          "money": 500000
+        },
+        {
+          "fromRank": 5,
+          "toRank": 6,
+          "itemLevel": 334,
+          "extendedCostId": 11481,
+          "currencies": {
+            "3446": 20
+          },
+          "money": 500000
+        },
+        {
+          "fromRank": 6,
+          "toRank": 7,
+          "itemLevel": 337,
+          "extendedCostId": null,
+          "currencies": null,
+          "money": null,
+          "unavailable": [
+            "ItemBonusListGroupEntry.ItemExtendedCostID is 0: this rank is not purchasable, it only drops"
+          ]
+        },
+        {
+          "fromRank": 7,
+          "toRank": 8,
+          "itemLevel": 340,
+          "extendedCostId": null,
+          "currencies": null,
+          "money": null,
+          "unavailable": [
+            "ItemBonusListGroupEntry.ItemExtendedCostID is 0: this rank is not purchasable, it only drops"
+          ]
+        },
+        {
+          "fromRank": 8,
+          "toRank": 9,
+          "itemLevel": 344,
+          "extendedCostId": null,
+          "currencies": null,
+          "money": null,
+          "unavailable": [
+            "ItemBonusListGroupEntry.ItemExtendedCostID is 0: this rank is not purchasable, it only drops"
+          ]
+        }
+      ]
+    }
+  ]
+}

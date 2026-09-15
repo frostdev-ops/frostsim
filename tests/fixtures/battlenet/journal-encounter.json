@@ -1,0 +1,20 @@
+{
+  "_note": "STRUCTURE verified against the live /data/wow/journal-encounter/{id} endpoint on 2026-09-14. Top-level keys and the items[] entry shape are exactly as returned; values synthetic.",
+  "_links": { "self": { "href": "https://REDACTED" } },
+  "id": 900100,
+  "name": "Fixture Boss",
+  "description": "A fixture encounter.",
+  "creatures": [],
+  "items": [
+    { "id": 1, "item": { "key": { "href": "https://REDACTED" }, "name": "Fixture Crown", "id": 900002 } },
+    { "id": 2, "item": { "key": { "href": "https://REDACTED" }, "name": "Fixture Trinket", "id": 900001 } },
+    { "id": 3, "item": { "key": { "href": "https://REDACTED" }, "name": "Fixture Trinket", "id": 900001 } }
+  ],
+  "sections": [],
+  "instance": { "key": { "href": "https://REDACTED" }, "name": "Fixture Raid", "id": 900200 },
+  "category": { "type": "RAID" },
+  "modes": [
+    { "mode": { "type": "NORMAL", "name": "Normal" }, "is_tracked": true },
+    { "mode": { "type": "HEROIC", "name": "Heroic" }, "is_tracked": true }
+  ]
+}

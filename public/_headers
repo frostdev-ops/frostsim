@@ -1,0 +1,39 @@
+# Response headers the application requires. Vite copies this file into dist/, and
+# `npm run serve:pages` applies the same rules locally.
+#
+# Two of these are not optional: without COOP same-origin + COEP require-corp there is no
+# SharedArrayBuffer, without SharedArrayBuffer there are no pthreads, and the threaded engine
+# does not start at all. The fallback artifact exists for exactly the environments where these
+# cannot be delivered.
+#
+# A host that serves these from static rules may not apply them to dynamic responses. Verify
+# the actual response headers against a real host before treating any of this as done.
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: no-referrer
+  # 'wasm-unsafe-eval' is the narrow allowance for WebAssembly compilation. It is NOT
+  # 'unsafe-eval': it permits compiling wasm and nothing else. The engine needs it.
+  # worker-src stays 'self' with no blob: — verified that the emscripten glue spawns pthread
+  # workers with `new Worker(pthreadMainJs)` against a real URL and never calls
+  # createObjectURL, so a blob: allowance would widen the policy for nothing.
+  # connect-src must gain the engine asset origin when the wasm moves off Pages to R2
+  # (P14.5); it is deliberately left at 'self' until that origin exists, so the first deploy
+  # fails loudly rather than silently permitting an unintended host.
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; frame-src 'self' https://raider.io; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'
+
+# The engine binaries are content-addressed by the sha256 in public/engine/manifest.json.
+# A given URL's bytes never change: a new build is a new hash, so caching them immutably is
+# safe and re-downloading 60 MB on a warm run is not.
+/engine/*
+  Cache-Control: public, max-age=31536000, immutable
+  Cross-Origin-Resource-Policy: cross-origin
+
+# The manifest is the pointer that changes when the engine changes, so it must not be cached
+# with the thing it points at. Publish assets first, manifest last (P14.6).
+/engine/manifest.json
+  Cache-Control: public, max-age=60, must-revalidate
+  Cross-Origin-Resource-Policy: cross-origin
+/engine-versions.json
+  Cache-Control: no-cache, must-revalidate

@@ -1,0 +1,64 @@
+Do not report a failed setpriority() in a browser.
+
+simc's sim_t defaults process_priority to BELOW_NORMAL (engine/sim/sim.cpp) and sim_t::execute()
+calls computer_process::set_priority() on the main thread on every run. Under emscripten that
+reaches the POSIX branch of engine/util/concurrency.cpp, because emscripten defines __unix__,
+and emscripten's setpriority syscall stub returns -EPERM unconditionally — the nice value is
+never even looked at. The perror() therefore fires on every single browser simulation:
+
+    Could not set process priority.: Operation not permitted
+
+It is harmless and completely uninformative. It cannot be avoided from the option side: this was
+measured on the node relink of the locked build at process_priority=normal (nice 0), below_normal
+(nice 5) and low (nice 10), and all three print the identical line.
+
+This adds an #elif defined(__EMSCRIPTEN__) branch, placed BEFORE the SC_OSX/__unix__ one because
+emscripten satisfies that condition, whose set_priority() does nothing and reports nothing —
+exactly what the existing generic #else branch already does for platforms with no priority
+concept. A browser tab has no process priority, so succeeding silently is the correct answer,
+not a failure worth printing. Nothing outside emscripten builds is touched; every native
+platform keeps the branch it compiles today.
+
+Not sent upstream from here, and this project does not fork simc: it is a platform branch for a
+target upstream does not build for. If upstream adds one, drop this file and bump
+engine.lock.json.
+
+NOT APPLIED TO ANY CURRENT ARTIFACT. Deferred to the next engine rebuild:
+  - The shipped threaded simc.wasm was built before this existed. Its sha256 is referenced by
+    public/engine/manifest.json, the deployment record and the release contract, and a crash-fix
+    deploy is pending, so it is not being rebuilt for a log line.
+  - Until it is, src/lib/simc/job.ts drops the line where engine stderr is classified, so the
+    message does not reach the user-visible log or the notice classification. Delete that filter
+    only once BOTH artifacts are rebuilt with this patch.
+  - scripts/build-engine.sh applies patches/*.patch to the FALLBACK variant only; the threaded
+    artifact builds straight from vendor/simc. Landing this in the shipped threaded binary needs
+    that script to stage and patch the threaded variant too. Adding this file also changes the
+    fallback staging stamp, so the next --fallback build re-stages and rebuilds from scratch.
+
+diff --git a/engine/util/concurrency.cpp b/engine/util/concurrency.cpp
+--- a/engine/util/concurrency.cpp
++++ b/engine/util/concurrency.cpp
+@@ -255,6 +255,23 @@
+  }
+ }
+ 
++#elif defined(__EMSCRIPTEN__)
++// Emscripten defines __unix__, so without this branch it takes the POSIX one below and calls
++// setpriority(), which emscripten's syscall stub answers with -EPERM unconditionally
++// (system/lib/libc/emscripten_syscall_stubs.c: __syscall_setpriority returns -EPERM, whatever
++// the nice value). sim_t defaults process_priority to BELOW_NORMAL and sim_t::execute() calls
++// set_priority() on every run, so every browser sim prints
++//     Could not set process priority.: Operation not permitted
++// to stderr before it does anything. Nothing can be done about it from the option side:
++// process_priority=normal is nice 0 and fails identically.
++//
++// A browser tab has no process priority to set, so the correct behaviour here is the same as
++// the generic #else branch: do nothing, successfully.
++void computer_process::set_priority( priority_e )
++{
++  // No process priority in a browser sandbox. Not an error, so do not report one.
++}
++
+ #elif defined(SC_OSX) || defined(__unix__)
+ #include <sys/time.h>
+ #include <sys/resource.h>

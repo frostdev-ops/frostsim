@@ -1,0 +1,22 @@
+{
+  "scope": "Warlock consumable differences only; not a complete Weekly engine emulation",
+  "weekly": {
+    "commit": "b845947a34429874433d8e9362326894650dd20a",
+    "source": "https://raw.githubusercontent.com/simulationcraft/simc/b845947a34429874433d8e9362326894650dd20a/engine/class_modules/apl/warlock.cpp",
+    "sha256": "a32f66c3b352764205aca549d978ba54c129503c7c70dc938f8dc65a4e281207"
+  },
+  "engine": {
+    "commit": "c01572044af513f9d85b79080b8d14619f1c00c5",
+    "source": "engine/class_modules/apl/warlock.cpp",
+    "sha256": "09f2bb54304a3886a87aae18931bf2214f56882a88c074c7e77f730ed3e51bda"
+  },
+  "rules": [
+    {
+      "class": "warlock",
+      "spec": "demonology",
+      "minLevel": 90,
+      "option": "potion",
+      "value": "potion_of_recklessness_2"
+    }
+  ]
+}

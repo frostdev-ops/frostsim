@@ -1,0 +1,12 @@
+{
+  "_note": "STRUCTURE verified against the live /data/wow/media/item/{itemId} endpoint on 2026-09-14. The asset host is the real one the API returns, because the media host allowlist has to be tested against it; the icon filename is synthetic.",
+  "_links": { "self": { "href": "https://REDACTED" } },
+  "assets": [
+    {
+      "key": "icon",
+      "value": "https://render.worldofwarcraft.com/us/icons/56/inv_fixture_icon.jpg",
+      "file_data_id": 7807656
+    }
+  ],
+  "id": 900002
+}

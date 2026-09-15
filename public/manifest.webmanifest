@@ -1,0 +1,13 @@
+{
+  "name": "Frostsim",
+  "short_name": "Frostsim",
+  "description": "SimulationCraft for World of Warcraft, running entirely in your browser.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#1b1d22",
+  "theme_color": "#1b1d22",
+  "icons": [
+    { "src": "/brand/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}

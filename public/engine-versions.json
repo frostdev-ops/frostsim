@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "defaultId": "nightly-78ef4e1a3ce1-1d1048e3f61a",
+  "versions": [
+    {
+      "id": "bundled",
+      "label": "1210-01 · c015720 · Bundled",
+      "channel": "bundled",
+      "baseUrl": "/engine/"
+    },
+    {
+      "id": "nightly-78ef4e1a3ce1-1d1048e3f61a",
+      "label": "1210-01 · Nightly · 2026-09-15 · 78ef4e1",
+      "channel": "nightly",
+      "baseUrl": "/engine/versions/nightly-78ef4e1a3ce1-1d1048e3f61a/",
+      "upstreamCommit": "78ef4e1a3ce1bb566cf790d3fcc2e8b32f35a06a",
+      "publishedAt": "2026-09-15T10:27:12Z",
+      "ciUrl": "https://github.com/simulationcraft/simc/actions/runs/34958003476"
+    }
+  ]
+}

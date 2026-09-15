@@ -1,0 +1,80 @@
+# Unit, type and build checks. No engine compile here — that is engine.yml, which is
+# expensive and runs on demand.
+#
+# Locked install only: `npm ci` against the committed lockfile, Node from .nvmrc. If the
+# lockfile and package.json disagree, `npm ci` fails, which is the point (P00.4, P14.14).
+name: checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Types
+        run: npm run check
+
+      - name: Production build
+        run: npm run build
+
+      # The engine binaries are gitignored, so a CI build has no public/engine/simc.wasm and
+      # cannot regenerate the manifest. What CI can do is refuse a manifest that disagrees
+      # with the source lock — the failure mode where a catalog or a UI constant is pinned to
+      # an engine revision nobody is building any more.
+      - name: Engine manifest matches the source lock
+        run: |
+          node -e '
+            const fs = require("fs");
+            const lock = JSON.parse(fs.readFileSync("engine.lock.json", "utf8"));
+            const manifest = JSON.parse(fs.readFileSync("public/engine/manifest.json", "utf8"));
+            const problems = [];
+            if (manifest.engine.upstreamCommit !== lock.upstream.commit) {
+              problems.push(`manifest engine ${manifest.engine.upstreamCommit} != lock ${lock.upstream.commit}`);
+            }
+            for (const [key, actual] of [
+              ["simcVersion", manifest.engine.simcVersion],
+              ["clientDataWowVersion", manifest.wow.clientDataVersion],
+              ["clientDataHotfixHash", manifest.wow.hotfixHash],
+            ]) {
+              if (lock.expected?.[key] && lock.expected[key] !== actual) {
+                problems.push(`${key}: manifest ${actual} != lock ${lock.expected[key]}`);
+              }
+            }
+            for (const list of ["lockMismatches", "buildTreeMismatches"]) {
+              for (const m of manifest[list] ?? []) problems.push(`${list}: ${m}`);
+            }
+            if (problems.length) { console.error(problems.join("\n")); process.exit(1); }
+            console.log(`engine manifest agrees with the lock: simc ${manifest.engine.simcVersion} @ ${manifest.engine.upstreamCommit.slice(0, 7)}, WoW ${manifest.wow.clientDataVersion}`);
+          '
+
+      # A committed fixture or a build output containing a real character name is a privacy
+      # failure, not a style issue (P00.6, P14.11). This checks the tracked tree, which is
+      # what a release archive is built from.
+      - name: No private character export is tracked
+        run: |
+          if git ls-files --error-unmatch simc_output >/dev/null 2>&1; then
+            echo "simc_output is tracked. It is a real character export and must stay ignored."
+            exit 1
+          fi
+          if git ls-files | grep -qE '\.private\.simc$'; then
+            echo "a .private.simc file is tracked"
+            exit 1
+          fi

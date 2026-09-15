@@ -1,0 +1,49 @@
+# Upstream reference checkout. 360 MB, read-only, restored by scripts/bootstrap-engine.sh
+# from the SHA in engine.lock.json. Never commit it, never edit it in place.
+vendor/simc/
+
+# Build trees and outputs. Regenerate with npm run engine:build / npm run build.
+build/
+node_modules/
+dist/
+
+# Engine binaries are too large to commit. Their identity, sizes and hashes live in the
+# tracked public/engine/manifest.json instead (P00.7).
+public/engine/simc.js
+public/engine/simc.wasm
+public/engine/fallback/simc.js
+public/engine/fallback/simc.wasm
+public/engine/versions/
+
+# Generated catalogs (npm run catalog:build). Same treatment as the engine binaries: the data
+# is a deterministic build artifact of the pinned checkout, so it is not source — but each
+# catalog's manifest IS tracked, because it carries the identity and hashes a release has to
+# pin against, and a manifest is a few kB.
+public/catalogs/*/*
+!public/catalogs/*/manifest.json
+
+# Local development secrets for the Blizzard game-data proxy. `.dev.vars` is the conventional
+# convention and `wrangler pages dev` reads it automatically. A credential never belongs in
+# source, in a VITE_ variable (those are inlined into the client bundle), or in a release.
+.dev.vars
+.dev.vars.*
+.env
+.env.*
+!.env.example
+
+# Private character data (P00.6). `simc_output` is a real addon export containing a
+# character name, realm and region. It never gets committed, never lands in dist/, and
+# never becomes a fixture. Sanitized fixtures live in tests/fixtures/ and ARE tracked.
+simc_output
+*.private.simc
+fixtures/private/
+
+# Locally assembled releases (scripts/package-release.mjs). Large, reproducible, not source.
+release/
+
+# Local credentials. Never package, publish, or expose through VITE_* variables.
+
+# Deploy staging tree and the bundled API server. Both are build outputs of
+# scripts/deploy-vps.sh; .deploy-stage alone is ~446 MB.
+.deploy-stage/
+dist-server/

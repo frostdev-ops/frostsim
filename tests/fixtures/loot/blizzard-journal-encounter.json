@@ -1,0 +1,11 @@
+{
+  "_note": "Shape of a /data/wow/journal-encounter/{id} response, reduced to the fields the adapter reads. Hand-built from the documented endpoint structure; NOT a live capture, because no credential exists. Replace with a real capture once the API is configured.",
+  "id": 2599,
+  "name": "Example Boss",
+  "instance": { "key": { "href": "..." }, "name": "Example Raid", "id": 1273 },
+  "items": [
+    { "id": 10001, "item": { "key": { "href": "..." }, "name": "Example Helm", "id": 271564 } },
+    { "id": 10002, "item": { "key": { "href": "..." }, "name": "Example Ring", "id": 251136 } },
+    { "id": 10003, "item": { "key": { "href": "..." }, "name": "Duplicate Ring", "id": 251136 } }
+  ]
+}

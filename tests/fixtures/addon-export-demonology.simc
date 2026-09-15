@@ -1,0 +1,152 @@
+# Sanitized fixture. Character name and realm replaced by
+# scripts/sanitize-export.mjs. Item, talent and currency data is unchanged game data.
+# Testchar - Demonology - 2026-09-13 23:05 - US/testrealm
+# SimC Addon 12.1.0-03
+# WoW 12.1.0.69814, TOC 120100
+# Requires SimulationCraft 1000-01 or newer
+
+warlock=Testchar
+level=90
+race=dracthyr
+region=us
+server=testrealm
+role=spell
+professions=herbalism=1/engineering=29
+spec=demonology
+# loot_spec=demonology
+
+talents=CoQAMrNP5kak+EBqLfUa3dMm+yMmZGNbMz2MzYWGAAAAAAAwYGDLwAbjWohFjZGLz2MzMmBAmZMzMmZAGzYGbAAgxMzMGGWmxAGA
+
+# Saved Loadout: M+
+# talents=CoQAMrNP5kak+EBqLfUa3dMm+yMMzMmNzMbzMjZZAAAAAAAYbZGzMDLGGmZbYBzYxYmxysNzMjZAgZGjZmZGMzMmxM2AAAjZmZMMsMjBMA
+# Saved Loadout: Raider.IO Build
+# talents=CoQAMrNP5kak+EBqLfUa3dMm+yMmZGmNmZbmZMLDAAAAAAAYMjhFYgthFMsYMzYZ2mZmxMAwMjZmxMDwYGzYDAAMmZmxwwyMGwA
+# Saved Loadout: ST
+# talents=CoQAMrNP5kak+EBqLfUa3dMm+yMzMzwsxwMzYWGAAAAAAAwYGDLwAbDLYYxYMzysMzMjZAgZGzMzMzAYmxMDAAwYmZmZYwMGwA
+# Saved Loadout: Siz
+# talents=CoQAMrNP5kak+EBqLfUa3dMm+yMzMzwsxwMzYWGAAAAAAAwYGDLwAbDLYYxYmxysMzMjZAgZGzMjZGAzMmZAAAGzMzMDDLzYAD
+
+omnium_talents=136821:1/136817:1/136819:1/136822:1
+
+# Skull of the Damned Necrolyte (328)
+head=,id=271546,enchant_id=8017,bonus_id=13334/6652/13696/13692/13698/12852,redirected_base_stats=268242
+# Yoke of the Charging Bear (315)
+neck=,id=251173,gem_id=240906,bonus_id=13440/6652/13668/12699/12844,content_tuning=1279
+# Spires of the Damned Necrolyte (334)
+shoulder=,id=271544,enchant_id=8001,bonus_id=41/13440/13694/13697/12854,redirected_base_stats=239031
+# Speakeasy Shroud (311)
+back=,id=251132,bonus_id=12843/13440/6652/13662/12699,content_tuning=1279
+# Summoner's Searing Shirt (315)
+chest=,id=251139,enchant_id=7987,bonus_id=13440/41/13662/12699/12844,content_tuning=1279
+# Loamm Niffen Tabard (1)
+tabard=,id=205286,content_tuning=2424
+# Martyr's Bindings (331)
+wrist=,id=239648,bonus_id=12214/13667/12497/13751/14001/8960/12384/8790/13836/13696,content_tuning=3615,crafted_stats=32/40,crafting_quality=5
+# Damned Necrolyte's Charred Grasps (315)
+hands=,id=271547,bonus_id=13334/13691/6652/13697/12844,content_tuning=1040
+# Conductive Cord (315)
+waist=,id=156268,bonus_id=8902/7756/13696/13662/12699/12844,content_tuning=440
+# Damned Necrolyte's Leg Bindings (321)
+legs=,id=271545,enchant_id=7935,bonus_id=6652/13440/13693/13698/12846,redirected_base_stats=273786
+# Sandswept Sandals (315)
+feet=,id=159259,enchant_id=7963,bonus_id=13440/6652/13662/12699/12844,content_tuning=1279
+# Signet of Snarling Servitude (311)
+finger1=,id=251136,enchant_id=7967,gem_id=240983,bonus_id=12843/13440/42/13668/12699,content_tuning=1279
+# Band of the Amani Warlord (311)
+finger2=,id=273792,enchant_id=7967,gem_id=240906,bonus_id=12843/13440/6652/13668/12699,content_tuning=1279
+# Vile Vial of Volatile Venom (321)
+trinket1=,id=273796,bonus_id=13440/6652/12699/12846,content_tuning=1279
+# Gebbo's Bottomless Bag (334)
+trinket2=,id=270164,bonus_id=6652/13334/12854
+# Polished Lightwood Channeler (321)
+main_hand=,id=273778,enchant_id=8039,bonus_id=13440/6652/12701/12846,content_tuning=1279
+# Aln'hara Lantern (331)
+off_hand=,id=245769,bonus_id=12214/13667/12497/13751/14001/12693/8960/8790/13836,content_tuning=3615,crafted_stats=32/40,crafting_quality=5
+
+### Gear from Bags
+#
+# Overseer's Diadem (318)
+# head=,id=251232,enchant_id=8017,gem_id=240906,bonus_id=13440/6652/13695/13662/12699/12845,content_tuning=1279
+#
+# Worldroot Canopy (311)
+# head=,id=251199,bonus_id=12843/13440/6652/13696/13662/12699,content_tuning=1279
+#
+# Graft of the Domanaar (311)
+# neck=,id=251234,gem_id=240890,bonus_id=12843/13440/6652/13668/12699,content_tuning=1279
+#
+# Strand of Warding Fangs (311)
+# neck=,id=273781,bonus_id=12843/13440/6652/13668/12699,content_tuning=1279
+#
+# Spires of the Damned Necrolyte (308)
+# shoulder=,id=271544,bonus_id=12842/13334/13694/6652/13697,content_tuning=1040
+#
+# White Tuxedo Shirt (1)
+# shirt=,id=6833,content_tuning=390
+#
+# Bindings of the Slithering Current (308)
+# wrist=,id=159263,bonus_id=12842/13440/6652/13696/13662/12699,content_tuning=1279
+#
+# Winter's Embrace Bracers (311)
+# wrist=,id=251154,bonus_id=12843/13440/6652/13696/13662/12699,content_tuning=1279
+#
+# Counterfeit Clutches (311)
+# hands=,id=251129,bonus_id=12843/13440/6652/13662/12699,content_tuning=1279
+#
+# Cincture of the Abyssal Grotto (305)
+# waist=,id=268232,bonus_id=6652/13696/13662/13334/12841
+#
+# Ouroborial Sash (311)
+# waist=,id=159255,bonus_id=12843/13440/6652/13696/13662/12699,content_tuning=1279
+#
+# Forest Dream Leg-guards (311)
+# legs=,id=251160,bonus_id=12843/13440/6652/13662/12699,content_tuning=1279
+#
+# Jade Ophidian Band (311)
+# finger1=,id=162544,bonus_id=13440/6652/13668/12699/12843,content_tuning=1279
+#
+# Pilfered Precious Band (311)
+# finger1=,id=251148,bonus_id=12843/13440/6652/13668/12699,content_tuning=1279
+#
+# Cyrce's Circlet (103)
+# finger1=,id=228411,enchant_id=7340,gem_id=228638/228639/228640,bonus_id=12028/1511
+#
+# Signet of Snarling Servitude (311)
+# finger1=,id=251136,bonus_id=12843/13440/6652/13668/12699,content_tuning=1279
+#
+# Spirit-Rending Poison (266)
+# trinket1=,id=274497,bonus_id=12817/6652/11215,content_tuning=6020
+#
+# Sapling of the Dawnroot (321)
+# trinket1=,id=250259,bonus_id=13440/6652/12699/12846,content_tuning=1279
+#
+# Stormbound Emblem of Dazar (311)
+# trinket1=,id=273649,bonus_id=12843/13440/6652/12699,content_tuning=1279
+#
+# Nibbles' Training Rod (321)
+# main_hand=,id=251123,enchant_id=8039,bonus_id=13440/6652/12701/12846,content_tuning=1279
+#
+# Nibbles' Training Rod (311)
+# main_hand=,id=251123,bonus_id=12843/13440/6652/12701,content_tuning=1279
+#
+# Gilded Serpent's Tooth (311)
+# main_hand=,id=159137,bonus_id=12843/13440/6652/12701,content_tuning=1279
+#
+# Kokia's Burnout Rod (311)
+# off_hand=,id=193766,bonus_id=12843/13440/6652/12699,content_tuning=1279
+#
+# Nocuous Focal Fang (311)
+# off_hand=,id=273779,bonus_id=12843/13440/6652/12699,content_tuning=1279
+
+### Additional Character Info
+#
+# catalyst_currencies=2813:8/3269:8/3116:8/3378:8/3465:2
+#
+# upgrade_currencies=c:2122:2/c:3442:39/c:3443:103/c:1813:32010/c:3444:50/i:204682:1/i:274476:2/i:232875:11
+#
+# slot_high_watermarks=0:328:328/1:315:315/2:334:334/3:315:315/4:315:315/5:321:321/6:315:315/7:331:331/8:315:315/9:311:311/10:321:321/11:311:311/12:321:321/13:321:321/14:0:298/15:0:295/16:331:331
+#
+# upgrade_achievements=19326/19397/19398/19577/19578/19579/40107/40115/40118/40942/40943/40944/40945/41886/41887/41888/41892/42767/42768/42769/42770/61809/62410/62411/62412
+#
+# bonus_roll_currencies=3418:0/3511:0
+
+# Checksum: af74612
