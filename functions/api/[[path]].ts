@@ -167,18 +167,14 @@ async function handleTooltip(
   const bn = clientFor(credentials, env);
 
   const build = async (id: number): Promise<ItemTooltip> => {
-    const [itemBody, mediaBody] = await Promise.all([
-      bn.get<unknown>(`/data/wow/item/${id}`, region, locale),
-      bn.get<unknown>(`/data/wow/media/item/${id}`, region, null).catch(() => null),
-    ]);
-    const media = mediaBody === null ? null : parseMedia(mediaBody, id);
-    // Icon from own origin; no Blizzard host in page, no cross-origin request.
-    const iconUrl = media?.status === 'ok' ? proxiedIconUrl(id, region) : null;
+    const itemBody = await bn.get<unknown>(`/data/wow/item/${id}`, region, locale);
+    // Image endpoint resolves availability independently; tooltip text must not wait for art.
+    const iconUrl = proxiedIconUrl(id, region);
     // Source null: loot membership needs loot adapter configured; endpoint has no catalog access.
     const setId = parseSet(itemBody)?.id;
     const setBody = setId && Number.isSafeInteger(setId) && setId > 0
       ? await bn.get<unknown>(`/data/wow/item-set/${setId}`, region, locale).catch(() => null) : null;
-    return buildTooltip(itemBody, id, media, null, iconUrl, setBody);
+    return buildTooltip(itemBody, id, null, null, iconUrl, setBody);
   };
 
   if (idSegment === undefined) {

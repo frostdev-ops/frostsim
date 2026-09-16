@@ -216,14 +216,13 @@ self.addEventListener('fetch', (event) => {
   if (request.method !== 'GET') return
   const url = new URL(request.url)
   if (url.origin !== self.location.origin) return
+  // API requests use the browser network path without waiting for the shell cache.
+  if (url.pathname.startsWith('/api/')) return
 
   event.respondWith(
     (async () => {
       const { name } = await resolveCacheName()
       const cache = await caches.open(name)
-
-      // API responses belong in separate persistent cache (icon loader owns TTL enforcement).
-      if (url.pathname.startsWith('/api/')) return fetch(request)
 
       // Version index moves; engine directories are immutable.
       if (url.pathname === '/engine-versions.json') {

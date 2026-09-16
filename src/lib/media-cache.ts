@@ -3,6 +3,7 @@ const MEDIA_CACHE = 'frostsim-media-v1'
 export const EXPIRY = 'x-frostsim-media-expires'
 const MAX_ENTRIES = 2000
 const persistent = typeof caches === 'undefined' ? Promise.resolve(null) : caches.open(MEDIA_CACHE).catch(() => null)
+let pruning: Promise<void> | undefined
 
 export function mediaExpiry(response: Response): number {
   const control = response.headers.get('cache-control') ?? ''
@@ -31,9 +32,14 @@ export async function saveMedia(url: string, response: Response, expiry: number)
     const headers = new Headers(response.headers)
     headers.set(EXPIRY, String(expiry))
     await disk.put(url, new Response(response.body, { headers }))
-    // ponytail: FIFO capped at 2,000 media entries (each <=1 MiB); byte LRU if needed.
-    const keys = await disk.keys()
-    for (const key of keys.slice(0, Math.max(0, keys.length - MAX_ENTRIES))) await disk.delete(key)
+    // Coalesce bursts into one scan; writes during pruning get the following pass.
+    const previous = pruning
+    if (previous) await previous
+    if (!pruning) pruning = (async () => {
+      const keys = await disk.keys()
+      for (const key of keys.slice(0, Math.max(0, keys.length - MAX_ENTRIES))) await disk.delete(key)
+    })().finally(() => { pruning = undefined })
+    await pruning
   } catch { /* Full cache OK; don't break loaded icon. */ }
 }
 
@@ -59,6 +65,6 @@ export async function fetchCharacterMedia(url: string): Promise<Response> {
   const result = new Response(new Blob(chunks as BlobPart[]), { headers: response.headers })
   const body = await result.clone().json()
   const expiry = typeof body?.expiresAt === 'string' ? Math.min(mediaExpiry(response), Date.parse(body.expiresAt)) : mediaExpiry(response)
-  await saveMedia(url, result.clone(), expiry)
+  void saveMedia(url, result.clone(), expiry)
   return result
 }
