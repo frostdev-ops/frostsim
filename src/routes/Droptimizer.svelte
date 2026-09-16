@@ -26,6 +26,8 @@
   import { sendItems } from '../lib/handoff.svelte'
   import { dropSettings } from '../lib/settings.svelte'
   import { MAX_ITEM_LEVEL, upgradeSeason, upgradeTracks, withUpgradeRank } from '../lib/catalog/upgrades'
+  import { atRaidDifficulty, hasRaidRewards, raidDifficulties, raidRewardLabel, raidRewardReferences, type RaidDifficulty } from '../lib/catalog/raidRewards'
+  import { serializeItem } from '../lib/catalog/serialize'
   import { display } from '../lib/items'
   import { fmtDelta, fmtDeltaPct, fmtInt, fmtSeconds } from '../lib/format'
   import { estimateSearchSeconds, type SearchTiming } from '../lib/estimate'
@@ -86,7 +88,10 @@
   let chosenInstances = $state<Record<string, string[]>>({})
   /** When result exists, setup collapses; this reopens it. */
   let setupOpen = $state(false)
-  /** Loot table says WHICH item, not item level; difficulty/reward track are bonus ids; user must specify evaluation level. */
+  let rewardMode = $state<'raid' | 'custom'>('raid')
+  let raidDifficulty = $state<RaidDifficulty>('heroic')
+  let maxRaidUpgrade = $state(false)
+  /** Custom scenarios remain available for sources without verified reward mappings. */
   let sourceItemLevel = $state<number | null>(null)
   let sourceTrackId = $state<number | null>(null)
   let sourceRank = $state(1)
@@ -100,6 +105,7 @@
   }
 
   function evaluatedSource(source: DropSource): DropSource {
+    if (useRaidRewards) return atRaidDifficulty(source, selectedSources.find(loot => loot.id === source.id)!, app.catalogManifest?.engine.clientDataVersion, raidDifficulty, maxRaidUpgrade)
     if (sourceTrackId !== null && sourceTrack) return {
       ...source, hypothetical: true,
       label: `${source.label} (${sourceTrack.label} ${sourceRank}/${sourceTrack.max})`,
@@ -189,6 +195,9 @@
   const selectedSources = $derived<LootSource[]>(
     selectedInstances.flatMap(t => t.bosses.filter(b => chosenInstances[t.key].includes(b.id))),
   )
+  const raidAvailable = $derived(selectedSources.length > 0 && selectedSources.every(source => hasRaidRewards(source, app.catalogManifest?.engine.clientDataVersion)))
+  const useRaidRewards = $derived(rewardMode === 'raid' && raidAvailable)
+  const rewardReady = $derived(useRaidRewards || (!!sourceItemLevel && sourceItemLevel <= MAX_ITEM_LEVEL))
   function pickInstance(key: string): void {
     if (chosenInstances[key]) {
       const next = { ...chosenInstances }
@@ -206,13 +215,14 @@
   }
   /** Selected sources' items for preview. */
   const previewItems = $derived.by(() => {
-    const seen = new Set<number>()
+    const seen = new Set<string>()
     const out: ItemInstance[] = []
     for (const s of selectedSources) {
       const source = dropSourceFor(s)
       for (const item of source ? evaluatedSource(source).items : []) {
-        if (seen.has(item.itemId)) continue
-        seen.add(item.itemId)
+        const key = serializeItem(item)
+        if (seen.has(key)) continue
+        seen.add(key)
         // Catalog instance lacks parser's provenance fields (line number, option order); display never reads them.
         out.push(item as ItemInstance)
       }
@@ -266,9 +276,9 @@
   }
 
   const canRun = $derived(
-    !!selectedSources.length && !!sourceItemLevel && sourceItemLevel <= MAX_ITEM_LEVEL,
+    !!selectedSources.length && rewardReady,
   )
-  const needsLevel = $derived(!busy && app.catalogState === 'ready' && !!selectedSources.length && !sourceItemLevel)
+  const needsLevel = $derived(!busy && app.catalogState === 'ready' && !!selectedSources.length && !rewardReady)
   const needsSource = $derived(!busy && app.catalogState === 'ready' && !selectedSources.length)
   const nextStep = $derived(needsLevel ? 'Set the loot item level' : needsSource ? 'Choose dungeons or raids' : '')
   function focusNextStep(): void {
@@ -282,11 +292,11 @@
   $effect(() => {
     const client = catalogClient()
     const selected = selectedSources.map(dropSourceFor).filter((s): s is DropSource => !!s).map(evaluatedSource)
-    const itemLevel = sourceItemLevel
+    const ready = rewardReady
     const options = character ? { ...planOptions(character, [...baselineGear.entries()]), plan: searchPlan, allEligibleSlots: allSlots } : null
     plannedCount = null
     planningError = ''
-    if (!client || !options || !selected.length || !itemLevel) return
+    if (!client || !options || !selected.length || !ready) return
     let cancelled = false
     const timer = setTimeout(() => {
       client.planDroptimizer(selected, options)
@@ -352,7 +362,7 @@
     engineLog = []
 
     const sources: DropSource[] = []
-    if (selectedSources.length && sourceItemLevel) {
+    if (selectedSources.length && rewardReady) {
       const skipped: string[] = []
       for (const s of selectedSources) {
         const converted = dropSourceFor(s)
@@ -456,7 +466,7 @@
         tool: 'droptimizer',
         title: app.job.title,
         completion: r.incomplete ? 'partial' : 'complete',
-        requestSnapshot: { sources: selectedSources.map(s => s.id), itemLevel: sourceItemLevel, trackId: sourceTrackId, rank: sourceTrackId ? sourceRank : undefined, allEligibleSlots: allSlots, settings: dropSettings.snapshot() },
+        requestSnapshot: { sources: selectedSources.map(s => s.id), raidDifficulty: useRaidRewards ? raidDifficulty : undefined, maxRaidUpgrade: useRaidRewards ? maxRaidUpgrade : undefined, itemLevel: useRaidRewards ? undefined : sourceItemLevel, trackId: useRaidRewards ? undefined : sourceTrackId, rank: !useRaidRewards && sourceTrackId ? sourceRank : undefined, allEligibleSlots: allSlots, settings: dropSettings.snapshot() },
         summary: {
           dps: r.baseline?.mean,
           searchTiming: liveTiming ?? undefined,
@@ -602,7 +612,7 @@
             {stored?.label ?? character.name}
             {#if selectedInstances.length}
               · {selectedInstances.length} sources · {selectedSources.length} bosses
-              {#if sourceItemLevel}· item level {sourceItemLevel}{/if}
+              {#if useRaidRewards}· {raidDifficulties[raidDifficulty]} · {maxRaidUpgrade ? 'fully upgraded' : 'as dropped'}{:else if sourceItemLevel}· item level {sourceItemLevel}{/if}
             {/if}
             · {dropSettings.fightStyle} · {dropSettings.targets}T · {dropSettings.maxTime}s
           </p>
@@ -741,6 +751,7 @@
                     <label class="check small">
                       <input type="checkbox" checked={chosenInstances[instance.key].includes(boss.id)} onchange={() => toggleBoss(instance.key, boss.id)} />
                       {boss.name}
+                      {#if useRaidRewards}<span class="xs muted">{raidRewardLabel(boss, raidDifficulty, maxRaidUpgrade)}</span>{/if}
                     </label>
                   {/each}
                   <button class="ghost sm" onclick={() => chosenInstances = { ...chosenInstances, [instance.key]: instance.bosses.map(b => b.id) }}>All bosses</button>
@@ -749,6 +760,11 @@
               </details>
             {/each}
             <div class="spread">
+              <label class="field inline"><span>Loot levels</span><select value={useRaidRewards ? 'raid' : 'custom'} onchange={e => rewardMode = e.currentTarget.value as 'raid' | 'custom'}><option value="raid" disabled={!raidAvailable}>Raid boss rewards</option><option value="custom">Custom track / item level</option></select></label>
+              {#if useRaidRewards}
+                <label class="field inline"><span>Raid difficulty</span><select bind:value={raidDifficulty}>{#each Object.entries(raidDifficulties) as [value, label]}<option {value}>{label}</option>{/each}</select></label>
+                <label class="check small"><input type="checkbox" bind:checked={maxRaidUpgrade} />Upgrade to max in track</label>
+              {:else}
               <label class="field inline"><span>Upgrade track</span><select title={upgradeSeason.name} value={sourceTrackId ?? ''} onchange={(e) => chooseRewardTrack(e.currentTarget.value ? Number(e.currentTarget.value) : null)}><option value="">Custom item level</option>{#each upgradeTracks as track (track.id)}<option value={track.id}>{track.label}</option>{/each}</select></label>
               {#if sourceTrack}<label class="field inline"><span>Upgrade rank</span><select value={sourceRank} onchange={(e) => chooseRewardTrack(sourceTrack!.id, Number(e.currentTarget.value))}>{#each sourceTrack.ranks.filter((rank) => !rank.extended) as rank}<option value={rank.rank}>{rank.rank}/{sourceTrack.max} · ilvl {rank.itemLevel}</option>{/each}</select></label>{/if}
               <label class="field inline">
@@ -758,18 +774,19 @@
                   type="number" min="1" max={MAX_ITEM_LEVEL} step="1" readonly={!!sourceTrack} value={sourceItemLevel ?? ''} placeholder="e.g. 311"
                   oninput={e => { const n = e.currentTarget.valueAsNumber; sourceItemLevel = Number.isInteger(n) && n > 0 && n <= MAX_ITEM_LEVEL ? n : null }} />
               </label>
+              {/if}
               <label class="check small" title="Try rings, trinkets and weapons in every eligible slot.">
                 <input type="checkbox" bind:checked={allSlots} />Try every eligible slot
               </label>
             </div>
-            <p id="drop-level-help" class="xs muted">Applies to all selected loot sources. Track choices simulate that acquisition and upgrade rank; custom levels are hypothetical and do not guarantee obtainable gear.</p>
+            <p id="drop-level-help" class="xs muted">{#if useRaidRewards}Uses each boss’s drop level and track. Mythic final-boss and Very Rare drops stay at 344, including when upgraded. <a href={raidRewardReferences[0]} target="_blank" rel="noreferrer">Reward details</a>.{:else}Custom levels apply to all selected sources and may not be obtainable.{#if !raidAvailable} Automatic raid rewards require a supported raid selection.{/if}{/if}</p>
             {#if previewItems.length}
               <details class="disclosure">
                 <summary>Preview loot · {fmtInt(previewItems.length)} items</summary>
                 <div class="drops">
                   {#each previewItems as item (item.instanceId)}
                     {@const shown = display(item, previewResolved)}
-                    <ItemLink itemId={item.itemId} name={shown.name} resolved={shown.resolved}><ItemIcon itemId={item.itemId} quality={shown.resolved?.quality} size={40} alt={shown.name} /></ItemLink>
+                    <ItemLink itemId={item.itemId} name={shown.name} resolved={shown.resolved}><ItemIcon itemId={item.itemId} quality={shown.resolved?.quality} size={40} alt={shown.name} />{#if shown.resolved}<span class="xs">{shown.resolved.itemLevel}</span>{/if}</ItemLink>
                   {/each}
                 </div>
               </details>
@@ -837,8 +854,8 @@
             <h2 class="small">
               Upgrades <span class="chip">{fmtInt(rows.length)}</span>
               {#if allHypothetical}
-                <span class="chip warn" title="Potential drops evaluated at the item level you set.">
-                  hypothetical{#if sourceItemLevel} · item level {sourceItemLevel}{/if}
+                <span class="chip warn" title="Potential drops at the item levels used in this simulation.">
+                  hypothetical · item levels {[...new Set(scenarios.map(scenario => scenario.item.itemLevel))].sort((a, b) => a - b).join(', ')}
                 </span>
               {/if}
             </h2>

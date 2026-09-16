@@ -3,6 +3,10 @@ import { describe, expect, it } from 'vitest';
 import { Catalog } from './catalog';
 import { serializeItem } from './serialize';
 import { itemUpgradeTrack, upgradeTracks, withItemLevel, withMaxUpgrade, withUpgradeRank } from './upgrades';
+import { atRaidDifficulty, hasRaidRewards, raidDifficulties } from './raidRewards';
+import raidRewards from './generated/raid-rewards.json';
+import type { LootSource } from './types';
+import { sourceAvailability, buildScenarios } from '../optimization/droptimizer';
 import type { ItemInstance } from './types';
 import { artifactGate } from '../../../tests/artifact-gate.js';
 
@@ -19,6 +23,49 @@ const item: ItemInstance = { instanceId: 'vault-reward', source: 'vault', vaultR
   itemId: 268807, slot: 'head', bonusIds: [12841], gemIds: [], enchantId: 0 };
 
 describe.skipIf(gate)('engine-pinned upgrade identities' + gate, () => {
+  it('resolves boss-specific raid drops and keeps restricted Myth drops through max upgrades and planning', () => {
+    const loot = { schemaVersion: 1, generatedAt: '', expiresAt: null, provenance: [], warnings: [],
+      season: { id: raidRewards.seasonId, name: 'Midnight Season 2' },
+      sources: raidRewards.rewards.map(reward => ({ id: reward.id, name: reward.name, instanceId: reward.instanceId,
+        kind: 'raid' as const, seasonId: raidRewards.seasonId, provider: 'blizzard-journal',
+        itemIds: [...Object.keys(reward.byDifficulty.heroic).map(Number), ...reward.ignoredItemIds] })) };
+    catalog.registerLoot(loot);
+    const sources = sourceAvailability(catalog).available;
+    const mythicLevels: number[] = [];
+    for (const [index, reward] of raidRewards.rewards.entries()) {
+      const source = sources.find(source => source.id === reward.id)!;
+      const original = JSON.stringify(source);
+      const metadata = loot.sources.find((source: LootSource) => source.id === reward.id)!;
+      expect(hasRaidRewards(metadata, raidRewards.build)).toBe(true);
+      for (const difficulty of Object.keys(raidDifficulties) as (keyof typeof raidDifficulties)[]) {
+        const dropped = atRaidDifficulty(source, metadata, raidRewards.build, difficulty);
+        const maxed = atRaidDifficulty(source, metadata, raidRewards.build, difficulty, true);
+        expect(dropped.items.length).toBeGreaterThan(0);
+        for (const [i, drop] of dropped.items.entries()) {
+          const known = itemUpgradeTrack(drop)!;
+          expect(known.rank.rank).toBe(difficulty === 'mythic' && index >= 6 ? 9 : [1, 2, 2, 3, 3, 3, 4, 4][index]);
+          expect(known.track.label).toBe({ lfr: 'Veteran', normal: 'Champion', heroic: 'Hero', mythic: 'Myth' }[difficulty]);
+          expect(catalog.resolve(drop)?.itemLevel).toBe(known.rank.itemLevel);
+          expect(serializeItem(drop)).toContain(`bonus_id=${known.rank.bonusId}`);
+          expect(serializeItem(drop)).not.toContain('ilevel=');
+          expect(catalog.resolve(maxed.items[i])?.itemLevel).toBeGreaterThanOrEqual(known.rank.itemLevel);
+          expect(itemUpgradeTrack(maxed.items[i])?.rank.rank).toBe(index >= 6 && difficulty === 'mythic' ? 9 : 6);
+        }
+        if (difficulty === 'mythic') mythicLevels.push(catalog.resolve(dropped.items[0])!.itemLevel);
+      }
+      expect(JSON.stringify(source)).toBe(original);
+    }
+    expect(mythicLevels).toEqual([318, 321, 321, 324, 324, 324, 344, 344]);
+    const source = sources.find(source => source.id === raidRewards.rewards[6].id)!;
+    const metadata: LootSource = loot.sources.find((entry: LootSource) => entry.id === source.id)!;
+    expect(hasRaidRewards({ ...metadata, seasonId: 999 }, raidRewards.build)).toBe(false);
+    expect(hasRaidRewards(metadata, 'future-build')).toBe(false);
+    expect(hasRaidRewards({ ...metadata, itemIds: [...metadata.itemIds, 1] }, raidRewards.build)).toBe(false);
+    const dropped = atRaidDifficulty(source, metadata, raidRewards.build, 'mythic', true);
+    const plan = buildScenarios([dropped], { catalog, character: { classId: 8, raceMaskBit: null, armorSubclass: 1, canDualWield: false, canTitansGrip: false }, baselineGear: new Map(), playerLevel: 90 });
+    expect(plan.scenarios.length).toBeGreaterThan(0);
+    expect(plan.scenarios.every(scenario => scenario.item.itemLevel === 344)).toBe(true);
+  });
   it('maxes each track without changing originals, duplicating max variants or lowering restricted drops', () => {
     const base = catalog.search({ slot: 'head', minQuality: 4, limit: 1 })[0];
     for (const track of upgradeTracks) {
