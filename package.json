@@ -22,7 +22,7 @@
     "catalog:build": "node scripts/catalog/build-catalogs.mjs",
     "engine:smoke": "./scripts/engine-smoke.sh",
     "data:power-infusion": "python3 scripts/generate_power_infusion.py",
-    "test:data": "python3 -m unittest scripts/test_generate_power_infusion.py",
+    "test:data": "python3 -m unittest scripts/test_generate_power_infusion.py scripts/test_merge_power_infusion.py",
     "engine:bench": "node scripts/engine-bench.mjs",
     "release:package": "node scripts/package-release.mjs",
     "engine:candidate": "node scripts/engine-candidate.mjs",

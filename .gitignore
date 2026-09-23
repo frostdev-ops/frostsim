@@ -50,3 +50,6 @@ dist-server/
 
 # Operator-authored website policies: deployed locally, never public repository content.
 /public/legal/
+
+# Power Infusion runs from each machine (--out pi-runs/<machine>/...); merged by scripts/merge_power_infusion.py.
+/pi-runs/

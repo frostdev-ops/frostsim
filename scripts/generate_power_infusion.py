@@ -814,7 +814,7 @@ def main() -> None:
         'targetError': opts.target_error,
     }
     detail_dir = out.parent / DETAIL
-    detail_dir.mkdir(exist_ok=True)
+    detail_dir.mkdir(parents=True, exist_ok=True)
     detail_path = lambda spec: detail_dir / f"{DETAIL}-{spec['profile']}.json"
 
     def current(path: Path) -> dict | None:
@@ -822,6 +822,9 @@ def main() -> None:
         return prev if prev is not None and all(prev.get(k) == meta[k] for k in meta) else None
 
     prev = current(out)
+    if prev and prev.get('merged'):
+        sys.exit(f'{out} is a merge of several runs (scripts/merge_power_infusion.py). Write new runs\n'
+                 'somewhere else, e.g. --out pi-runs/<machine>/power-infusion.json, and merge them in.')
     # Old chart rows stay until replaced, so the bundled file is never partial mid-run.
     done = {s['name']: s for s in prev['specs']} if prev else {}
     lock_out = threading.Lock()
