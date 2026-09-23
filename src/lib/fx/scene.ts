@@ -103,7 +103,7 @@ float hexEdge(vec2 p) {
 void main() {
   vec2 frag = gl_FragCoord.xy;
   vec2 uv = (frag - 0.5 * uRes) / uRes.y;
-  float t = uTime * (0.035 + 0.05 * uEnergy);
+  float t = uTime * (0.035 + 0.008 * uEnergy);
 
   vec3 col = mix(uBase0, uBase1, smoothstep(-0.7, 0.8, -uv.y + 0.2));
 
@@ -118,13 +118,13 @@ void main() {
   float veil = smoothstep(-0.95, 0.65, uv.y + uScroll * 0.05);
   vec3 aurora = mix(uA0, uA2, clamp(r.x * 1.6 - 0.45, 0.0, 1.0));
   aurora = mix(aurora, uA1, clamp(q.y * 1.5 - 0.6, 0.0, 1.0));
-  float glow = band * streak * veil * (0.5 + 0.35 * uEnergy + 0.8 * uBurst) * uStrength;
+  float glow = band * streak * veil * (0.5 + 0.1 * uEnergy + 0.35 * uBurst) * uStrength;
   col += aurora * glow * (uLight > 0.5 ? 0.5 : 1.2);
 
   // Three curtains across the upper half, each in its own colour.
   vec2 cu = uv + vec2(uMouse.x * 0.03, uScroll * 0.08);
-  float ct = uTime * (0.25 + 0.3 * uEnergy);
-  float lift = 0.35 + 0.25 * uEnergy + 0.9 * uBurst;
+  float ct = uTime * (0.25 + 0.04 * uEnergy);
+  float lift = 0.35 + 0.08 * uEnergy + 0.4 * uBurst;
   vec3 curtains =
     uA0 * curtain(cu, 0.16, 2.3, 0.35, ct, 1.7) +
     uA1 * curtain(cu, 0.02, 3.1, -0.28, ct, 4.1) * 0.7 +
@@ -361,8 +361,8 @@ export function createScene(canvas: HTMLCanvasElement, initial: Palette, reduced
     mouse.lerp(target, 1 - Math.exp(-dt * 3))
     spot.lerp(spotTarget, 1 - Math.exp(-dt * 8))
     scroll += (scrollTarget - scroll) * (1 - Math.exp(-dt * 6))
-    t += dt * (1 + energy * 1.4 + burst * 2.5)
-    fall += dt * (1 + energy * 2 + burst * 6)
+    t += dt * (1 + energy * 0.15 + burst * 0.8)
+    fall += dt * (1 + energy * 0.3 + burst * 2)
     render()
     if (now - lastInput > IDLE_MS && !energyTarget && !burst) stop()
   }

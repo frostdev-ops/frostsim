@@ -49,6 +49,6 @@
     return () => clearInterval(t)
   })
 </script>
-{#if job && busy && !app.engineStopping}<RunStatus title={job.title} stage={STATUS_LABELS[job.status]} summary={configuration} statusDetail={p?.iterations ? fmtInt(p.iterations) + ' iterations' + (p.etaSeconds ? ' · ≈ ' + fmtSeconds(p.etaSeconds) + ' remaining' : '') : job.stage?.label ?? ''} {fraction} {elapsed} log={run.log} oncancel={cancelRun} />
+{#if job && busy && !app.engineStopping}<RunStatus title={job.title} stage={STATUS_LABELS[job.status]} summary={configuration} statusDetail={p?.iterations ? fmtInt(p.iterations) + ' iterations' + (p.etaSeconds ? ' · ≈ ' + fmtSeconds(p.etaSeconds) + ' remaining' : '') : job.stage?.label ?? ''} {fraction} {elapsed} log={run.log} metrics={p} oncancel={cancelRun} />
 {:else if run.error}<Banner kind={job?.status === 'cancelled' ? 'info' : 'bad'} title={run.error.message} live>{#if run.error.detail}<details><summary>Details</summary><pre>{run.error.detail}</pre></details>{/if}</Banner>{/if}
 {#if run.error && !busy && run.log.length}<details class="disclosure"><summary>SimulationCraft log</summary><SimLog lines={run.log} /></details>{/if}
