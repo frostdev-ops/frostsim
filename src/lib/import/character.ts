@@ -90,6 +90,17 @@ export interface Loadout {
   talents: string
 }
 
+/** The game allows two saved loadouts with one name; the UI keys and selects them by name, so suffix repeats. */
+export function uniqueLoadoutNames(loadouts: Loadout[]): Loadout[] {
+  const seen = new Set<string>()
+  return loadouts.map((l) => {
+    let name = l.name
+    for (let n = 2; seen.has(name); n++) name = `${l.name} (${n})`
+    seen.add(name)
+    return name === l.name ? l : { ...l, name }
+  })
+}
+
 export interface Diagnostic {
   lineNumber: number
   severity: 'error' | 'warning' | 'info'
@@ -516,7 +527,7 @@ export function parseAddonExport(text: string): ImportedCharacter {
     lootSpec: c.lootSpec,
     professions: c.professions,
     talents: c.talents,
-    loadouts,
+    loadouts: uniqueLoadoutNames(loadouts),
     omniumTalents: c.omniumTalents,
     equipped,
     bag,

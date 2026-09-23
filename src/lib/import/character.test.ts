@@ -224,3 +224,17 @@ describe('item level options', () => {
     expect(c.bag[0].instanceId).not.toBe(c.bag[1].instanceId)
   })
 })
+
+it('suffixes repeated saved loadout names so each stays selectable', () => {
+  const c = parseAddonExport([
+    'paladin=Testchar', 'spec=holy',
+    '# Saved Loadout: m+++', '# talents=AAA',
+    '# Saved Loadout: raid', '# talents=BBB',
+    '# Saved Loadout: m+++', '# talents=CCC',
+  ].join('\n'))
+  expect(c.loadouts).toEqual([
+    { name: 'm+++', talents: 'AAA' },
+    { name: 'raid', talents: 'BBB' },
+    { name: 'm+++ (2)', talents: 'CCC' },
+  ])
+})

@@ -12,7 +12,7 @@ import { characterConstraints } from './import/constraints'
 import { fetchEngineIndex, loadEngineIndex, pickEngine, type EnginePack, type EngineStatus } from './simc/versions'
 import { expert, persistDrafts } from './advanced.svelte'
 import { forgetCharacterSelections, hasGearDrafts } from './selection.svelte'
-import type { ImportedCharacter, ItemInstance } from './import/character'
+import { uniqueLoadoutNames, type ImportedCharacter, type ItemInstance } from './import/character'
 import * as db from './store/db'
 import {
   makePortable, newId, type EngineIdentity, type RawBlob, type ReportSummary,
@@ -172,7 +172,10 @@ export async function loadLibrary(): Promise<void> {
     db.all<StoredReport>('reports'),
     db.all<StoredSetup>('setups'),
   ])
-  if (chars.ok) app.characters = chars.value.sort((a, b) => b.updatedAt - a.updatedAt)
+  // Characters saved before import deduplicated loadout names.
+  if (chars.ok) app.characters = chars.value
+    .map((c) => ({ ...c, character: { ...c.character, loadouts: uniqueLoadoutNames(c.character.loadouts ?? []) } }))
+    .sort((a, b) => b.updatedAt - a.updatedAt)
   else noteFailure(chars.failure)
   if (reports.ok) app.reports = reports.value.sort((a, b) => b.createdAt - a.createdAt)
   else noteFailure(reports.failure)
