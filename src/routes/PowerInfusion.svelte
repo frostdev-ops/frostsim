@@ -5,13 +5,16 @@
   import { HOLDS, piRows, SPREADS, type PiData, type PiGain, type PiRank, type Spread } from '../lib/powerInfusion'
   import { fmtDelta, fmtDeltaPct, fmtInt, fmtPct } from '../lib/format'
   import Tip from '../lib/ui/Tip.svelte'
+  import PiMainTarget from './PiMainTarget.svelte'
   import { ArrowDown, ChevronRight, Info } from '@lucide/svelte'
   import { SvelteSet } from 'svelte/reactivity'
   import { slide } from 'svelte/transition'
   import { ms } from '../lib/theme.svelte'
 
-  const data = raw as PiData
+  const data = raw as unknown as PiData  // generated JSON; tuples infer as number[]
   const TARGETS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+  // How many independent runs each spec's numbers average (merge_power_infusion.py), for the source line.
+  const runs = [...new Set(data.specs.map((s) => s.sources ?? 1))].sort((a, b) => a - b)
   const hold = `${HOLDS * 100}%`
   const spread = `${SPREADS * 100}%`
 
@@ -138,7 +141,7 @@
               {#if r.cooldown}<Tip text={EXPLAIN.cooldown}><span class="chip warn">on cooldown</span></Tip>{/if}
               {#if r.spread && r.kept !== undefined}
                 <Tip text={EXPLAIN[r.spread]}>
-                  <span class="chip {SPREAD[r.spread].tone}">{SPREAD[r.spread].text} {pct(r.kept)}</span>
+                  <span class="chip {SPREAD[r.spread].tone}">{SPREAD[r.spread].text} · {r.spread === 'holds' ? '' : 'main keeps '}{pct(r.kept)}</span>
                 </Tip>
               {/if}
               {#if r.total.noise}<Tip text={EXPLAIN.noise}><span class="chip">within noise</span></Tip>{/if}
@@ -209,6 +212,8 @@
     </div>
   </section>
 
+  <PiMainTarget {data} {targets} onpick={(n) => (targets = n)} />
+
   <section class="panel stack-sm" aria-labelledby="pi-legend">
     <h2 id="pi-legend" class="small">Legend</h2>
     <dl class="legend">
@@ -244,8 +249,9 @@
       <dd>{EXPLAIN.toMain}</dd>
     </dl>
     <p class="xs muted">
-      The % in a rotation label is the measured share, shown from two targets on. {data.fightStyle},
-      target error {data.targetError}%, simc {data.engine.simcVersion} ({data.engine.commit.slice(0, 10)}),
+      The % in a rotation label is the main target's damage with Power Infusion as a share of its damage
+      alone, shown from two targets on. {data.fightStyle},
+      target error {data.targetError}% per run{runs.at(-1)! > 1 ? `, each spec averaged over ${runs.length > 1 ? `${runs[0]} to ${runs.at(-1)}` : runs[0]} independent runs` : ''}, simc {data.engine.simcVersion} ({data.engine.commit.slice(0, 10)}),
       WoW {data.engine.wowVersion}, generated {data.generatedAt}.
     </p>
   </section>

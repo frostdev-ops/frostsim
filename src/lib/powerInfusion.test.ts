@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { piDetailView, piRows, spreadOf, type PiData, type PiReportPlayer, type PiVariant } from './powerInfusion'
+import { mainTargetGrid, piDetailView, piRows, spreadOf, type PiData, type PiReportPlayer, type PiVariant } from './powerInfusion'
 
 const v = (dps: number, prio: number, sd = 300): PiVariant => ({ dps: [dps, sd], prio: [prio, sd] })
 
@@ -84,6 +84,19 @@ describe('piRows', () => {
   })
 })
 
+describe('mainTargetGrid', () => {
+  it('gives main-target DPS with PI at 2+ targets against single target, with funnel rows', () => {
+    const rows = mainTargetGrid(data)
+    expect(rows.map((r) => r.id)).toEqual(['Marksmanship Hunter', 'Marksmanship Hunter/funnel', 'Outlaw Rogue'])
+    expect(rows[0]).toMatchObject({ label: 'Marksmanship Hunter (funnel option off)', single: 210_000, funnel: false })
+    expect(rows[0].cells).toEqual([{ targets: 5, dps: 186_000, kept: 186_000 / 210_000 }])
+    expect(rows[1].cells[0].kept).toBeCloseTo(207_000 / 210_000)
+    // Same reference as the pills.
+    const pill = piRows(data, 5, 'total', 'dps').find((r) => r.id === 'Marksmanship Hunter/funnel')!
+    expect(rows[1].cells[0].kept).toBe(pill.kept)
+  })
+})
+
 const stat = (name: string, dps: number, extra = {}) => ({ name, spell_name: name.toUpperCase(), type: 'damage', portion_apse: { mean: dps }, ...extra })
 const player = (dps: [number, number], timeline: number[], up?: number[]): PiReportPlayer => ({
   name: 'MID2_Hunter_Beast_Mastery',
@@ -111,6 +124,11 @@ describe('piDetailView', () => {
       ['own:kill_shot', 100, 120, 20], ['own:volley', 50, 50, 0], ['pet:duck', 40, 44, 4],
     ])
     expect(v.abilities[2]).toMatchObject({ label: 'duck', pet: true })
+    // Expandable: a pet's own abilities, and an ability's secondary hits, paired the same way.
+    expect(v.abilities[2].children?.map((a) => [a.key, a.label, a.without, a.with, a.pet])).toEqual([
+      ['pet:duck/claw', 'CLAW', 40, 44, false]])
+    expect(v.abilities[1].children?.map((a) => [a.label, a.with])).toEqual([['VOLLEY_TICK', 50]])
+    expect(v.abilities[0].children).toBeUndefined()
     expect(() => piDetailView(run, true)).toThrow('No funnel detail')
   })
 })

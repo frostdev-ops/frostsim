@@ -10,6 +10,9 @@
   } from '../lib/powerInfusion'
   import { fmtDelta, fmtDeltaPct, fmtInt, fmtPct, titleCase } from '../lib/format'
   import { reducedMotion } from '../lib/theme.svelte'
+  import { ChevronRight } from '@lucide/svelte'
+  import { SvelteSet } from 'svelte/reactivity'
+  import { fade } from 'svelte/transition'
 
   let { data, spec, row, targets, units }: {
     data: PiData; spec: PiSpec; row: PiRow; targets: number; units: 'dps' | 'pct'
@@ -30,19 +33,38 @@
   }))
   const unit = (v: number) => units === 'dps' ? fmtDelta(v) : fmtDeltaPct(v)
 
+  const signedK = (n: number) => `${n >= 0 ? '+' : '−'}${k(Math.abs(n))}`
+  const sum = (xs: PiAbility[], f: (a: PiAbility) => number) => xs.reduce((s, a) => s + f(a), 0)
+
   const DONUT = 5
   const SERIES = ['var(--series-1)', 'var(--series-2)', 'var(--series-3)', 'var(--series-4)', 'var(--series-5)']
+  /** The donut's slices and the table's top rows: the five largest sources, then "Other" holding the rest. */
   function donut(abilities: PiAbility[]) {
-    const total = abilities.reduce((s, a) => s + a.with, 0)
-    const top = abilities.slice(0, DONUT).map((a, i) => ({ key: a.key, label: labelOf(a), value: a.with, color: SERIES[i] }))
-    const rest = abilities.slice(DONUT).reduce((s, a) => s + a.with, 0)
-    const slices = rest > 0 ? [...top, { key: 'other', label: `Other (${abilities.length - DONUT})`, value: rest, color: 'var(--series-other)' }] : top
-    return slices.map((s) => ({ ...s, share: total ? s.value / total : 0 }))
+    const total = sum(abilities, (a) => a.with)
+    const rest = abilities.slice(DONUT)
+    const other: PiAbility | undefined = rest.length ? {
+      key: 'other', label: `Other (${rest.length})`, pet: false, children: rest,
+      with: sum(rest, (a) => a.with), without: sum(rest, (a) => a.without), gain: sum(rest, (a) => a.gain),
+    } : undefined
+    const rows = [...abilities.slice(0, DONUT), ...(other ? [other] : [])]
+      .map((a, i) => ({ a, color: a.key === 'other' ? 'var(--series-other)' : SERIES[i] }))
+    const pets = abilities.filter((a) => a.pet)
+    return {
+      total, rows,
+      slices: rows.map(({ a, color }) => ({ key: a.key, label: labelOf(a), value: a.with, color, share: total ? a.with / total : 0 })),
+      pets: { count: pets.length, share: total ? sum(pets, (a) => a.with) / total : 0 },
+    }
   }
+  // Expanded rows of the source table: "other", and any pet or ability with its own breakdown.
+  const open = new SvelteSet<string>()
+  const toggle = (key: string) => (open.has(key) ? open.delete(key) : open.add(key))
+
   const GAINS = 8
-  function gains(abilities: PiAbility[]) {
+  let allGains = $state(false)
+  function gains(abilities: PiAbility[], all: boolean) {
     const sorted = [...abilities].sort((a, b) => b.gain - a.gain)
-    const rest = sorted.slice(GAINS)
+    const rest = all ? [] : sorted.slice(GAINS)
+    if (all) return sorted.map((a) => ({ label: labelOf(a), gain: a.gain, with: a.with, without: a.without }))
     return [
       ...sorted.slice(0, GAINS).map((a) => ({ label: labelOf(a), gain: a.gain, with: a.with, without: a.without })),
       ...(rest.length ? [{ label: `Other (${rest.length})`, gain: rest.reduce((s, a) => s + a.gain, 0), with: rest.reduce((s, a) => s + a.with, 0), without: rest.reduce((s, a) => s + a.without, 0) }] : []),
@@ -60,7 +82,7 @@
     {:else}
       {@const v = piDetailView(run, row.funnel)}
       {@const pie = donut(v.abilities)}
-      {@const bars = gains(v.abilities)}
+      {@const bars = gains(v.abilities, allGains)}
       <div class="tiles">
         <div class="tile">
           <span class="tile-label">Extra damage, all targets</span>
@@ -155,7 +177,7 @@
         </div>
       </figure>
 
-      <div class="pair">
+      <div class="stack-cards">
         <figure class="chart-card">
           <figcaption>
             <span class="chart-title">Gain from 1 to 10 targets</span>
@@ -193,11 +215,17 @@
         <figure class="chart-card">
           <figcaption>
             <span class="chart-title">Where the damage comes from, with PI</span>
+            {#if pie.pets.count}
+              <span class="muted xs">
+                Pets {share(pie.pets.share)} ({pie.pets.count}), your own spells {share(1 - pie.pets.share)}.
+                Rows with an arrow open: Other lists every remaining source, a pet lists its abilities.
+              </span>
+            {/if}
           </figcaption>
           <div class="donut-wrap">
             <div class="plot donut">
               <PieChart
-                data={pie} key="key" value="value" label="label" c="color" cRange={pie.map((p) => p.color)}
+                data={pie.slices} key="key" value="value" label="label" c="color" cRange={pie.slices.map((p) => p.color)}
                 innerRadius={-22} padAngle={0.02} cornerRadius={4} {motion}
               >
                 {#snippet tooltip()}
@@ -213,16 +241,35 @@
                 {/snippet}
               </PieChart>
             </div>
+            {#snippet source(a: PiAbility, depth: number, color?: string)}
+              <tr class="d{Math.min(depth, 3)}" in:fade={{ duration: reducedMotion() ? 0 : 140 }}>
+                <th scope="row">
+                  {#if a.children}
+                    <button
+                      type="button" class="exp" aria-expanded={open.has(a.key)}
+                      aria-label="{open.has(a.key) ? 'Hide' : 'Show'} the breakdown of {labelOf(a)}"
+                      onclick={() => toggle(a.key)}
+                    ><ChevronRight size={13} aria-hidden="true" /></button>
+                  {:else}
+                    <span class="exp"></span>
+                  {/if}
+                  {#if color}<i class="key box" style:--c={color}></i>{/if}{labelOf(a)}
+                </th>
+                <td>{share(a.with / pie.total)}</td>
+                <td class="muted">{k(a.with)}</td>
+                <td class="muted">{signedK(a.gain)}</td>
+              </tr>
+              {#if a.children && open.has(a.key)}
+                {#each a.children as c (c.key)}{@render source(c, depth + 1)}{/each}
+              {/if}
+            {/snippet}
             <table class="sources">
-              <caption class="sr-only">Damage sources with Power Infusion</caption>
+              <caption class="sr-only">Damage sources with Power Infusion; pets and Other expand</caption>
+              <thead>
+                <tr><th scope="col">Source</th><th scope="col">Share</th><th scope="col">DPS</th><th scope="col">PI adds</th></tr>
+              </thead>
               <tbody>
-                {#each pie as s (s.key)}
-                  <tr>
-                    <th scope="row"><i class="key box" style:--c={s.color}></i>{s.label}</th>
-                    <td>{share(s.share)}</td>
-                    <td class="muted">{k(s.value)}</td>
-                  </tr>
-                {/each}
+                {#each pie.rows as { a, color } (a.key)}{@render source(a, 0, color)}{/each}
               </tbody>
             </table>
           </div>
@@ -233,8 +280,13 @@
         <figcaption>
           <span class="chart-title">Where Power Infusion's extra damage came from</span>
           <span class="muted xs">DPS with PI minus without, per damage source. Pets count as one source each.</span>
+          <button type="button" class="linkish xs" onclick={() => (allGains = !allGains)}>
+            {allGains ? `Top ${GAINS} only` : `Show all ${v.abilities.length} sources`}
+          </button>
         </figcaption>
         <div class="plot" style:height="{bars.length * 28 + 28}px">
+          <!-- A new set of rows is a new chart: LayerChart's tween between different row lists keeps stale rows. Same rows, new values still animate. -->
+          {#key bars.map((b) => b.label).join('|')}
           <BarChart
             data={bars} x="gain" y="label" orientation="horizontal" {motion}
             series={[{ key: 'gain', label: 'Extra DPS', color: 'var(--series-1)' }]}
@@ -254,6 +306,7 @@
               </Tooltip.Root>
             {/snippet}
           </BarChart>
+          {/key}
         </div>
       </figure>
 
@@ -336,12 +389,32 @@
 
   .plot { height: 180px; }
   .plot.tall { height: 240px; }
-  .pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); gap: var(--s3); }
-  .donut-wrap { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: var(--s3); align-items: center; }
+  .stack-cards { display: grid; gap: var(--s3); }
+  .donut-wrap { display: grid; grid-template-columns: 180px minmax(0, 1fr); gap: var(--s4); align-items: start; }
   .plot.donut { height: 160px; }
   .sources { width: 100%; border-collapse: collapse; font-size: var(--fs-xs); }
-  .sources th { text-align: left; font-weight: 400; padding: 0.15rem 0; }
+  .sources thead th { color: var(--text-muted); font-weight: 500; text-align: right; padding: 0 0 0.3rem var(--s2); }
+  .sources thead th:first-child { text-align: left; padding-left: 0; }
+  .sources tbody th { text-align: left; font-weight: 400; padding: 0.15rem 0; }
   .sources td { text-align: right; padding: 0.15rem 0 0.15rem var(--s2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .sources tbody tr + tr { border-top: 1px solid color-mix(in oklab, var(--border) 60%, transparent); }
+  .sources .d1 th { padding-left: 1.1rem; }
+  .sources .d2 th { padding-left: 2.2rem; }
+  .sources .d3 th { padding-left: 3.3rem; }
+  .sources .d1, .sources .d2, .sources .d3 { color: var(--text-muted); }
+  .exp {
+    all: unset; display: inline-grid; place-items: center; width: 1.1rem; height: 1.1rem; margin-right: 0.2rem;
+    vertical-align: -3px; border-radius: var(--r1); cursor: pointer; color: var(--text-muted);
+  }
+  span.exp { cursor: default; }
+  button.exp:hover { background: var(--surface-3); color: var(--text); }
+  button.exp:focus-visible { box-shadow: var(--focus); }
+  .exp :global(svg) { transition: transform var(--t-panel, 200ms) var(--ease); }
+  .exp[aria-expanded='true'] :global(svg) { transform: rotate(90deg); }
+  .linkish { all: unset; cursor: pointer; color: var(--accent); margin-left: auto; }
+  .linkish:hover { text-decoration: underline; }
+  .linkish:focus-visible { box-shadow: var(--focus); border-radius: var(--r1); }
+  @media (prefers-reduced-motion: reduce) { .exp :global(svg) { transition: none; } }
 
   .table-view table { width: 100%; border-collapse: collapse; font-size: var(--fs-xs); margin-top: var(--s2); }
   .table-view th, .table-view td { padding: 0.15rem var(--s2); text-align: right; font-variant-numeric: tabular-nums; }

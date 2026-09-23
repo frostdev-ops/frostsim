@@ -1,5 +1,5 @@
 // Power Infusion value per spec from precomputed upstream-profile data (CLAUDE.md D13). Gains and margins only; no sims here.
-import { damageBreakdown, parsePlayerDetail } from './simc/detail'
+import { damageBreakdown, parsePlayerDetail, type DamageRow } from './simc/detail'
 
 /** [mean, standard error of the mean], as simc reports them. */
 export type Pair = [mean: number, sd: number]
@@ -21,6 +21,8 @@ export interface PiSpec {
   /** Actor option that switches the APL to priority-target play, if the spec has one. */
   funnel: string | null
   runs: PiRun[]
+  /** Independent runs combined by scripts/merge_power_infusion.py; absent for a single run. */
+  sources?: number
 }
 export interface PiData {
   schemaVersion: 1
@@ -121,6 +123,38 @@ export function piRows(data: PiData, targets: number, rank: PiRank, units: 'dps'
   return rows.sort((a, b) => by(b) - by(a))
 }
 
+/** One row of the main-target grid: a spec (and its funnel-on row), main-target DPS with PI by target count. */
+export interface MainTargetRow {
+  id: string
+  label: string
+  funnel: boolean
+  /** Main-target DPS with PI at one target. */
+  single: number
+  /** 2 to 10 targets: main-target DPS with PI, and that as a fraction of single target. */
+  cells: { targets: number; dps: number; kept: number }[]
+}
+
+/**
+ * How extra targets change the damage the main target takes, with Power Infusion: above 1, the
+ * rotation's cleave feeds its single-target damage; below 1, damage moves to the other targets.
+ * Same reference as PiRow.kept (the single-target run with PI), and the same row ids and labels.
+ */
+export function mainTargetGrid(data: PiData): MainTargetRow[] {
+  return data.specs.flatMap((s) => {
+    const single = s.runs.find((r) => r.targets === 1)?.pi.prio[0]
+    if (!single) return []
+    const grid = (variant: 'pi' | 'funnelPi') => s.runs.flatMap((r) => {
+      const v = r[variant]
+      return r.targets > 1 && v ? [{ targets: r.targets, dps: v.prio[0], kept: v.prio[0] / single }] : []
+    })
+    if (!s.funnel) return [{ id: s.name, label: s.name, funnel: false, single, cells: grid('pi') }]
+    return [
+      { id: s.name, label: `${s.name} (funnel option off)`, funnel: false, single, cells: grid('pi') },
+      { id: `${s.name}/funnel`, label: `${s.name} (funnel option on)`, funnel: true, single, cells: grid('funnelPi') },
+    ]
+  })
+}
+
 /** One variant's report, trimmed by scripts/generate_power_infusion.py to what detail.ts reads. */
 export interface PiReportPlayer {
   name: string
@@ -164,6 +198,8 @@ export interface PiAbility {
   without: number
   with: number
   gain: number
+  /** A pet's abilities, or an ability's secondary hits (dots, cleaves): already inside the parent's numbers. */
+  children?: PiAbility[]
 }
 export interface PiDetailView {
   timeline: PiSecond[]
@@ -189,12 +225,35 @@ function windows(up: number[] | undefined): [number, number][] {
 
 const buff = (p: PiReportPlayer, name: string) => p.buffs.find((b) => b.name === name)
 
-function sources(p: PiReportPlayer): Map<string, { label: string; pet: boolean; id?: number; dps: number }> {
+interface Source { label: string; pet: boolean; id?: number; dps: number; children: Map<string, Source> }
+
+function tree(rows: DamageRow[], pet: boolean): Map<string, Source> {
+  return new Map(rows.map((r) => [r.name, {
+    label: r.spellName ?? r.name, pet, id: r.id, dps: r.dpsWithChildren, children: tree(r.children ?? [], false),
+  }]))
+}
+
+function sources(p: PiReportPlayer): Map<string, Source> {
   const rows = damageBreakdown(parsePlayerDetail({ sim: { players: [p] } }, p.name))
-  return new Map(rows.map((r) => [
-    `${r.isPet ? 'pet' : 'own'}:${r.name}`,
-    { label: r.spellName ?? r.name, pet: !!r.isPet, id: r.id, dps: r.dpsWithChildren },
-  ]))
+  return new Map(rows.map((r) => [`${r.isPet ? 'pet' : 'own'}:${r.name}`, {
+    label: r.spellName ?? r.name, pet: !!r.isPet, id: r.id, dps: r.dpsWithChildren, children: tree(r.children ?? [], false),
+  }]))
+}
+
+/** Same sources in the no-PI and PI reports, side by side, down to each pet ability. */
+function pair(before: Map<string, Source>, after: Map<string, Source>, prefix = ''): PiAbility[] {
+  return [...new Set([...before.keys(), ...after.keys()])].map((name) => {
+    const b = before.get(name)
+    const a = after.get(name)
+    const x = (a ?? b)!
+    const without = b?.dps ?? 0
+    const withPi = a?.dps ?? 0
+    const children = pair(b?.children ?? new Map(), a?.children ?? new Map(), `${prefix}${name}/`)
+    return {
+      key: `${prefix}${name}`, label: x.label, pet: x.pet, id: x.id, without, with: withPi, gain: withPi - without,
+      ...(children.length ? { children } : {}),
+    }
+  }).sort((l, r) => r.with - l.with)
 }
 
 /** The drawer's data for one row: the no-PI and PI reports of the same variant (funnel on or off). */
@@ -209,14 +268,7 @@ export function piDetailView(run: PiDetailRun, funnel: boolean): PiDetailView {
   const timeline = Array.from({ length: Math.min(a.length, b.length) }, (_, t) => ({
     t, without: a[t], with: b[t], gain: b[t] - a[t], piUp: piUp[t] ?? 0,
   }))
-  const before = sources(base)
-  const after = sources(pi)
-  const abilities = [...new Set([...before.keys(), ...after.keys()])].map((key) => {
-    const x = after.get(key) ?? before.get(key)!
-    const without = before.get(key)?.dps ?? 0
-    const withPi = after.get(key)?.dps ?? 0
-    return { key, label: x.label, pet: x.pet, id: x.id, without, with: withPi, gain: withPi - without }
-  }).sort((l, r) => r.with - l.with)
+  const abilities = pair(sources(base), sources(pi))
   return {
     timeline,
     piWindows: windows(piUp),
