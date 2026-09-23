@@ -84,18 +84,21 @@ COMMON_LINK="-fwasm-exceptions -sINITIAL_MEMORY=134217728 -sALLOW_MEMORY_GROWTH=
   -sMAXIMUM_MEMORY=4gb -sMODULARIZE=1 -sEXPORT_NAME=createSimc -sENVIRONMENT=worker \
   -sINVOKE_RUN=0 -sEXIT_RUNTIME=0 -sEXPORTED_RUNTIME_METHODS=callMain,FS -sSTACK_SIZE=4mb"
 
+# Measured 2026-09-23 (docs/implementation/engine-speed.md): -flto is 3-8% faster everywhere, and
+# mimalloc removes dlmalloc's global lock, 12-31% faster with threads (most on profilesets), same DPS.
+# The single-thread fallback has no lock to remove, so it keeps the default allocator.
 if [ "$VARIANT" = threaded ]; then
   BUILD_DIR=build/wasm
   ENGINE_DIR=public/engine
   THREAD_CMAKE=-DSC_NO_THREADING=OFF
-  CXX_FLAGS="-DSC_USE_PTR=0 -pthread -fwasm-exceptions"
-  LINK_FLAGS="-pthread -sPTHREAD_POOL_SIZE=16 $COMMON_LINK"
+  CXX_FLAGS="-DSC_USE_PTR=0 -pthread -fwasm-exceptions -flto"
+  LINK_FLAGS="-pthread -sPTHREAD_POOL_SIZE=16 -flto -sMALLOC=mimalloc $COMMON_LINK"
 else
   BUILD_DIR=build/wasm-fallback
   ENGINE_DIR=public/engine/fallback
   THREAD_CMAKE=-DSC_NO_THREADING=ON
-  CXX_FLAGS="-DSC_USE_PTR=0 -fwasm-exceptions"
-  LINK_FLAGS="$COMMON_LINK"
+  CXX_FLAGS="-DSC_USE_PTR=0 -fwasm-exceptions -flto"
+  LINK_FLAGS="-flto $COMMON_LINK"
 fi
 
 # Threaded artifact: no patches, builds from vendor/simc. Fallback: needs patches, builds from staging tree.

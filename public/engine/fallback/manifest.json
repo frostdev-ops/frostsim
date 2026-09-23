@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-09-14T04:48:42.585Z",
+  "generatedAt": "2026-09-23T22:58:03.319Z",
   "artifact": "fallback",
   "engine": {
     "simcVersion": "1210-01",
@@ -35,10 +35,15 @@
         "file": "patches/0001-sc-no-threading-build.patch",
         "sha256": "d9bd702ed05140b0736b211935e33da0a3be69f4ff01b1ea5a07093f170277ff",
         "bytes": 6114
+      },
+      {
+        "file": "patches/0002-emscripten-no-process-priority.patch",
+        "sha256": "8ed9e9ebaf9f26774fff03526d77e380deb5ed89c01e4ae570cd178102e8996f",
+        "bytes": 3760
       }
     ],
-    "cxxFlags": "-DSC_USE_PTR=0 -fwasm-exceptions",
-    "linkFlags": "-fwasm-exceptions -sINITIAL_MEMORY=134217728 -sALLOW_MEMORY_GROWTH=1   -sMAXIMUM_MEMORY=4gb -sMODULARIZE=1 -sEXPORT_NAME=createSimc -sENVIRONMENT=worker   -sINVOKE_RUN=0 -sEXIT_RUNTIME=0 -sEXPORTED_RUNTIME_METHODS=callMain,FS -sSTACK_SIZE=4mb",
+    "cxxFlags": "-DSC_USE_PTR=0 -fwasm-exceptions -flto",
+    "linkFlags": "-flto -fwasm-exceptions -sINITIAL_MEMORY=134217728 -sALLOW_MEMORY_GROWTH=1   -sMAXIMUM_MEMORY=4gb -sMODULARIZE=1 -sEXPORT_NAME=createSimc -sENVIRONMENT=worker   -sINVOKE_RUN=0 -sEXIT_RUNTIME=0 -sEXPORTED_RUNTIME_METHODS=callMain,FS -sSTACK_SIZE=4mb",
     "artifactFlags": {
       "pthreadPoolSize": 0,
       "initialMemory": null,
@@ -79,16 +84,16 @@
   },
   "files": {
     "simc.js": {
-      "bytes": 64772,
-      "sha256": "74f5a4b9a8b71f42b088f0fb69b0ab3a610550fef35f86088dca630f832a9a30",
-      "gzipBytes": 18111,
-      "brotliBytes": 16207
+      "bytes": 65779,
+      "sha256": "55c46fbda79837b5d28de49b451d2059c3cbd1fdc07858c5609722ae513c4629",
+      "gzipBytes": 18432,
+      "brotliBytes": 16431
     },
     "simc.wasm": {
-      "bytes": 62436710,
-      "sha256": "cb6c03d2365ae1450ec59ffaef8a0cb2103dfa438a55d9cce04a25560ba02771",
-      "gzipBytes": 9914854,
-      "brotliBytes": 6593748
+      "bytes": 64206272,
+      "sha256": "b5af44a7770986c8fc3840d1cc3f49ff435483aa503ec3c6b2162e4c9f89ec8f",
+      "gzipBytes": 10286888,
+      "brotliBytes": 6729142
     }
   },
   "lockMismatches": [],

@@ -29,10 +29,11 @@ process.stdout.write(String(m.capabilities.pthreadPoolSize));
 if [ ! -f "$CLI" ] || [ "$BUILD_DIR/engine/libengine.a" -nt "$CLI" ]; then
   echo "engine-smoke: relinking node CLI (pool $POOL)..."
   # .cjs not .js/.mjs: glue is CommonJS; .js ESM breaks, .mjs infers EXPORT_ES6 and exits 0. Fallback has no pthreads.
-  THREAD_FLAGS=(-pthread "-sPTHREAD_POOL_SIZE=$POOL")
+  # Same allocator and LTO as the browser artifact (build-engine.sh), or the smoke measures a different engine.
+  THREAD_FLAGS=(-pthread "-sPTHREAD_POOL_SIZE=$POOL" -sMALLOC=mimalloc)
   [ "$VARIANT" = fallback ] && THREAD_FLAGS=()
 
-  em++ -O3 -fwasm-exceptions ${THREAD_FLAGS[@]+"${THREAD_FLAGS[@]}"} \
+  em++ -O3 -flto -fwasm-exceptions ${THREAD_FLAGS[@]+"${THREAD_FLAGS[@]}"} \
     "$BUILD_DIR/CMakeFiles/simc.dir/engine/sc_main.cpp.o" "$BUILD_DIR/engine/libengine.a" \
     -o "$CLI" \
     -fwasm-exceptions ${THREAD_FLAGS[@]+"${THREAD_FLAGS[@]}"} -sINITIAL_MEMORY=134217728 \

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-09-14T04:37:24.128Z",
+  "generatedAt": "2026-09-23T22:55:26.883Z",
   "artifact": "threaded",
   "engine": {
     "simcVersion": "1210-01",
@@ -31,8 +31,8 @@
     "type": "Release",
     "sourceTree": "vendor/simc",
     "patches": [],
-    "cxxFlags": "-DSC_USE_PTR=0 -pthread -fwasm-exceptions",
-    "linkFlags": "-pthread -sPTHREAD_POOL_SIZE=16 -fwasm-exceptions -sINITIAL_MEMORY=134217728 -sALLOW_MEMORY_GROWTH=1   -sMAXIMUM_MEMORY=4gb -sMODULARIZE=1 -sEXPORT_NAME=createSimc -sENVIRONMENT=worker   -sINVOKE_RUN=0 -sEXIT_RUNTIME=0 -sEXPORTED_RUNTIME_METHODS=callMain,FS -sSTACK_SIZE=4mb",
+    "cxxFlags": "-DSC_USE_PTR=0 -pthread -fwasm-exceptions -flto",
+    "linkFlags": "-pthread -sPTHREAD_POOL_SIZE=16 -flto -sMALLOC=mimalloc -fwasm-exceptions -sINITIAL_MEMORY=134217728 -sALLOW_MEMORY_GROWTH=1   -sMAXIMUM_MEMORY=4gb -sMODULARIZE=1 -sEXPORT_NAME=createSimc -sENVIRONMENT=worker   -sINVOKE_RUN=0 -sEXIT_RUNTIME=0 -sEXPORTED_RUNTIME_METHODS=callMain,FS -sSTACK_SIZE=4mb",
     "artifactFlags": {
       "pthreadPoolSize": 16,
       "initialMemory": 134217728,
@@ -40,7 +40,7 @@
       "exportName": "createSimc"
     },
     "toolchain": {
-      "emcc": null,
+      "emcc": "6.0.9",
       "cmake": "4.4.3",
       "ninja": "1.13.2",
       "node": "26.8.2",
@@ -73,16 +73,16 @@
   },
   "files": {
     "simc.js": {
-      "bytes": 79724,
-      "sha256": "e7c7a54cd69ca6f3ff8d25f4c5b6c4ceff2c8d4eee99db75ffc84f3d1010eff6",
-      "gzipBytes": 21867,
-      "brotliBytes": 19347
+      "bytes": 82706,
+      "sha256": "5248ab8d6655372d20292ee477820969060a20a7669953ba8c54747f77426f5b",
+      "gzipBytes": 22489,
+      "brotliBytes": 19961
     },
     "simc.wasm": {
-      "bytes": 63275426,
-      "sha256": "73bb78cee654e505fcc70fa2cdf74f9d93ae1f9be0f32308fed79b38db96d050",
-      "gzipBytes": 10446035,
-      "brotliBytes": 6833234
+      "bytes": 65114668,
+      "sha256": "8158fd641d6039b17adbae4ebbc5d9790e6410df405f99a98ce115cd6e5d5591",
+      "gzipBytes": 10841579,
+      "brotliBytes": 7020776
     }
   },
   "lockMismatches": [],
