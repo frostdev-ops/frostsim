@@ -13,7 +13,7 @@ import {
 } from './_lib/security';
 import { BlizzardClient, UpstreamError, buildTooltip, parseItem, parseMedia, parseSet, provenance } from './_lib/upstream';
 
-import spellIconAliases from '../../src/lib/battlenet/generated/spell-icon-aliases.json';
+import spellIcons from '../../src/lib/battlenet/generated/spell-icons.json';
 
 /** One client per isolate, so the token, cache and limiter survive between requests. */
 let client: BlizzardClient | null = null;
@@ -207,17 +207,19 @@ async function handleIcon(
   const wait = mediaLimiter.take();
   if (wait !== null) return errorResponse('rate_limited', 429, safeMessage('rate_limited'), undefined, wait);
 
-  const bn = clientFor(credentials, env);
-  const loadMedia = async (target: number) => parseMedia(await bn.get<unknown>(`/data/wow/media/${kind}/${target}`, region, null), target);
-  let media;
-  const alias = kind === 'spell' ? (spellIconAliases.aliases as Record<string, number>)[id] : undefined;
-  try { media = await loadMedia(id); }
-  catch (error) {
-    if (!alias || !(error instanceof UpstreamError) || error.code !== 'not_found') throw error;
-    media = await loadMedia(alias);
+  // The media API only indexes player-learnable spells; consumables, enchants and pet or NPC
+  // abilities have no record there. Every icon is on the render CDN by the file name the game data
+  // gives it (scripts/generate-presentation.mjs), so a named spell goes straight there.
+  if (kind === 'spell') {
+    const index = (spellIcons.spells as Record<string, number>)[id];
+    if (index !== undefined) {
+      const named = await proxyImage(`https://render.worldofwarcraft.com/${region}/icons/56/${encodeURIComponent(spellIcons.names[index])}.jpg`, env);
+      if (named.status !== 404) return named;
+    }
   }
-  // SpellMisc aliases prove identical icon files even when media index unpublished yet.
-  if (media.status !== 'ok' && alias) media = await loadMedia(alias);
+
+  const bn = clientFor(credentials, env);
+  const media = parseMedia(await bn.get<unknown>(`/data/wow/media/${kind}/${id}`, region, null), id);
   if (media.status !== 'ok' || !media.iconUrl) {
     return errorResponse('not_found', 404, safeMessage('not_found'));
   }

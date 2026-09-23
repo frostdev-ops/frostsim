@@ -9,9 +9,10 @@ if (spells.length < 10000) throw Error('Spell name extraction failed');
 const grouped = new Map();
 for (const spell of spells) { const key = tokenize(spell.name); grouped.set(key, [...(grouped.get(key) ?? []), spell.id]); }
 const miscPath = 'build/talent-layout-' + lock.expected.clientDataWowVersion + '/SpellMisc.csv';
+const spellMiscUrl = 'https://wago.tools/db2/SpellMisc/csv?build=' + lock.expected.clientDataWowVersion;
 if (!existsSync(miscPath)) {
   mkdirSync(miscPath.slice(0, miscPath.lastIndexOf('/')), { recursive: true });
-  const response = await fetch('https://wago.tools/db2/SpellMisc/csv?build=' + lock.expected.clientDataWowVersion);
+  const response = await fetch(spellMiscUrl);
   if (!response.ok) throw Error('Spell icon data unavailable');
   writeFileSync(miscPath, await response.text());
 }
@@ -19,17 +20,32 @@ const misc = parseCsv(readFileSync(miscPath, 'utf8'));
 const spellColumn = misc.header.indexOf('SpellID'), iconColumn = misc.header.indexOf('SpellIconFileDataID');
 if (spellColumn < 0 || iconColumn < 0) throw Error('SpellMisc schema changed');
 const icons = new Map(misc.rows.filter(row => Number(row[iconColumn]) > 0).map(row => [Number(row[spellColumn]), Number(row[iconColumn])]));
-// Spells sharing an icon file alias to the lowest id in the group. That lowest id aliases to another
-// member the engine also knows (else the next-lowest), so a group whose lowest id has no Blizzard media
-// (Chaos Brand's debuff 1490; 234899 has none either, 255260 does) still resolves.
-const engineIds = new Set(spells.map(spell => spell.id));
-const members = new Map();
-for (const [id, icon] of icons) { const group = members.get(icon); if (group) group.push(id); else members.set(icon, [id]); }
-for (const group of members.values()) group.sort((a, b) => a - b);
-const fallback = group => group.slice(1).find(id => engineIds.has(id)) ?? group[1];
-const aliases = Object.fromEntries(spells.flatMap(spell => { const group = members.get(icons.get(spell.id)); const target = group && (group[0] === spell.id ? fallback(group) : group[0]); return target ? [[spell.id, target]] : []; }));
+// Spell icons by file name. Blizzard's media API only indexes player-learnable spells, so
+// consumables, enchants and pet or NPC abilities 404 there, and so does every other spell sharing
+// their icon (checked 2026-09-23). Every interface icon is on the render CDN by file name, and
+// ManifestInterfaceData names each icon file. The CDN drops the spaces some file names contain.
+const manifestPath = 'build/talent-layout-' + lock.expected.clientDataWowVersion + '/ManifestInterfaceData.csv';
+const manifestUrl = 'https://wago.tools/db2/ManifestInterfaceData/csv?build=' + lock.expected.clientDataWowVersion;
+if (!existsSync(manifestPath)) {
+  const response = await fetch(manifestUrl);
+  if (!response.ok) throw Error('Interface file names unavailable');
+  writeFileSync(manifestPath, await response.text());
+}
+const interfaceFiles = parseCsv(readFileSync(manifestPath, 'utf8'));
+const [fileColumn, pathColumn, nameColumn] = ['ID', 'FilePath', 'FileName'].map(key => interfaceFiles.header.indexOf(key));
+if (fileColumn < 0 || pathColumn < 0 || nameColumn < 0) throw Error('ManifestInterfaceData schema changed');
+const iconFiles = new Map(interfaceFiles.rows.filter(row => row[pathColumn].toLowerCase() === 'interface\\icons\\')
+  .map(row => [Number(row[fileColumn]), row[nameColumn].replace(/\.blp$/i, '').replace(/\s+/g, '').toLowerCase()]));
+const iconNames = [], nameIndex = new Map(), spellIcons = {};
+for (const spell of spells) {
+  const name = iconFiles.get(icons.get(spell.id));
+  if (!name) continue;
+  if (!nameIndex.has(name)) { nameIndex.set(name, iconNames.length); iconNames.push(name); }
+  spellIcons[spell.id] = nameIndex.get(name);
+}
+if (Object.keys(spellIcons).length < spells.length * 0.9) throw Error('Spell icon name coverage collapsed');
 mkdirSync('src/lib/battlenet/generated', { recursive: true });
-writeFileSync('src/lib/battlenet/generated/spell-icon-aliases.json', JSON.stringify({ build: lock.expected.clientDataWowVersion, engineCommit: lock.upstream.commit, source: 'https://wago.tools/db2/SpellMisc/csv?build=' + lock.expected.clientDataWowVersion, aliases }));
+writeFileSync('src/lib/battlenet/generated/spell-icons.json', JSON.stringify({ build: lock.expected.clientDataWowVersion, engineCommit: lock.upstream.commit, sources: [spellMiscUrl, manifestUrl], names: iconNames, spells: spellIcons }));
 // A name several spells share resolves when one icon is on a strict majority of those that have
 // an icon, to the lowest id carrying it (Hunter's Mark: the ability and its variants, not the debuff).
 function nameTarget(ids) {
