@@ -78,7 +78,8 @@ const hashTree = (dir) => {
 };
 
 // Pages: 25 MiB limit; engine ~60 MB packaged under engine/ from asset host (P14.1,P14.2); worker shim+manifest in app (emscripten derives paths, D10).
-const ENGINE_BINARY = /^engine\/(fallback\/)?simc\.(js|wasm)$/;
+// Published engine packs (engine/versions/, engine-versions.json) belong to the updater's output, never an app release.
+const ENGINE_BINARY = /^engine\/(fallback\/)?simc\.(js|wasm)$|^engine\/versions(\/|$)|^engine-versions\.json$/;
 const PAGES_ASSET_LIMIT = 25 * 1024 * 1024;
 
 const dist = join(root, 'dist');

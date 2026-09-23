@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import type { Plugin } from 'vite'
 import { fileURLToPath } from 'node:url'
+import { engineCompat } from './scripts/engine-compat.mjs'
 
 // COOP/COEP required for SharedArrayBuffer; engine worker fails to start without them.
 const crossOriginIsolation = {
@@ -114,7 +115,11 @@ const siteLegal = ['terms.html', 'privacy.html'].map((name) => existsSync(new UR
 if (siteLegal.some(Boolean) && !siteLegal.every(Boolean)) throw new Error('Both private legal documents are required.')
 
 export default defineConfig({
-  define: { 'import.meta.env.VITE_SITE_LEGAL': JSON.stringify(siteLegal.every(Boolean)) },
+  define: {
+    'import.meta.env.VITE_SITE_LEGAL': JSON.stringify(siteLegal.every(Boolean)),
+    // The app runs only engine packs built from the same contract (scripts/update-engines.mjs).
+    __ENGINE_COMPAT__: JSON.stringify(engineCompat(fileURLToPath(new URL('.', import.meta.url)))),
+  },
   plugins: [svelte(), stampServiceWorker(), gameDataProxyDev()],
   server: { headers: crossOriginIsolation },
   preview: {

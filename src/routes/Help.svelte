@@ -30,7 +30,8 @@
   $effect(() => {
     void buildIdentity().then((b) => (build = b))
     void browserFacts().then((b) => (browser = b))
-    void engineCached().then((c) => (cached = c))
+    const dir = app.capability?.ok ? app.capability.engineDir : null
+    if (dir) void engineCached(dir).then((c) => (cached = c))
     void engineSlotStatus().then((s) => (slot = s)).catch(() => (slot = null))
   })
 
@@ -174,9 +175,20 @@
       <dl class="kv">
         <dt>SimulationCraft</dt><dd class="mono">{manifest.engine.simcVersion}</dd>
         <dt>Upstream revision</dt>
-        <dd class="mono">{manifest.engine.upstreamCommit.slice(0, 7)} on {manifest.engine.upstreamBranch}</dd>
+        <dd class="mono">
+          <a href="https://github.com/simulationcraft/simc/commit/{manifest.engine.upstreamCommit}" rel="noreferrer">{manifest.engine.upstreamCommit.slice(0, 7)}</a>
+          on {manifest.engine.upstreamBranch}{#if app.engine?.commitDate}, committed {new Date(app.engine.commitDate).toLocaleString()}{/if}
+        </dd>
+        {#if app.engineStatus}
+          <dt>Updates</dt>
+          <dd>
+            Checked {new Date(app.engineStatus.checkedAt).toLocaleString()} ·
+            {app.engineStatus.state === 'current' ? 'up to date with upstream' : app.engineStatus.state}
+            {#if app.engineStatus.reason}<span class="muted xs">— {app.engineStatus.reason}</span>{/if}
+          </dd>
+        {/if}
         <dt>Engine licence</dt>
-        <dd class="mono">GPL-3.0-only <a href="https://github.com/simulationcraft/simc">source</a></dd>
+        <dd class="mono">GPL-3.0-only <a href={app.engine && app.engine.id !== 'local' ? `${app.engine.baseUrl}source/simc.tar.gz` : 'https://github.com/simulationcraft/simc'}>source</a></dd>
         <dt>Frostsim licence</dt>
         <dd class="mono">GPL-3.0-only <a href={SOURCE_URL}>source</a></dd>
         <dt>Game data</dt><dd class="mono">{manifest.wow.clientDataVersion}</dd>

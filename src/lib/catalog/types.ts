@@ -131,6 +131,8 @@ export interface CatalogManifest extends CatalogIdentity {
   loot?: { path: string; expiresAt: string | null; sources: number; providers: string[] } | null;
   lootAdaptersAttempted?: string[];
   warnings?: string[];
+  /** Set by the engine updater: the app's season-data build this catalog's own build was proven equal to. */
+  seasonDataBuild?: string;
 }
 
 /** One activity that can award items. Absent entirely when no adapter is configured. */

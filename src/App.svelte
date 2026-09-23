@@ -29,6 +29,7 @@
   import { decodeShare, isShareFragment, stripFragment } from './lib/store/share'
   import type { ImportedCharacter } from './lib/import/character'
   import Banner from './lib/ui/Banner.svelte'
+  import EngineStatus from './lib/ui/EngineStatus.svelte'
   import Dialog from './lib/ui/Dialog.svelte'
   import SiteLegal from './lib/ui/SiteLegal.svelte'
   import Backdrop from './lib/fx/Backdrop.svelte'
@@ -262,6 +263,7 @@
       'no-wasm': 'This browser has no WebAssembly support, so the engine cannot run at all.',
       'manifest-unavailable':
         'The engine description could not be fetched. Build it with `npm run engine:build`, or check the network.',
+      'engine-updating': 'Frostsim was just updated, and its matching SimulationCraft engine is still being published.',
       'manifest-invalid': 'The engine description does not match what this build understands.',
       'artifact-mismatch':
         'The engine binary does not match the revision it claims. Rebuild it before trusting any number it produces.',
@@ -365,6 +367,8 @@
       {/each}
     </nav>
   {/if}
+
+  <EngineStatus />
 
   {#if capabilityMessage}
     <Banner kind="bad" title="The simulation engine cannot start here" live>

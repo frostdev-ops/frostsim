@@ -15,6 +15,21 @@ function engineUrls(base = '/engine/') {
     ...Array.from({ length: 13 }, (_, i) => `${base === '/engine/' ? '/' : base}talent-layout/class-${i + 1}.json`)]
 }
 
+// Engine packs outlive app deploys: their own cache, holding only the pack in use.
+const ENGINE_PACKS = `${PREFIX}-engine-packs`
+const packId = (pathname) => /^\/engine\/versions\/([a-z0-9][a-z0-9.-]{0,100})\//.exec(pathname)?.[1] ?? null
+
+async function cacheFor(url) {
+  return caches.open(packId(new URL(url, self.location.origin).pathname) ? ENGINE_PACKS : (await resolveCacheName()).name)
+}
+
+async function evictOtherPacks(keep) {
+  const cache = await caches.open(ENGINE_PACKS)
+  for (const request of await cache.keys()) {
+    if (packId(new URL(request.url).pathname) !== keep) await cache.delete(request)
+  }
+}
+
 let cacheNamePromise = null
 /** Precache error to report instead of guessing. */
 let precacheError = null
@@ -73,7 +88,8 @@ self.addEventListener('activate', (event) => {
       await self.clients.claim()
       try {
         const { name } = await resolveCacheName()
-        const keys = (await caches.keys()).filter((k) => k.startsWith(PREFIX) && k !== name && k !== 'frostsim-media-v1')
+        // App shell caches only: the engine pack, the worker's binary and media caches have their own lifetimes.
+        const keys = (await caches.keys()).filter((k) => /^frostsim-([0-9a-f]{12}|unknown)$/.test(k) && k !== name)
         // Keep one previous version; drop older.
         for (const stale of keys.slice(0, Math.max(0, keys.length - 1))) await caches.delete(stale)
       } catch {}
@@ -134,8 +150,8 @@ async function catalogUrls(rawBase) {
   const base = safeCatalogBase(rawBase)
   if (!base) return rawBase ? { kind: 'unknown', reason: 'the catalog location is not a path on this site' } : { kind: 'absent' }
 
-  const cache = await caches.open((await resolveCacheName()).name)
   const manifestUrl = `${base}/manifest.json`
+  const cache = await cacheFor(manifestUrl)
 
   // Try network first so new catalogs are noticed; cache second for offline (don't erase known state).
   for (const source of ['network', 'cache']) {
@@ -152,8 +168,6 @@ async function catalogUrls(rawBase) {
 }
 
 async function cacheOffline(catalogBaseUrl, client, engineBaseUrl) {
-  const { name } = await resolveCacheName()
-  const cache = await caches.open(name)
   const catalog = await catalogUrls(catalogBaseUrl)
   // Report unreadable manifest, never treat as "not needed" (would mislead user about offline readiness).
   if (catalog.kind === 'unknown') {
@@ -171,7 +185,7 @@ async function cacheOffline(catalogBaseUrl, client, engineBaseUrl) {
       const res = await fetch(url, { cache: 'no-cache' })
       // Reject failed responses; broken cache is worse than reporting failure now.
       if (!res.ok) throw new Error(`${url}: ${res.status}`)
-      await cache.put(url, res.clone())
+      await (await cacheFor(url)).put(url, res.clone())
       done++
     } catch {
       failed++
@@ -179,19 +193,20 @@ async function cacheOffline(catalogBaseUrl, client, engineBaseUrl) {
     client?.postMessage({ type: 'offline-progress', done, failed, total: urls.length })
   }
 
+  const keep = packId(engineBaseUrl ?? '')
+  if (keep) await evictOtherPacks(keep).catch(() => {})
   await reportStatus(catalogBaseUrl, client, engineBaseUrl)
 }
 
 async function reportStatus(catalogBaseUrl, client, engineBaseUrl) {
   const { name, assets } = await resolveCacheName()
-  const cache = await caches.open(name)
   const required = [...SHELL, ...assets]
   const engine = engineUrls(engineBaseUrl)
   const catalog = await catalogUrls(catalogBaseUrl)
 
   const present = async (urls) => {
     let n = 0
-    for (const url of urls) if (await cache.match(url)) n++
+    for (const url of urls) if (await (await cacheFor(url)).match(url)) n++
     return n
   }
 
@@ -250,9 +265,36 @@ self.addEventListener('fetch', (event) => {
         }
       }
 
-      // Immutable hashed assets and artifacts: cache wins, never touched network.
+      // Published engine packs are immutable: cache wins. Storing a pack's binary evicts every other pack.
+      const pack = packId(url.pathname)
+      if (pack) {
+        const packs = await caches.open(ENGINE_PACKS)
+        const hit = await packs.match(request)
+        if (hit) return hit
+        const res = await fetch(request)
+        if (res.ok) {
+          packs.put(request, res.clone())
+            .then(() => url.pathname.endsWith('/simc.wasm') ? evictOtherPacks(pack) : undefined)
+            .catch(() => {})
+        }
+        return res
+      }
+
+      // The local dev engine under /engine/ is rebuilt in place: network first, cache for offline.
+      if (url.pathname.startsWith('/engine/')) {
+        try {
+          const res = await fetch(request, { cache: 'no-cache' })
+          if (res.ok) await cache.put(request, res.clone())
+          return res
+        } catch (err) {
+          const hit = await cache.match(request)
+          if (hit) return hit
+          throw err
+        }
+      }
+
+      // Immutable hashed assets: cache wins, never touched network.
       const immutable = url.pathname.startsWith('/assets/')
-        || url.pathname.startsWith('/engine/')
         || url.pathname.startsWith('/catalogs/')
       if (immutable) {
         const hit = await cache.match(request)

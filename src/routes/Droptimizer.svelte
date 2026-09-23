@@ -25,7 +25,7 @@
   import { retentionMessage, retentionOf } from '../lib/retention'
   import { sendItems } from '../lib/handoff.svelte'
   import { dropSettings } from '../lib/settings.svelte'
-  import { MAX_ITEM_LEVEL, upgradeSeason, upgradeTracks, withMaxUpgrade, withUpgradeRank } from '../lib/catalog/upgrades'
+  import { MAX_ITEM_LEVEL, seasonBuildOf, upgradeSeason, upgradeTracks, withMaxUpgrade, withUpgradeRank } from '../lib/catalog/upgrades'
   import { MIN_KEY, isMplusSource, mplusReward, mplusRewardReference } from '../lib/catalog/mplusRewards'
   import { atRaidDifficulty, hasRaidRewards, raidDifficulties, raidRewardLabel, raidRewardReferences, type RaidDifficulty } from '../lib/catalog/raidRewards'
   import { serializeItem } from '../lib/catalog/serialize'
@@ -111,7 +111,7 @@
   }
 
   function evaluatedSource(source: DropSource): DropSource {
-    if (useRaidRewards) return atRaidDifficulty(source, selectedSources.find(loot => loot.id === source.id)!, app.catalogManifest?.engine.clientDataVersion, raidDifficulty, maxRaidUpgrade, bonusRoll)
+    if (useRaidRewards) return atRaidDifficulty(source, selectedSources.find(loot => loot.id === source.id)!, app.catalogManifest ? seasonBuildOf(app.catalogManifest) : undefined, raidDifficulty, maxRaidUpgrade, bonusRoll)
     if (useMplusRewards) {
       if (!mplusLevel) return { ...source, items: [] }
       const { track, rank } = mplusLevel
@@ -213,7 +213,7 @@
   const selectedSources = $derived<LootSource[]>(
     selectedInstances.flatMap(t => t.bosses.filter(b => chosenInstances[t.key].includes(b.id))),
   )
-  const raidAvailable = $derived(selectedSources.length > 0 && selectedSources.every(source => hasRaidRewards(source, app.catalogManifest?.engine.clientDataVersion)))
+  const raidAvailable = $derived(selectedSources.length > 0 && selectedSources.every(source => hasRaidRewards(source, app.catalogManifest ? seasonBuildOf(app.catalogManifest) : undefined)))
   const mplusAvailable = $derived(selectedSources.length > 0 && selectedSources.every(isMplusSource))
   const useRaidRewards = $derived(rewardMode !== 'custom' && raidAvailable)
   const useMplusRewards = $derived(rewardMode !== 'custom' && mplusAvailable)

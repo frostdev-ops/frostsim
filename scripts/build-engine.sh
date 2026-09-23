@@ -110,8 +110,14 @@ if [ "$VARIANT" = fallback ]; then
   done
 fi
 
+# ccache wraps emcc whole (Emscripten's documented way). The updater builds every upstream commit
+# in a fresh workspace, so this is what turns a full rebuild into a changed-files rebuild.
+LAUNCHER=()
+if command -v ccache >/dev/null 2>&1; then LAUNCHER=(-DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache); fi
+
 emcmake cmake -S "$SOURCE_DIR" -B "$BUILD_DIR" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
+  ${LAUNCHER[@]+"${LAUNCHER[@]}"} \
   -DBUILD_GUI=OFF -DBUILD_TESTING=OFF \
   -DSC_NO_NETWORKING=ON \
   "$THREAD_CMAKE" \

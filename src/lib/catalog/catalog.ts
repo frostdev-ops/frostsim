@@ -2,7 +2,7 @@
 
 import { bonusTables, buildItem, scaledStat, ScalingTables, type BaseItem, type BonusTables, type BuiltItem } from './item-build';
 import { ITEM_CLASS, ITEM_FLAG, ITEM_MOD, QUALITY_LABEL, STAT_LABEL, eligibleSlots } from './enums';
-import { itemUpgradeTrack, upgradeBuild, upgradeSeason } from './upgrades';
+import { itemUpgradeTrack, seasonBuildOf, upgradeBuild, upgradeSeason } from './upgrades';
 import type {
   BonusPayload, CatalogManifest, Consumable, EnchantOption, EnchantsPayload, GearSlot,
   GemsPayload, ItemColumns, ItemInstance, LootCatalog, LootProvenance, LootSource,
@@ -144,7 +144,7 @@ export class Catalog {
   }
 
   private present(base: BaseItem, built: BuiltItem, instance: ItemInstance, unresolved: string[]): ResolvedItem {
-    const upgrade = this.manifest.engine.clientDataVersion === upgradeBuild ? itemUpgradeTrack(instance) : null;
+    const upgrade = seasonBuildOf(this.manifest) === upgradeBuild ? itemUpgradeTrack(instance) : null;
     const descriptors = built.descriptionIds
       .map((id) => this.bonus.description(id))
       .filter((d): d is string => typeof d === 'string');

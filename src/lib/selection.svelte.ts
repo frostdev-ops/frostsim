@@ -17,6 +17,8 @@ export interface GearDraft {
 const gearDrafts = new Map<string, GearDraft>()
 export const gearDraftFor = (id: string): GearDraft | undefined => gearDrafts.get(id)
 export const rememberGearDraft = (id: string, draft: GearDraft): void => { gearDrafts.set(id, draft) }
+/** In-memory only: a reload loses these, so an automatic engine-update reload waits for none. */
+export const hasGearDrafts = (): boolean => gearDrafts.size > 0
 
 const KEY = 'frostsim.selection'
 // Two tools keep independent selections against same character.

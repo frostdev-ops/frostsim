@@ -23,17 +23,14 @@
   # fails loudly rather than silently permitting an unintended host.
   Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; connect-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; frame-src 'self' https://raider.io; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'
 
-# The engine binaries are content-addressed by the sha256 in public/engine/manifest.json.
-# A given URL's bytes never change: a new build is a new hash, so caching them immutably is
-# safe and re-downloading 60 MB on a warm run is not.
+# Published engine packs never change once written (scripts/update-engines.mjs); the index
+# below is the only pointer. The local dev engine under /engine/ is rebuilt in place, so it is
+# revalidated rather than cached immutably.
 /engine/*
-  Cache-Control: public, max-age=31536000, immutable
+  Cache-Control: no-cache
   Cross-Origin-Resource-Policy: cross-origin
-
-# The manifest is the pointer that changes when the engine changes, so it must not be cached
-# with the thing it points at. Publish assets first, manifest last (P14.6).
-/engine/manifest.json
-  Cache-Control: public, max-age=60, must-revalidate
+/engine/versions/*
+  Cache-Control: public, max-age=31536000, immutable
   Cross-Origin-Resource-Policy: cross-origin
 /engine-versions.json
   Cache-Control: no-cache, must-revalidate

@@ -1,7 +1,7 @@
 // Engine manifest + browser capability check before downloading 60 MB wasm (P02.1, P02.8). Manifest from artifact, not build config; read maxThreads from it.
 
 import { FALLBACK_MAX_THREADS, type Accuracy } from './options'
-import { selectedEngine } from './versions'
+import { EngineUnavailable, selectedEngine } from './versions'
 
 export type EngineVariant = 'threaded' | 'fallback'
 
@@ -49,6 +49,7 @@ export type CapabilityFailure =
   | 'no-isolation'
   | 'no-shared-array-buffer'
   | 'manifest-unavailable'
+  | 'engine-updating'
   | 'manifest-invalid'
   | 'artifact-mismatch'
   | 'unsupported-report-version'
@@ -214,7 +215,9 @@ export async function detectEngineCapability(
   let baseUrl = options.baseUrl ?? '/engine/'
   if (!options.baseUrl && !options.fetchImpl) {
     try { baseUrl = (await selectedEngine()).baseUrl }
-    catch (err) { return { ok: false, reason: 'manifest-unavailable', detail: String(err) } }
+    catch (err) {
+      return { ok: false, reason: err instanceof EngineUnavailable ? 'engine-updating' : 'manifest-unavailable', detail: err instanceof Error ? err.message : String(err) }
+    }
   }
   const threaded = await evaluate('threaded', options.fetchImpl, undefined, baseUrl)
   if (threaded.ok) return threaded

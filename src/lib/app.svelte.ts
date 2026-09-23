@@ -9,9 +9,9 @@ import type { CompatWarning } from './catalog/load'
 import type { CharacterConstraints } from './catalog/legality'
 import type { CatalogManifest, ResolvedItem } from './catalog/types'
 import { characterConstraints } from './import/constraints'
-import { loadEngineVersions, enginePreference, VERSION_KEY, type EngineVersion } from './simc/versions'
+import { fetchEngineIndex, loadEngineIndex, pickEngine, type EnginePack, type EngineStatus } from './simc/versions'
 import { expert, persistDrafts } from './advanced.svelte'
-import { forgetCharacterSelections } from './selection.svelte'
+import { forgetCharacterSelections, hasGearDrafts } from './selection.svelte'
 import type { ImportedCharacter, ItemInstance } from './import/character'
 import * as db from './store/db'
 import {
@@ -50,9 +50,12 @@ export const app = $state({
   /** null until the first capability check settles. */
   capability: null as EngineCapability | null,
   capabilityChecked: false,
-  engineVersions: [] as EngineVersion[],
-  engineVersion: enginePreference(),
-  engineVersionError: '',
+  /** The published pack this page runs (fixed for the page lifetime). */
+  engine: null as EnginePack | null,
+  engineStatus: null as EngineStatus | null,
+  /** A newer pack for this app, published after the page loaded. */
+  engineUpdate: null as EnginePack | null,
+  engineError: '',
 
   // Catalog in worker; 15 MB items.json would block first paint on main thread. Only UI-rendered data here.
   catalogState: 'idle' as 'idle' | 'loading' | 'ready' | 'failed',
@@ -191,27 +194,41 @@ export async function refreshUsage(): Promise<void> {
 }
 
 export async function checkCapability(): Promise<void> {
-  try { app.engineVersions = (await loadEngineVersions()).versions }
-  catch (err) { app.engineVersionError = String(err) }
+  try {
+    const index = await loadEngineIndex()
+    app.engine = pickEngine(index) ?? null
+    app.engineStatus = index.status
+  } catch (err) { app.engineError = String(err) }
   app.capability = await detectEngineCapability()
   app.capabilityChecked = true
 }
 
-// Reload deliberately so every screen, catalog, optimizer uses same engine.
-export async function selectEngineVersion(id: string): Promise<void> {
-  if (isBusy() || (id !== 'auto' && !app.engineVersions.some(v => v.id === id))) return
+/**
+ * Re-reads the engine index (normally a 304). A newer pack for this app is offered; with `autoReload`
+ * (the tab just came back into view) the page reloads onto it when nothing would be lost.
+ */
+export async function checkEngineUpdate(autoReload: boolean): Promise<void> {
+  if (!app.engine || app.engine.id === 'local') return
+  let index
+  try { index = await fetchEngineIndex() } catch { return }
+  app.engineStatus = index.status
+  const newest = pickEngine(index)
+  if (!newest || newest.id === app.engine.id) return
+  app.engineUpdate = newest
+  if (autoReload) await applyEngineUpdate(true)
+}
+
+/**
+ * Reload onto the newest engine: every screen, catalog and optimizer then uses it. Returns why it
+ * could not, or null. Automatic reloads also wait for in-memory gear choices, which a reload drops.
+ */
+export async function applyEngineUpdate(automatic: boolean): Promise<string | null> {
+  if (isBusy()) return 'Finish or cancel the running simulation first.'
   const readiness = await prepareForReload()
-  if (!readiness.ok) {
-    app.engineVersionError = `Keep your work before switching versions: ${readiness.losses.join('; ')}.`
-    return
-  }
-  if (isBusy()) return
-  try {
-    localStorage.setItem(VERSION_KEY, id)
-    location.reload()
-  } catch {
-    app.engineVersionError = 'Your browser could not save the engine selection.'
-  }
+  if (!readiness.ok) return `Keep your work first: ${readiness.losses.join('; ')}.`
+  if ((automatic && hasGearDrafts()) || isBusy()) return null
+  location.reload()
+  return null
 }
 
 // Catalog directory the engine's data identity points at.

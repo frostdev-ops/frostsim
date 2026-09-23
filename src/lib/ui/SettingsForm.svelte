@@ -2,7 +2,7 @@
   import { FIGHT_PRESETS } from '../simc/client'
   import type { ToolSettings } from '../settings.svelte'
   import type { ImportedCharacter } from '../import/character'
-  import { app, maxThreads, isBusy, selectEngineVersion } from '../app.svelte'
+  import { maxThreads } from '../app.svelte'
   import { RAID_BUFFS, type RaidBuff } from '../simc/raid-buffs'
   import GameIcon from './GameIcon.svelte'
   import EquipmentOptions from './EquipmentOptions.svelte'
@@ -43,15 +43,6 @@
         <label class="field"><span>Threads</span><input type="number" min="1" max={maxThreads()} bind:value={settings.threads} /></label>
       </div>
       <label class="check small"><input type="checkbox" bind:checked={settings.htmlReport} />Include detailed HTML report</label>
-      <label class="field"><span>SimulationCraft version</span>
-        <select value={app.engineVersion} disabled={isBusy() || !app.capabilityChecked} onchange={(e) => { const id = e.currentTarget.value; e.currentTarget.value = app.engineVersion; void selectEngineVersion(id) }}>
-          <option value="auto">Automatic · latest validated build</option>
-          {#each app.engineVersions as version (version.id)}<option value={version.id}>{version.label}</option>{/each}
-        </select>
-        <span class="hint">Automatic uses the latest validated stable or nightly build. Alpha and beta builds are opt-in. Switching reloads the page and resets unsaved gear selections.</span>
-      </label>
-      {#if app.engineVersionError}<p class="small" role="alert">{app.engineVersionError}</p>{/if}
-      <span class="small muted">Engine: {app.capability?.ok ? `${app.capability.manifest.engine.simcVersion} · ${app.capability.manifest.engine.upstreamCommit.slice(0, 7)}` : 'Unavailable'}</span>
     </div>
   </details>
   {#if !rawScript}<div class="spread">

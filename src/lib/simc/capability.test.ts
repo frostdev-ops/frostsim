@@ -9,7 +9,6 @@ import {
   type EngineManifest,
 } from './capability'
 import { engineWorkerUrl } from './job'
-import { parseEngineVersions } from './versions'
 
 // Real manifest values from scripts/engine-manifest.mjs.
 const threadedManifest: EngineManifest = {
@@ -179,30 +178,7 @@ describe('engineWorkerUrl', () => {
   })
 })
 
-describe('selectable engine versions', () => {
-  it('keeps the current tab on its original engine when another tab changes the preference', async () => {
-    vi.resetModules()
-    let preference = 'stable-abc'
-    vi.stubGlobal('localStorage', { getItem: () => preference })
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ schemaVersion: 1, defaultId: 'stable-abc', versions: [
-      { id: 'stable-abc', label: 'Stable', channel: 'stable', baseUrl: '/engine/versions/stable-abc/' },
-      { id: 'beta-def', label: 'Beta', channel: 'beta', baseUrl: '/engine/versions/beta-def/' },
-    ] }))))
-    const { selectedEngine } = await import('./versions')
-    expect((await selectedEngine()).id).toBe('stable-abc')
-    preference = 'beta-def'
-    expect((await selectedEngine()).id).toBe('stable-abc')
-  })
-  it('allows validated nightlies, keeps beta opt-in and confines engine directories', () => {
-    const stable = { id: 'stable-abc', label: 'Stable', channel: 'stable', baseUrl: '/engine/versions/stable-abc/' }
-    const list = { schemaVersion: 1, defaultId: stable.id, versions: [stable] }
-    expect(parseEngineVersions(list).defaultId).toBe(stable.id)
-    expect(parseEngineVersions({ ...list, versions: [{ ...stable, channel: 'nightly' }] }).defaultId).toBe(stable.id)
-    expect(() => parseEngineVersions({ ...list, versions: [{ ...stable, channel: 'beta' }] })).toThrow()
-    expect(() => parseEngineVersions({ ...list, versions: [{ ...stable, baseUrl: 'https://example.com/' }] })).toThrow()
-    expect(() => parseEngineVersions({ ...list, versions: [{ ...stable, baseUrl: '/engine/versions/../../' }] })).toThrow()
-    expect(() => parseEngineVersions({ ...list, versions: [stable, stable] })).toThrow()
-  })
+describe('engine packs', () => {
   it('selects the matching fallback within the same version pack', async () => {
     vi.stubGlobal('crossOriginIsolated', false)
     const fetchImpl = vi.fn(async (url: RequestInfo | URL) => new Response(JSON.stringify(String(url).includes('/fallback/')

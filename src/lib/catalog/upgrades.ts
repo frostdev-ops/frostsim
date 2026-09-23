@@ -20,6 +20,9 @@ export interface UpgradeTrack {
 
 export const upgradeSeason = data.season;
 export const upgradeBuild = data.build;
+/** Game build the app's season data (upgrades, raid rewards) applies to for a catalog. */
+export const seasonBuildOf = (manifest: { seasonDataBuild?: string; engine: { clientDataVersion: string } }): string =>
+  manifest.seasonDataBuild ?? manifest.engine.clientDataVersion;
 /** item_t::decode_ilevel / engine/config.hpp at pinned engine commit. */
 export const MAX_ITEM_LEVEL = 1300;
 export const upgradeTracks: UpgradeTrack[] = data.tracks.filter(track => track.seasonId === upgradeSeason.id);

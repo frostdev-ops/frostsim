@@ -66,10 +66,10 @@ export async function browserFacts(): Promise<BrowserFacts> {
 }
 
 /** Whether engine binary is in cache; null means question could not be asked (not same as "no"). */
-export async function engineCached(): Promise<boolean | null> {
+export async function engineCached(engineDir: string): Promise<boolean | null> {
   try {
     if (typeof caches === 'undefined') return null
-    return Boolean(await caches.match('/engine/simc.wasm'))
+    return Boolean(await caches.match(`${engineDir}simc.wasm`))
   } catch {
     return null
   }
