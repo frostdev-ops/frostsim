@@ -34,8 +34,9 @@
   import Backdrop from './lib/fx/Backdrop.svelte'
   import { installPointerFx } from './lib/fx/pointer'
   import { navIndicator } from './lib/fx/nav'
+  import { SOURCE_URL } from './lib/source'
   import {
-    ChartColumn, CircleCheck, CircleQuestionMark, Coins, Crown, Gem, GitCompareArrows, Info, Menu,
+    ChartColumn, CircleCheck, CircleQuestionMark, CodeXml, Coins, Crown, Gem, GitCompareArrows, Info, Menu,
     Network, Settings, Sparkles, SquareTerminal, TriangleAlert, User, X, Zap,
   } from '@lucide/svelte'
   import Character from './routes/Character.svelte'
@@ -342,6 +343,7 @@
           </span>
         </a>
       {/if}
+      <a class="icon-btn" href={SOURCE_URL} target="_blank" rel="noopener noreferrer" aria-label="Frostsim source code on GitHub (opens in a new tab)" title="Source code on GitHub"><CodeXml size={18} /></a>
       <a class="icon-btn help-btn" href={href('help')} aria-label="Help" aria-current={router.name === 'help' ? 'page' : undefined}><CircleQuestionMark size={18} /></a>
       <button class="ghost sm gear-btn" onclick={() => (settingsOpen = true)} aria-label="Settings"><Settings size={18} /></button>
     </div>
@@ -570,6 +572,11 @@
     <span>Runs entirely in this browser.</span>
     <span>·</span>
     <span>SimulationCraft is <a href="https://www.gnu.org/licenses/gpl-3.0.html" rel="license">GPL-3.0</a>{#if engineBuild}, built from {engineBuild}{/if}; sources and patches ship with each release.</span>
+  </p>
+  <p>
+    Frostsim is free software under the <a href="https://www.gnu.org/licenses/gpl-3.0.html" rel="license">GPL-3.0</a>:
+    <a href={SOURCE_URL} target="_blank" rel="noopener noreferrer">source code on GitHub</a>
+    · <a href="https://github.com/simulationcraft/simc" target="_blank" rel="noopener noreferrer">SimulationCraft source</a>
   </p>
 </footer>
 

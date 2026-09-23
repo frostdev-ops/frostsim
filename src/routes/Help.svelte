@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { SOURCE_URL } from '../lib/source'
   // P14.20: Help and status, every field first-hand.
   //
   // NO EXTERNAL STATUS SERVICE, and that is the design rather than a shortcut.
@@ -176,6 +177,8 @@
         <dd class="mono">{manifest.engine.upstreamCommit.slice(0, 7)} on {manifest.engine.upstreamBranch}</dd>
         <dt>Engine licence</dt>
         <dd class="mono">GPL-3.0-only <a href="https://github.com/simulationcraft/simc">source</a></dd>
+        <dt>Frostsim licence</dt>
+        <dd class="mono">GPL-3.0-only <a href={SOURCE_URL}>source</a></dd>
         <dt>Game data</dt><dd class="mono">{manifest.wow.clientDataVersion}</dd>
         <dt>Hotfixes</dt>
         <dd class="mono">
