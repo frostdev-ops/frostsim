@@ -25,8 +25,11 @@ spec's progress by target count, and the machine's CPU and memory. Keys:
 Piped or with --plain it prints one line per sim instead.
 
 Runs on macOS, Linux and Windows: the engine runs as `node build/wasm/simc-node.cjs`, relinked
-with em++ (emsdk) only when missing or older than the build. Steps 1-3 above are bash scripts;
-on Windows run them from Git Bash or WSL, then run this script with `py` from any terminal.
+with em++ (emsdk) only when missing or older than the build. The build (step 3) needs bash and
+emsdk. A machine without them, Windows for one, can skip it: copy build/wasm/simc-node.cjs and
+build/wasm/simc-node.wasm from a machine that built them (WebAssembly runs anywhere), run
+`npm run engine:bootstrap`, then this script (`py` on Windows). Every report's engine commit is
+checked against engine.lock.json, so a stale copy fails on its first sim.
 
 Options: --target-error 0.1  --jobs 3  --tier MID2  --specs "Marksmanship Hunter,Outlaw Rogue"
          --out file.json  --plain
@@ -186,6 +189,14 @@ def trim_player(p: dict) -> dict:
     }
 
 
+def check_engine(report: dict, commit: str, version: str) -> None:
+    """Fail on a report from any engine but the locked one (a stale or foreign copied CLI)."""
+    rev = report.get('git_revision') or ''
+    if len(rev) < 7 or not commit.startswith(rev) or report.get('version') != version:
+        raise RuntimeError(f"engine is simc {report.get('version')} at {rev or 'an unknown commit'}, "
+                           f'lock says {version} at {commit[:10]}. Rebuild or recopy build/wasm/simc-node.*')
+
+
 def extract_variant(report: dict) -> tuple[dict, dict]:
     """simc json2 -> ({dps: [mean, sd], prio: [mean, sd]}, trimmed player)."""
     players = report['sim']['players']
@@ -202,10 +213,17 @@ def extract_variant(report: dict) -> tuple[dict, dict]:
 
 
 def relink(pool: int) -> None:
-    """Link the browser build's objects as a node CLI (what scripts/engine-smoke.sh does), once."""
+    """Link the browser build's objects as a node CLI (what scripts/engine-smoke.sh does), once.
+
+    With no build tree, a node CLI copied from another machine is used as is: it is WebAssembly, so
+    one built on macOS runs on Windows. check_engine() holds every report to the locked commit.
+    """
     lib = BUILD / 'engine/libengine.a'
     if not lib.exists():
-        sys.exit('no build tree at build/wasm. Run: npm run engine:build')
+        if CLI.exists() and CLI.with_suffix('.wasm').exists():
+            return
+        sys.exit('no engine. Either build it (npm run engine:build, needs emsdk and bash), or copy\n'
+                 'build/wasm/simc-node.cjs and build/wasm/simc-node.wasm from a machine that has.')
     if CLI.exists() and CLI.stat().st_mtime >= lib.stat().st_mtime:
         return
     threads = ['-pthread', f'-sPTHREAD_POOL_SIZE={pool}']
@@ -260,7 +278,7 @@ def preflight(lock: dict, manifest: dict) -> None:
         sys.exit(f'vendor/simc is at {head or "nothing"}, lock says {commit}. Run: npm run engine:bootstrap')
     built = manifest['engine']['upstreamCommit']
     if built != commit:
-        sys.exit(f'engine built from {built}, lock says {commit}. Run: source ~/emsdk/emsdk_env.sh && npm run engine:build')
+        sys.exit(f'engine manifest says {built}, lock says {commit}. Run: npm run engine:build')
 
 
 # ---------------------------------------------------------------------------------------------
@@ -844,7 +862,9 @@ def main() -> None:
         if code != 0:
             tail = '\n'.join(output.strip().splitlines()[-5:])
             raise RuntimeError(f'engine exit {code}:\n{tail}')
-        result = extract_variant(json.loads(json_path.read_text()))
+        report = json.loads(json_path.read_text())
+        check_engine(report, meta['engine']['commit'], meta['engine']['simcVersion'])
+        result = extract_variant(report)
         json_path.unlink()
         return result
 

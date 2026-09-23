@@ -17,7 +17,7 @@
     "lint": "oxlint --deny-warnings src scripts functions server",
     "engine:build": "./scripts/build-engine.sh",
     "engine:install": "mkdir -p public/engine && cp build/wasm/simc.js build/wasm/simc.wasm public/engine/",
-    "engine:bootstrap": "./scripts/bootstrap-engine.sh",
+    "engine:bootstrap": "node scripts/bootstrap-engine.mjs",
     "engine:manifest": "node scripts/engine-manifest.mjs",
     "catalog:build": "node scripts/catalog/build-catalogs.mjs",
     "engine:smoke": "./scripts/engine-smoke.sh",

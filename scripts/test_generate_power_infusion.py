@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import threading  # noqa: E402
 
 from generate_power_infusion import (  # noqa: E402
-    PI_POOL, PI_TIMED, Glyphs, Runner, System, Task, bar, extract_variant, paint, pick_profiles, run_args,
+    PI_POOL, PI_TIMED, Glyphs, Runner, System, Task, bar, check_engine, extract_variant, paint, pick_profiles, run_args,
     trim_stat, variants)
 
 PROFILES = Path(__file__).resolve().parent.parent / 'vendor/simc/profiles/MID2'
@@ -74,6 +74,16 @@ class ExtractVariant(unittest.TestCase):
         self.assertEqual(run['prio'], [100, 1])
         with self.assertRaisesRegex(ValueError, 'expected one player'):
             extract_variant({'sim': {'players': []}})
+
+
+class CheckEngine(unittest.TestCase):
+    def test_only_the_locked_engine_passes(self):
+        lock = 'c01572044af513f9d85b79080b8d14619f1c00c5'
+        check_engine({'git_revision': 'c015720', 'version': '1210-01'}, lock, '1210-01')
+        for report in ({'git_revision': 'abcdef1', 'version': '1210-01'}, {'version': '1210-01'},
+                       {'git_revision': 'c015720', 'version': '1205-02'}, {'git_revision': 'c0', 'version': '1210-01'}):
+            with self.assertRaisesRegex(RuntimeError, 'lock says 1210-01 at c01572044a'):
+                check_engine(report, lock, '1210-01')
 
 
 class TrimStat(unittest.TestCase):
