@@ -45,11 +45,18 @@ export function pickGreenRun(runs = []) {
     && /^[a-f0-9]{40}$/.test(run.head_sha));
 }
 
-export async function discover() {
-  const ci = await github('/actions/workflows/main.yml/runs?branch=midnight&event=push&status=success&per_page=20');
-  const tested = pickGreenRun(ci.workflow_runs);
-  if (!tested) throw new Error('No successful upstream midnight CI run was available');
-  return { ref: tested.head_sha, ciUrl: tested.html_url };
+/**
+ * The listing is intermittently stale (it has served runs from weeks back, 2026-09-23), so a pick
+ * older than `floor` is retried before the run concludes there is nothing new.
+ */
+export async function discover(floor = 0, attempts = 3) {
+  for (let attempt = 1; ; attempt++) {
+    const ci = await github('/actions/workflows/main.yml/runs?branch=midnight&event=push&per_page=50');
+    const tested = pickGreenRun(ci.workflow_runs);
+    if (!tested) throw new Error('No successful upstream midnight CI run was available');
+    if (Date.parse(tested.created_at) >= floor || attempt >= attempts) return { ref: tested.head_sha, ciUrl: tested.html_url };
+    await new Promise(resolve => setTimeout(resolve, 20_000));
+  }
 }
 
 function define(text, name) {
@@ -376,15 +383,15 @@ async function main() {
   try {
     const ref = option('--ref');
     if (ref !== undefined && !/^[a-f0-9]{40}$/.test(ref)) throw new Error('--ref requires a full immutable source commit');
-    const candidate = ref ? { ref } : await discover();
+    // Never move backwards: not past the app's own pin, not past what is already published.
+    const floor = [lock.upstream.commitDate, ...index.packs.filter(p => p.compat === compat).map(p => p.commitDate)]
+      .filter(Boolean).map(Date.parse).reduce((a, b) => Math.max(a, b), 0);
+    const candidate = ref ? { ref } : await discover(floor);
     const revision = await github(`/commits/${candidate.ref}`);
     const commit = revision.sha;
     if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error('Invalid upstream commit');
     candidate.date = revision.commit.committer.date;
     console.log(`midnight @ ${commit} (${candidate.date}), compat ${compat}`);
-    // Never move backwards: not past the app's own pin, not past what is already published.
-    const floor = [lock.upstream.commitDate, ...index.packs.filter(p => p.compat === compat).map(p => p.commitDate)]
-      .filter(Boolean).map(Date.parse).reduce((a, b) => Math.max(a, b), 0);
     if (!ref && Date.parse(candidate.date) < floor) {
       console.log(`Upstream listing returned ${commit.slice(0, 7)}, older than what this app already has; nothing to do`);
     } else {

@@ -29,8 +29,8 @@ function files(root, path) {
   if (!existsSync(full)) return [];
   if (!statSync(full).isDirectory()) return [path];
   return readdirSync(full, { withFileTypes: true })
-    // Tests and sync-conflict copies ("x 2.mjs") are not part of the recipe.
-    .filter(entry => !entry.name.includes(' ') && !/\.test\.[cm]?[jt]s$/.test(entry.name))
+    // Tests, sync-conflict copies ("x 2.mjs") and macOS AppleDouble files are not part of the recipe.
+    .filter(entry => !entry.name.includes(' ') && !entry.name.startsWith('._') && !/\.test\.[cm]?[jt]s$/.test(entry.name))
     // Always '/' so a Windows build and the Linux updater agree.
     .flatMap(entry => files(root, `${path}/${entry.name}`));
 }
