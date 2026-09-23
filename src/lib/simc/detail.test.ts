@@ -288,6 +288,13 @@ describe('parsePlayerDetail buffs', () => {
     }
     expect(parsePlayerDetail(wide, PLAYER).buffs[0].uptimePct).toBeCloseTo(265.4, 1)
   })
+
+  it('reads Hunter\'s Mark from the target debuff, because the overrides object never lists it', () => {
+    const marked = (uptime: number) => ({ ...report, sim: { ...report.sim, overrides: { chaos_brand: 1 },
+      targets: [{ name: 'Fluffy_Pillow', buffs_constant: [{ name: 'hunters_mark', spell: 259556, uptime }] }] } })
+    expect(parsePlayerDetail(marked(100), PLAYER).raidBuffs).toEqual({ chaos_brand: true, hunters_mark: true })
+    expect(parsePlayerDetail(marked(0), PLAYER).raidBuffs).toEqual({ chaos_brand: true })
+  })
 })
 
 describe('parsePlayerDetail action sequence', () => {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { checkSettings, parseRoute, ROUTE_DEFAULTS, routeOptions } from './dungeonRoute'
+import { readFileSync } from 'node:fs'
+import { checkSettings, importRouteExport, parseRoute, ROUTE_DEFAULTS, routeOptions, routePulls } from './dungeonRoute'
 
 // P10.9: rules from vendor/simc not inferred; no dungeon mappings invented here.
 
@@ -92,5 +93,36 @@ describe('routeOptions', () => {
       'dungeon_route_smart_targeting=0',
       'dungeon_route_simple_dps_members=2',
     ])
+  })
+})
+
+describe('routePulls', () => {
+  it('breaks a real export into per-pull rows', () => {
+    const route = importRouteExport(readFileSync('public/routes/ruby-life-pools.simc', 'utf8'))
+    const pulls = routePulls(route)
+    expect(route.issues).toEqual([])
+    expect(pulls.map(p => p.pull)).toEqual(Array.from({ length: route.pulls }, (_, i) => i + 1))
+    expect(pulls[0].enemies).toHaveLength(8)
+    expect(pulls[0].delay).toBe(16)
+    expect(pulls[0].bloodlust).toBe(false)
+    expect(pulls[0].enemies[0]).toEqual({ name: 'primal-juggernaut_1', health: 5653382, boss: false })
+    const boss = pulls[2].enemies.at(-1)!
+    expect(boss).toEqual({ name: 'defier-draghar_1', health: 8833410, boss: true })
+  })
+
+  it('defaults the fields a line omits', () => {
+    expect(routePulls(parseRoute('raid_events+=/pull,enemies=Mob_A:1000'))[0])
+      .toEqual({ pull: 1, delay: 0, bloodlust: false, enemies: [{ name: 'Mob_A', health: 1000, boss: false }] })
+  })
+
+  it('expands the copy field so the rows match the summary count', () => {
+    const route = parseRoute('raid_events+=/pull,pull=1,delay=5,bloodlust=1,enemies=Trash_A:1000:humanoid:4|BOSS_Big:9000')
+    const [pull] = routePulls(route)
+    expect(pull.enemies).toHaveLength(route.enemies)
+    expect(pull.enemies).toHaveLength(5)
+    expect(pull.delay).toBe(5)
+    expect(pull.bloodlust).toBe(true)
+    expect(pull.enemies.filter(e => e.name === 'Trash_A')).toHaveLength(4)
+    expect(pull.enemies.at(-1)).toEqual({ name: 'Big', health: 9000, boss: true })
   })
 })

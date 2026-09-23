@@ -130,9 +130,12 @@
     width: min(22rem, calc(100vw - 2rem));
     padding: var(--s3);
     border: 1px solid var(--border-strong);
-    border-radius: var(--r3);
-    background: var(--surface);
-    box-shadow: var(--shadow-3);
+    border-radius: 12px;
+    background: linear-gradient(180deg, var(--glass-hi), transparent 35%), var(--glass-strong);
+    -webkit-backdrop-filter: blur(24px) saturate(1.6);
+    backdrop-filter: blur(24px) saturate(1.6);
+    box-shadow: var(--shadow-3), inset 0 1px 0 var(--rim);
+    animation: tip-in 0.35s var(--ease);
     display: flex;
     flex-direction: column;
     gap: 0.25rem;
@@ -157,5 +160,8 @@
   .flavor { color: var(--q-legendary); font-style: italic; }
   .accent-text { color: var(--accent); }
   .warn-text { color: var(--warn); }
+  @keyframes tip-in { from { opacity: 0; transform: translateY(4px) scale(0.98); } }
+  @media (prefers-reduced-motion: reduce) { :global(:root:not([data-motion='full'])) .tip { animation: none; } }
+  :global(:root[data-motion='reduced']) .tip { animation: none; }
   .attribution { border-top: 1px solid var(--border); padding-top: 0.25rem; margin-top: 0.15rem; }
 </style>

@@ -1,12 +1,35 @@
-/* Shared Warcraft-inspired surfaces. Imported after the base tokens. */
-:root { --font: 'Inter Variable', ui-sans-serif, system-ui, sans-serif; --font-display: 'Chakra Petch', 'Inter Variable', sans-serif; }
+/* Frostsim surface layer. Imported after the base tokens in app.css.
+ *
+ * Same palette family as before (charcoal, ice cyan, Chakra Petch display),
+ * rebuilt as frosted glass over the animated WebGL backdrop in lib/fx: every
+ * panel blurs what is behind it, lights up under the pointer (--mx/--my come
+ * from lib/fx/pointer.ts), and rises into place when it appears or scrolls in.
+ *
+ * Two rules keep the effects from breaking layout:
+ * - Entrance animations fill `backwards` only, so a finished panel has no
+ *   transform and never becomes the containing block for a fixed descendant.
+ * - A panel holding a fixed-position child (full-screen editors) drops its
+ *   blur and animation, because both would otherwise capture that child.
+ */
+
+:root {
+  --font: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-display: 'Chakra Petch', 'Inter Variable', sans-serif;
+  --r2: 0.5rem;
+  --r3: 0.625rem;
+  --r4: 0.875rem;
+  --header-h: 4.5rem;
+  interpolate-size: allow-keywords;
+}
+
 h1, h2, h3, h4, .section-title { font-family: var(--font-display); font-weight: 600; }
-h1 { font-weight: 700; font-size: 26px; letter-spacing: -.025em; }
-h2 { letter-spacing: -.015em; }
+h1 { font-weight: 700; font-size: 28px; letter-spacing: -.02em; }
+h2 { letter-spacing: -.01em; }
 button, input, select, textarea { font-family: var(--font); }
 label.check { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; min-height: 28px; }
 label.check input { flex: none; }
 :root[data-theme='light'] .brand img { filter: brightness(.5) saturate(1.2); }
+
 [data-class='warrior'] { --class-color: #c69b6d; }
 [data-class='paladin'] { --class-color: #f48cba; }
 [data-class='hunter'] { --class-color: #aad372; }
@@ -21,27 +44,54 @@ label.check input { flex: none; }
 [data-class='demon_hunter'] { --class-color: #c266ea; }
 [data-class='evoker'] { --class-color: #61bda6; }
 :root[data-theme='light'] [data-class] { --class-color: var(--text); }
+
+/* ---- Tokens ------------------------------------------------------------ */
+
+:root {
+  --accent-2: #8fb8ff;
+  --accent-3: #a58bf7;
+  --grad: linear-gradient(115deg, #5cc6e3 0%, #7fb4ff 52%, #a58bf7 100%);
+  --grad-text: linear-gradient(180deg, #ffffff 10%, #bfeefb 55%, #86d7ee 100%);
+  --glass: rgb(255 255 255 / 0.62);
+  --glass-strong: rgb(255 255 255 / 0.9);
+  --glass-edge: rgb(12 26 43 / 0.09);
+  --glass-hi: rgb(255 255 255 / 0.7);
+  --well: rgb(12 26 43 / 0.035);
+  --field: rgb(255 255 255 / 0.7);
+  --spot: rgb(2 132 199 / 0.08);
+  --spot-edge: rgb(2 132 199 / 0.45);
+  --panel-shadow: 0 18px 40px -24px rgb(12 26 43 / 0.35), 0 1px 2px rgb(12 26 43 / 0.06);
+}
+
 :root:not([data-theme='light']) {
   color-scheme: dark;
-  --bg: #1b1d22;
-  --surface: #25282e;
-  --surface-2: #202228;
-  --surface-3: #363a43;
-  --glass: #25282e;
-  --glass-blur: 0px;
-  --border: #383c45;
-  --border-strong: #555b68;
-  --rim: transparent;
-  --text: #f0f1f5;
-  --text-muted: #adb2bf;
-  --text-faint: #9299a7;
-  --text-on-accent: #10212a;
+  --bg: #0a0c11;
+  /* --surface stays opaque for overlays; -2/-3 are wells and hovers inside glass. */
+  --surface: #1b1f27;
+  --surface-2: rgb(8 10 14 / 0.5);
+  --surface-3: rgb(255 255 255 / 0.075);
+  --glass: rgb(19 23 30 / 0.6);
+  --glass-strong: rgb(17 20 27 / 0.9);
+  --glass-edge: rgb(255 255 255 / 0.075);
+  --glass-hi: rgb(255 255 255 / 0.06);
+  --glass-blur: 22px;
+  --well: rgb(0 0 0 / 0.2);
+  --field: rgb(6 8 12 / 0.45);
+  --border: rgb(255 255 255 / 0.085);
+  --border-strong: rgb(255 255 255 / 0.17);
+  --rim: rgb(255 255 255 / 0.07);
+  --text: #eef3f8;
+  --text-muted: #a9b3c2;
+  --text-faint: #8a94a5;
+  --text-on-accent: #06121a;
   --accent: #65cbe5;
-  --accent-hi: #93def0;
-  --accent-soft: #253e47;
-  --accent-border: #4b7a88;
-  --accent-glow: transparent;
-  --bar-track: #383c45;
+  --accent-hi: #9be4f5;
+  --accent-soft: rgb(101 203 229 / 0.13);
+  --accent-border: rgb(101 203 229 / 0.42);
+  --accent-glow: rgb(101 203 229 / 0.38);
+  --spot: rgb(101 203 229 / 0.075);
+  --spot-edge: rgb(140 225 248 / 0.75);
+  --bar-track: rgb(255 255 255 / 0.055);
   --q-common: #e6e7eb;
   --q-uncommon: #40cf64;
   --q-rare: #66a8fa;
@@ -49,19 +99,533 @@ label.check input { flex: none; }
   --q-legendary: #ffad4b;
   --q-artifact: #e6cc80;
   --good: #62d5a1;
+  --good-soft: rgb(98 213 161 / 0.12);
   --gain: #62d5a1;
   --warn: #efc56c;
-  --warn-soft: #403627;
+  --warn-soft: rgb(239 197 108 / 0.12);
+  --bad: #f87171;
+  --bad-soft: rgb(248 113 113 / 0.12);
+  --info-soft: rgb(101 203 229 / 0.08);
+  --shadow-2: 0 10px 30px -8px rgb(0 0 0 / 0.6), 0 1px 3px rgb(0 0 0 / 0.4);
+  --shadow-3: 0 30px 80px -20px rgb(0 0 0 / 0.8), 0 0 0 1px rgb(255 255 255 / 0.04);
+  --panel-shadow: 0 24px 60px -30px rgb(0 0 0 / 0.85), 0 2px 6px -2px rgb(0 0 0 / 0.4);
+  --focus: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent), 0 0 18px 2px var(--accent-glow);
 }
-body::before, .panel::before { display: none; }
+
+/* ---- Page -------------------------------------------------------------- */
+
+/* The backdrop canvas carries the page; this is what shows before it loads or
+   where WebGL is unavailable. */
+body {
+  background:
+    radial-gradient(70rem 36rem at 50% -14rem, rgb(101 203 229 / 0.14), transparent 70%),
+    radial-gradient(50rem 30rem at 100% 110%, rgb(165 139 247 / 0.08), transparent 70%),
+    var(--bg);
+  background-attachment: fixed;
+}
+:root[data-theme='light'] body {
+  background:
+    radial-gradient(70rem 36rem at 50% -14rem, rgb(2 132 199 / 0.1), transparent 70%),
+    var(--bg);
+}
+body::before { display: none; }
 [hidden] { display: none !important; }
+
+::selection { background: rgb(101 203 229 / 0.35); color: #fff; }
+:root[data-theme='light'] ::selection { background: rgb(2 132 199 / 0.22); color: inherit; }
+
+* { scrollbar-width: thin; scrollbar-color: rgb(255 255 255 / 0.16) transparent; }
+:root[data-theme='light'] * { scrollbar-color: rgb(12 26 43 / 0.22) transparent; }
+
+/* Page titles read as ice: a cold gradient in the display face. */
+main h1 {
+  background: var(--grad-text);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 0 18px rgb(101 203 229 / 0.18));
+}
+:root[data-theme='light'] main h1 {
+  background: linear-gradient(180deg, #0c1a2b, #0369a1);
+  -webkit-background-clip: text;
+  background-clip: text;
+  filter: none;
+}
+@media (forced-colors: active) { main h1 { color: CanvasText; background: none; filter: none; } }
+
+/* ---- Panels ------------------------------------------------------------ */
+
+.panel {
+  position: relative;
+  isolation: isolate;
+  background:
+    linear-gradient(180deg, var(--glass-hi), transparent 42%),
+    var(--glass);
+  border: 1px solid var(--glass-edge);
+  border-radius: var(--r4);
+  box-shadow: var(--panel-shadow), inset 0 1px 0 var(--rim);
+  -webkit-backdrop-filter: blur(var(--glass-blur, 18px)) saturate(1.5);
+  backdrop-filter: blur(var(--glass-blur, 18px)) saturate(1.5);
+}
+/* Pointer position (src/lib/fx/pointer.ts), written on every move. Inherited custom properties
+   would restyle every descendant of a large panel per frame; each surface reads its own value. */
+@property --mx { syntax: '*'; inherits: false; }
+@property --my { syntax: '*'; inherits: false; }
+.panel::before, .panel::after { --mx: inherit; --my: inherit; }
+/* Border light that follows the pointer. */
+.panel::before {
+  content: '';
+  display: block;
+  position: absolute;
+  inset: -1px;
+  height: auto;
+  padding: 1px;
+  border-radius: inherit;
+  background: radial-gradient(26rem circle at var(--mx, 50%) var(--my, -20rem), var(--spot-edge), transparent 42%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  opacity: 0;
+  transition: opacity 0.5s var(--ease);
+  pointer-events: none;
+}
+/* Surface wash under the pointer. */
+.panel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: radial-gradient(40rem circle at var(--mx, 50%) var(--my, -20rem), var(--spot), transparent 45%);
+  opacity: 0;
+  transition: opacity 0.5s var(--ease);
+  pointer-events: none;
+}
+.panel:hover::before, .panel:hover::after { opacity: 1; }
+
+/* Glass inside glass reads as mud: nested panels become lit wells. */
+.panel .panel {
+  background: var(--well);
+  box-shadow: inset 0 1px 0 var(--rim);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.panel:has(.fullscreen, .wrap-code.full) {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background: var(--glass-strong);
+  animation: none !important;
+}
+
+/* Entrance: every top-level panel rises in when it first renders, staggered
+   by position; below the fold it rises again as it scrolls into view. */
+@keyframes panel-in {
+  from { opacity: 0; translate: 0 18px; }
+}
+@keyframes panel-scroll {
+  from { transform: translateY(36px) scale(0.975); }
+  to { transform: none; }
+}
+main .panel:not(.panel .panel),
+main .empty,
+main .banner {
+  animation: panel-in 0.7s var(--ease) var(--stagger, 0ms) backwards;
+}
+main :is(.stack, .stack-sm, .report-main, .report-sidebar) > :nth-child(2) { --stagger: 60ms; }
+main :is(.stack, .stack-sm, .report-main, .report-sidebar) > :nth-child(3) { --stagger: 120ms; }
+main :is(.stack, .stack-sm, .report-main, .report-sidebar) > :nth-child(4) { --stagger: 180ms; }
+main :is(.stack, .stack-sm, .report-main, .report-sidebar) > :nth-child(5) { --stagger: 240ms; }
+main :is(.stack, .stack-sm, .report-main, .report-sidebar) > :nth-child(n + 6) { --stagger: 300ms; }
+@supports (animation-timeline: view()) {
+  main .panel:not(.panel .panel):not(:has(.fullscreen, .wrap-code.full, .run-dock)) {
+    animation: panel-in 0.7s var(--ease) var(--stagger, 0ms) backwards, panel-scroll linear both;
+    animation-timeline: auto, view();
+    animation-range: normal, entry 0% entry 90%;
+  }
+}
+
+/* ---- Buttons ----------------------------------------------------------- */
+
+button {
+  border-radius: var(--r2);
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.06), rgb(255 255 255 / 0.02));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.05);
+  transition:
+    background 0.25s var(--ease),
+    border-color 0.25s var(--ease),
+    color 0.25s var(--ease),
+    box-shadow 0.35s var(--ease),
+    translate 0.4s var(--spring),
+    scale 0.4s var(--spring);
+}
+:root[data-theme='light'] :where(button) {
+  background: linear-gradient(180deg, #fff, #f3f7fb);
+  box-shadow: 0 1px 2px rgb(12 26 43 / 0.06);
+}
+button:where(:hover:not(:disabled)) {
+  background: linear-gradient(180deg, rgb(101 203 229 / 0.14), rgb(101 203 229 / 0.05));
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 1px rgb(101 203 229 / 0.08), 0 8px 26px -12px var(--accent-glow);
+  translate: 0 -1px;
+}
+button:where(:active:not(:disabled)) {
+  filter: none;
+  translate: 0 0;
+  scale: 0.97;
+  transition-duration: 0.08s;
+}
+
+button.primary {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  border: 0;
+  background: var(--grad);
+  background-size: 190% 100%;
+  background-position: 0% 50%;
+  color: var(--text-on-accent);
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.45),
+    inset 0 -1px 0 rgb(0 0 0 / 0.15),
+    0 8px 28px -10px rgb(101 203 229 / 0.7);
+  transition:
+    background-position 0.7s var(--ease),
+    box-shadow 0.4s var(--ease),
+    translate 0.4s var(--spring),
+    scale 0.4s var(--spring),
+    opacity 0.25s var(--ease);
+}
+:root[data-theme='light'] button.primary { color: #fff; background: linear-gradient(115deg, #0284c7, #4f6fe0 60%, #7c5ce6); background-size: 190% 100%; }
+button.primary:where(:hover:not(:disabled)) {
+  background: var(--grad);
+  background-size: 190% 100%;
+  background-position: 100% 50%;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.5),
+    0 12px 36px -8px rgb(127 180 255 / 0.7),
+    0 0 0 1px rgb(255 255 255 / 0.12);
+  translate: 0 -2px;
+}
+:root[data-theme='light'] button.primary:where(:hover:not(:disabled)) { background: linear-gradient(115deg, #0284c7, #4f6fe0 60%, #7c5ce6); background-size: 190% 100%; background-position: 100% 50%; }
+/* A sheen crosses the button on hover. */
+button.primary::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(105deg, transparent 30%, rgb(255 255 255 / 0.55) 48%, transparent 64%);
+  translate: -120% 0;
+  transition: translate 0.9s var(--ease);
+  pointer-events: none;
+}
+button.primary:where(:hover:not(:disabled))::after { translate: 120% 0; }
+button.primary:disabled {
+  background: rgb(255 255 255 / 0.07);
+  color: var(--text-faint);
+  box-shadow: none;
+  opacity: 1;
+}
+:root[data-theme='light'] button.primary:disabled { background: #e4ebf2; }
+
+button.ghost { background: transparent; border-color: transparent; box-shadow: none; }
+button.ghost:where(:hover:not(:disabled)) {
+  background: rgb(255 255 255 / 0.06);
+  border-color: transparent;
+  box-shadow: none;
+  translate: none;
+}
+:root[data-theme='light'] button.ghost:where(:hover:not(:disabled)) { background: rgb(12 26 43 / 0.05); }
+button.danger:where(:hover:not(:disabled)) {
+  background: var(--bad-soft);
+  border-color: color-mix(in oklab, var(--bad) 60%, transparent);
+  box-shadow: 0 8px 26px -12px rgb(248 113 113 / 0.55);
+}
+
+/* ---- Fields ------------------------------------------------------------ */
+
+input[type='text'],
+input[type='number'],
+input[type='search'],
+select,
+textarea {
+  border-radius: var(--r2);
+  background-color: var(--field);
+  border-color: var(--border);
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.25);
+  transition:
+    border-color 0.25s var(--ease),
+    background-color 0.25s var(--ease),
+    box-shadow 0.35s var(--ease);
+}
+:root[data-theme='light'] :is(input[type='text'], input[type='number'], input[type='search'], select, textarea) {
+  box-shadow: inset 0 1px 2px rgb(12 26 43 / 0.06);
+}
 input:not([type='checkbox']):not([type='radio']), select { min-height: 40px; }
+:is(input, select, textarea):hover:not(:disabled) { border-color: var(--border-strong); }
+:is(input[type='text'], input[type='number'], input[type='search'], select, textarea):focus {
+  outline: none;
+  border-color: var(--accent-border);
+  background-color: var(--field);
+  box-shadow: 0 0 0 3px rgb(101 203 229 / 0.16), 0 0 24px -6px var(--accent-glow);
+}
+:is(input[type='text'], input[type='number'], input[type='search'], select, textarea):focus-visible {
+  border-radius: var(--r2);
+  box-shadow: 0 0 0 3px rgb(101 203 229 / 0.2), 0 0 24px -6px var(--accent-glow);
+}
+select option { background: var(--surface); color: var(--text); }
+
+input[type='checkbox'],
+input[type='radio'] {
+  appearance: none;
+  -webkit-appearance: none;
+  flex: none;
+  display: inline-grid;
+  place-content: center;
+  width: 1.05rem;
+  height: 1.05rem;
+  margin: 0;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 0.3rem;
+  background: var(--field);
+  cursor: pointer;
+  transition: background 0.25s var(--ease), border-color 0.25s var(--ease), box-shadow 0.3s var(--ease);
+}
+input[type='radio'] { border-radius: 50%; }
+input[type='checkbox']::before {
+  content: '';
+  width: 0.62rem;
+  height: 0.62rem;
+  background: var(--text-on-accent);
+  clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+  scale: 0;
+  transition: scale 0.35s var(--spring);
+}
+input[type='checkbox']:indeterminate::before { clip-path: inset(40% 10%); scale: 1; }
+input[type='radio']::before {
+  content: '';
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: var(--text-on-accent);
+  scale: 0;
+  transition: scale 0.35s var(--spring);
+}
+:is(input[type='checkbox'], input[type='radio']):hover:not(:disabled) { border-color: var(--accent-border); }
+:is(input[type='checkbox'], input[type='radio']):is(:checked, :indeterminate) {
+  background: var(--grad);
+  border-color: transparent;
+  box-shadow: 0 0 14px -3px var(--accent-glow);
+}
+:root[data-theme='light'] :is(input[type='checkbox'], input[type='radio']):is(:checked, :indeterminate) { background: var(--accent); }
+:is(input[type='checkbox'], input[type='radio']):checked::before { scale: 1; }
+:root[data-theme='light'] :is(input[type='checkbox'], input[type='radio'])::before { background: #fff; }
+@media (forced-colors: active) {
+  input[type='checkbox'], input[type='radio'] { appearance: auto; }
+  input[type='checkbox']::before, input[type='radio']::before { display: none; }
+}
+
+input[type='range'] {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 1.4rem;
+  background: transparent;
+  cursor: pointer;
+}
+input[type='range']::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-3)) no-repeat, var(--bar-track);
+  background-size: 100% 100%;
+}
+input[type='range']::-moz-range-track { height: 4px; border-radius: 999px; background: var(--bar-track); }
+input[type='range']::-moz-range-progress { height: 4px; border-radius: 999px; background: var(--accent); }
+input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 1.05rem;
+  height: 1.05rem;
+  margin-top: calc(2px - 0.525rem);
+  border-radius: 50%;
+  background: #fff;
+  border: 3px solid var(--accent);
+  box-shadow: 0 0 0 4px rgb(101 203 229 / 0.15), 0 0 16px var(--accent-glow);
+  transition: scale 0.3s var(--spring);
+}
+input[type='range']::-moz-range-thumb {
+  width: 0.8rem;
+  height: 0.8rem;
+  border-radius: 50%;
+  background: #fff;
+  border: 3px solid var(--accent);
+  box-shadow: 0 0 16px var(--accent-glow);
+}
+input[type='range']:active::-webkit-slider-thumb { scale: 1.2; }
+
+/* ---- Segmented, chips, kbd --------------------------------------------- */
+
+.segmented {
+  gap: 2px;
+  padding: 3px;
+  border-radius: calc(var(--r2) + 3px);
+  border-color: var(--border);
+  background: var(--field);
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.25);
+}
+.segmented label {
+  border-right: 0;
+  border-radius: var(--r2);
+  color: var(--text-muted);
+  transition: background 0.3s var(--ease), color 0.3s var(--ease), box-shadow 0.3s var(--ease);
+}
+.segmented label:hover { background: rgb(255 255 255 / 0.05); color: var(--text); }
+.segmented label:has(input:checked) {
+  background: linear-gradient(180deg, rgb(101 203 229 / 0.24), rgb(101 203 229 / 0.1));
+  color: var(--accent-hi);
+  box-shadow: inset 0 0 0 1px var(--accent-border), 0 4px 16px -6px var(--accent-glow);
+}
+:root[data-theme='light'] .segmented label:has(input:checked) { color: var(--accent); background: var(--accent-soft); }
+.segmented input[type='radio'] { position: absolute; opacity: 0; width: 0; height: 0; }
+
+.chip {
+  padding: 0.1rem 0.55rem;
+  border-color: var(--border);
+  background: rgb(255 255 255 / 0.04);
+  letter-spacing: 0.01em;
+}
+.chip.accent {
+  background: var(--accent-soft);
+  border-color: var(--accent-border);
+  color: var(--accent-hi);
+  box-shadow: 0 0 14px -6px var(--accent-glow);
+}
+:root[data-theme='light'] .chip.accent { color: var(--accent); }
+.chip.good { box-shadow: 0 0 14px -6px rgb(98 213 161 / 0.6); border-color: rgb(98 213 161 / 0.3); }
+.chip.warn { border-color: rgb(239 197 108 / 0.3); }
+.chip.bad { border-color: rgb(248 113 113 / 0.3); }
+
+kbd {
+  background: linear-gradient(180deg, rgb(255 255 255 / 0.08), rgb(255 255 255 / 0.02));
+  border-color: var(--border-strong);
+  border-radius: 0.3rem;
+}
+
+/* ---- Tables ------------------------------------------------------------ */
+
+table.tbl th {
+  background: color-mix(in oklab, var(--surface-2) 88%, transparent);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+  color: var(--text-faint);
+  letter-spacing: 0.06em;
+}
+/* Row headers share th's type but not the sticky header's glass. */
+table.tbl tbody th {
+  background: transparent;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  border-bottom-color: rgb(255 255 255 / 0.05);
+}
+table.tbl td { border-bottom-color: rgb(255 255 255 / 0.05); }
+:root[data-theme='light'] table.tbl td { border-bottom-color: var(--border); }
+table.tbl tbody tr { transition: background 0.3s var(--ease), box-shadow 0.3s var(--ease); }
+table.tbl tbody tr:hover {
+  background: linear-gradient(90deg, rgb(101 203 229 / 0.1), rgb(101 203 229 / 0.02) 70%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+/* ---- Misc shared patterns ---------------------------------------------- */
+
+.skeleton {
+  background: linear-gradient(100deg, rgb(255 255 255 / 0.04) 30%, rgb(101 203 229 / 0.16) 50%, rgb(255 255 255 / 0.04) 70%);
+  background-size: 300% 100%;
+  animation: shimmer 1.6s var(--ease) infinite;
+}
+
+.empty {
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--r4);
+  background: radial-gradient(40rem 16rem at 50% 0%, rgb(101 203 229 / 0.08), transparent 70%), var(--glass);
+  -webkit-backdrop-filter: blur(var(--glass-blur, 18px));
+  backdrop-filter: blur(var(--glass-blur, 18px));
+}
+
+details.disclosure > summary,
+details.panel > summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+details.disclosure > summary::-webkit-details-marker,
+details.panel > summary::-webkit-details-marker { display: none; }
+details.disclosure > summary::before,
+details.panel > summary::before {
+  content: '';
+  flex: none;
+  width: 0.45rem;
+  height: 0.45rem;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  rotate: -45deg;
+  opacity: 0.7;
+  transition: rotate 0.35s var(--spring);
+}
+details.disclosure[open] > summary::before,
+details.panel[open] > summary::before { rotate: 45deg; }
+details::details-content {
+  block-size: 0;
+  overflow-y: clip;
+  transition: block-size 0.45s var(--ease), content-visibility 0.45s allow-discrete;
+}
+details[open]::details-content { block-size: auto; }
+
+pre.log {
+  background: rgb(0 0 0 / 0.3);
+  border-color: var(--border);
+  border-radius: var(--r2);
+}
+:root[data-theme='light'] pre.log { background: var(--surface-2); }
+
+hr { border: 0; height: 1px; background: linear-gradient(90deg, transparent, var(--border-strong), transparent); }
+
+/* ---- Layout helpers kept from the previous layer ------------------------ */
+
 .report-layout { display: grid; grid-template-columns: minmax(0, 1fr) 290px; gap: 20px; align-items: start; }
 .report-main { min-width: 0; display: flex; flex-direction: column; gap: 16px; }
 .report-sidebar { display: flex; flex-direction: column; gap: 16px; }
 .report-sidebar .panel { padding: 18px; }
 .action-bar { display: flex; align-items: center; gap: 20px; padding: 16px 0; }
 .action-bar .primary { min-width: 160px; }
-.section-title { font-size: 13px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
-.game-icon { display: grid; place-items: center; flex: none; width: 24px; height: 24px; border: 1px solid var(--border-strong); background: var(--surface-2); border-radius: 3px; }
+.section-title {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.section-title::before {
+  content: '';
+  display: inline-block;
+  width: 0.4rem;
+  height: 0.4rem;
+  margin-right: 0.55rem;
+  vertical-align: 0.1em;
+  rotate: 45deg;
+  background: var(--grad);
+  box-shadow: 0 0 10px var(--accent-glow);
+}
+.game-icon { display: grid; place-items: center; flex: none; width: 24px; height: 24px; border: 1px solid var(--border-strong); background: var(--surface-2); border-radius: 4px; }
 @media (max-width: 960px) { .report-layout { grid-template-columns: minmax(0, 1fr); } }
+
+/* ---- Reduced motion ---------------------------------------------------- */
+
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-motion='full']) :is(.panel, .empty, .banner) { animation: none !important; }
+  :root:not([data-motion='full']) button { transition-duration: 0s; }
+  :root:not([data-motion='full']) details::details-content { transition: none; }
+}
+:root[data-motion='reduced'] :is(.panel, .empty, .banner) { animation: none !important; }
+:root[data-motion='reduced'] button { transition-duration: 0s; }
+:root[data-motion='reduced'] details::details-content { transition: none; }

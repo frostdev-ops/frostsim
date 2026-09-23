@@ -36,7 +36,9 @@ function stampServiceWorker(): Plugin {
       const build = createHash('sha256').update(readFileSync(htmlPath)).digest('hex').slice(0, 12)
 
       // Full asset list, not just index.html (which misses dynamic chunks); emitted here not in worker.
+      // Per-spec Power Infusion details (~70 KB each) load on demand and are cached on first open.
       const assets = readdirSync(new URL('./dist/assets/', import.meta.url))
+        .filter((f) => !f.startsWith('pi-detail-'))
         .map((f) => `/assets/${f}`)
         .sort()
 
@@ -108,8 +110,11 @@ function readDevVars(): Record<string, string> {
 }
 
 const csp = productionCsp()
+const siteLegal = ['terms.html', 'privacy.html'].map((name) => existsSync(new URL(`./public/legal/${name}`, import.meta.url)))
+if (siteLegal.some(Boolean) && !siteLegal.every(Boolean)) throw new Error('Both private legal documents are required.')
 
 export default defineConfig({
+  define: { 'import.meta.env.VITE_SITE_LEGAL': JSON.stringify(siteLegal.every(Boolean)) },
   plugins: [svelte(), stampServiceWorker(), gameDataProxyDev()],
   server: { headers: crossOriginIsolation },
   preview: {

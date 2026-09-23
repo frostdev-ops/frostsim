@@ -86,16 +86,16 @@
     position: relative;
     line-height: 0;
     border-radius: var(--r1);
-    transition: transform var(--t-control) var(--ease);
+    transition: transform 0.45s var(--spring), filter 0.3s var(--ease);
   }
-  .cell:hover { filter: brightness(1.12); z-index: 2; }
+  .cell:hover { filter: brightness(1.15) drop-shadow(0 6px 12px rgb(0 0 0 / 0.5)); transform: translateY(-3px) scale(1.08); z-index: 2; }
   .cell.pickable {
     all: unset;
     position: relative;
     line-height: 0;
     border-radius: var(--r1);
     cursor: pointer;
-    transition: transform var(--t-control) var(--ease);
+    transition: transform 0.45s var(--spring), filter 0.3s var(--ease);
     display: inline-flex;
     align-items: center;
     gap: 3px;
@@ -111,8 +111,9 @@
     line-height: 1.1rem;
     text-align: center;
     border-radius: 999px;
-    background: var(--accent);
-    color: var(--bg);
+    background: var(--grad);
+    color: var(--text-on-accent);
+    box-shadow: 0 0 10px var(--accent-glow);
     font-weight: 700;
     pointer-events: none;
   }
@@ -125,9 +126,15 @@
     border: 2px solid var(--accent);
     border-radius: var(--r2);
     box-shadow: 0 0 0 1px color-mix(in oklab, var(--accent) 40%, transparent),
-                0 0 10px color-mix(in oklab, var(--accent) 45%, transparent);
+                0 0 14px color-mix(in oklab, var(--accent) 60%, transparent);
     pointer-events: none;
+    animation: ring-pulse 2.4s ease-in-out infinite;
   }
+  @keyframes ring-pulse { 50% { box-shadow: 0 0 0 1px color-mix(in oklab, var(--accent) 20%, transparent), 0 0 4px color-mix(in oklab, var(--accent) 30%, transparent); } }
+  @media (prefers-reduced-motion: reduce) {
+    :global(:root:not([data-motion='full'])) .cell.changed::after { animation: none; }
+  }
+  :global(:root[data-motion='reduced']) .cell.changed::after { animation: none; }
 
   .ilvl {
     position: absolute;
@@ -145,9 +152,12 @@
     margin-left: 0.3rem;
     padding: 0.1rem 0.4rem;
     font-size: var(--fs-xs);
-    border: 1px solid var(--border-strong);
+    border: 1px solid var(--accent-border);
     border-radius: 999px;
-    color: var(--text);
+    color: var(--accent-hi);
+    background: var(--accent-soft);
+    font-weight: 700;
+    box-shadow: 0 0 14px -6px var(--accent-glow);
   }
 
   /* Name on hover (visual affordance; icon alt text covers assistive tech). */

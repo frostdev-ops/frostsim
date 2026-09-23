@@ -47,3 +47,6 @@ release/
 # scripts/deploy-vps.sh; .deploy-stage alone is ~446 MB.
 .deploy-stage/
 dist-server/
+
+# Operator-authored website policies: deployed locally, never public repository content.
+/public/legal/

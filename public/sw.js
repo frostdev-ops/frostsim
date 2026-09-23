@@ -224,6 +224,19 @@ self.addEventListener('fetch', (event) => {
       const { name } = await resolveCacheName()
       const cache = await caches.open(name)
 
+      // Standalone policies must never replace the cached application shell.
+      if (url.pathname.startsWith('/legal/')) {
+        try {
+          const res = await fetch(request, { cache: 'no-cache' })
+          if (res.ok) await cache.put(request, res.clone())
+          return res
+        } catch (err) {
+          const hit = await cache.match(request)
+          if (hit) return hit
+          throw err
+        }
+      }
+
       // Version index moves; engine directories are immutable.
       if (url.pathname === '/engine-versions.json') {
         try {

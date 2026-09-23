@@ -670,3 +670,19 @@ describe('catalog / engine compatibility', () => {
     expect(checkCompatibility(manifest, null).map((w) => w.code)).toEqual(['engine_identity_unknown']);
   });
 });
+
+describe('talent tree cache', () => {
+  it('asks the worker once per class and retries after a miss', async () => {
+    const replies = [null, { classId: 9 }];
+    let sent = 0;
+    const c = CatalogClient.create({
+      send: async () => { sent++; return { kind: 'talentTree', tree: replies.shift() } as never; },
+      dispose: () => {},
+    });
+    expect(await c.talentTree(9)).toBeNull();
+    const [a, b] = await Promise.all([c.talentTree(9), c.talentTree(9)]);
+    expect(a).toBe(b);
+    expect(await c.talentTree(9)).toBe(a);
+    expect(sent).toBe(2);
+  });
+});

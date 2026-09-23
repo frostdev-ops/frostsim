@@ -290,9 +290,14 @@ export function parsePlayerDetail(raw: unknown, playerName: string): PlayerDetai
       temporaryEnchant: str(p.temporary_enchant),
       potionUsed: typeof p.potion_used === 'boolean' ? p.potion_used : undefined,
     },
-    raidBuffs: Object.fromEntries(Object.entries(asObj(asObj(asObj(raw)?.sim)?.overrides) ?? {})
-      .filter(([, value]) => typeof value === 'boolean' || value === 0 || value === 1)
-      .map(([key, value]) => [key, !!value])),
+    raidBuffs: {
+      ...Object.fromEntries(Object.entries(asObj(asObj(asObj(raw)?.sim)?.overrides) ?? {})
+        .filter(([, value]) => typeof value === 'boolean' || value === 0 || value === 1)
+        .map(([key, value]) => [key, !!value])),
+      // The engine's overrides object omits hunters_mark; the target debuff's uptime is the only record of it.
+      ...(asArr(asObj(asObj(raw)?.sim)?.targets).some((t) => [...asArr(asObj(t)?.buffs_constant), ...asArr(asObj(t)?.buffs)]
+        .some((b) => str(asObj(b)?.name) === 'hunters_mark' && (num(asObj(b)?.uptime) ?? 0) > 0)) ? { hunters_mark: true } : {}),
+    },
     abilities,
     pets,
     buffs: [

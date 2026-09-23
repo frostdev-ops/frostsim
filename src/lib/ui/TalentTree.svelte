@@ -45,34 +45,42 @@
       {@const position = point(node.nodeId)}
       {@const art = layout!.nodes[node.nodeId]}
       {@const rank = state?.rank ?? 0}
+      {@const nodeClass = `talent-node ${node.nodeType === 1 ? 'tiered' : ''} ${art.shape === 'PASSIVE' ? 'passive' : ''} ${node.entries.length > 1 ? 'choice' : ''} ${rank ? 'allocated' : ''} ${!state?.available && !rank ? 'locked' : ''} ${search && !node.entries.some(e => e.name.toLowerCase().includes(search.toLowerCase())) ? 'unmatched' : ''}`}
+      {@const nodeStyle = `left:${position.x / bounds.width * 100}%;top:${position.y / bounds.height * 100}%;--node-size:${40 / bounds.width * 100}%;`}
+      {#snippet face()}
+        {#if node.nodeType === 1}
+          {#each node.entries as tier, index (tier.entryId)}
+            {@const before = node.entries.slice(0, index).reduce((sum, e) => sum + e.maxRanks, 0)}
+            <span class="tier-icon" class:learned={rank > before}><GameIcon spellId={tier.spellId} label={tier.name} size={32} /><small>{Math.max(0, Math.min(tier.maxRanks, rank - before))}/{tier.maxRanks}</small></span>
+          {/each}
+        {:else}<GameIcon spellId={entry.spellId} label={entry.name} size={36} />{/if}
+        <span class="rank">{rank}/{node.maxRanks}</span>
+        {#if node.entries.length > 1 && node.nodeType !== 1}<span class="choice-mark">◆</span>{/if}
+      {/snippet}
+      <!-- Readonly trees are previews (nodes ignore the pointer), so a tooltip per node could never open. -->
+      {#if readonly}
+        <button class={nodeClass} style={nodeStyle} aria-label={`${entry.name}, rank ${rank} of ${node.maxRanks}`} aria-pressed={rank > 0} tabindex={-1}>{@render face()}</button>
+      {:else}
       <Tooltip.Root>
         <Tooltip.Trigger
-          class={`talent-node ${node.nodeType === 1 ? 'tiered' : ''} ${art.shape === 'PASSIVE' ? 'passive' : ''} ${node.entries.length > 1 ? 'choice' : ''} ${rank ? 'allocated' : ''} ${!state?.available && !rank ? 'locked' : ''} ${search && !node.entries.some(e => e.name.toLowerCase().includes(search.toLowerCase())) ? 'unmatched' : ''}`}
-          style={`left:${position.x / bounds.width * 100}%;top:${position.y / bounds.height * 100}%;--node-size:${40 / bounds.width * 100}%;`}
+          class={nodeClass}
+          style={nodeStyle}
           aria-label={`${entry.name}, rank ${rank} of ${node.maxRanks}`}
           aria-pressed={rank > 0}
-          aria-disabled={!readonly && !state?.available && !rank}
-          tabindex={readonly ? -1 : 0}
+          aria-disabled={!state?.available && !rank}
+          tabindex={0}
           onclick={(event) => act(node, event)}
           oncontextmenu={(event) => { event.preventDefault(); act(node, event) }}
-        >
-          {#if node.nodeType === 1}
-            {#each node.entries as tier, index (tier.entryId)}
-              {@const before = node.entries.slice(0, index).reduce((sum, e) => sum + e.maxRanks, 0)}
-              <span class="tier-icon" class:learned={rank > before}><GameIcon spellId={tier.spellId} label={tier.name} size={32} /><small>{Math.max(0, Math.min(tier.maxRanks, rank - before))}/{tier.maxRanks}</small></span>
-            {/each}
-          {:else}<GameIcon spellId={entry.spellId} label={entry.name} size={36} />{/if}
-          <span class="rank">{rank}/{node.maxRanks}</span>
-          {#if node.entries.length > 1 && node.nodeType !== 1}<span class="choice-mark">◆</span>{/if}
-        </Tooltip.Trigger>
+        >{@render face()}</Tooltip.Trigger>
         <Tooltip.Portal><Tooltip.Content class="talent-tooltip" sideOffset={12}>
           <div class="row"><GameIcon spellId={entry.spellId} label={entry.name} size={32} /><strong>{entry.name}</strong></div>
           <div class="small muted">Rank {rank}/{node.maxRanks} · {layout?.descriptions[entry.entryId]?.castTime ?? (art.shape === 'PASSIVE' ? 'Passive' : '')}</div>
           <p>{layout?.descriptions[entry.entryId]?.text ?? ''}</p>
           {#if state?.reason}<p class="reason">{state.reason}</p>{/if}
-          {#if !readonly}<span class="xs muted">Click to learn · Shift-click to refund</span>{/if}
+          <span class="xs muted">Click to learn · Shift-click to refund</span>
         </Tooltip.Content></Tooltip.Portal>
       </Tooltip.Root>
+      {/if}
     {/each}
   </div>
 </Tooltip.Provider>
@@ -84,8 +92,8 @@
 <style>
   .talent-canvas { position: relative; width: 100%; max-width: calc(var(--tree-height, 620px) * var(--tree-ratio)); margin-inline: auto; isolation: isolate; }
   svg { position: absolute; inset: 0; width: 100%; height: 100%; z-index: -1; }
-  line { stroke: #565044; stroke-width: 2; } line.allocated { stroke: #c69b48; filter: drop-shadow(0 0 2px #ad84204d); }
-  :global(.talent-node) { position: absolute; width: var(--node-size); min-height: 0; aspect-ratio: 1; transform: translate(-50%, -50%); padding: 2px; border: 2px solid #71664f; border-radius: 4px; background: #171713; transition: filter 120ms, box-shadow 120ms; }
+  line { stroke: #565044; stroke-width: 2; transition: stroke 0.4s var(--ease); } line.allocated { stroke: #e2b75a; stroke-width: 2.5; filter: drop-shadow(0 0 4px #e8bf6399); }
+  :global(.talent-node) { position: absolute; width: var(--node-size); min-height: 0; aspect-ratio: 1; transform: translate(-50%, -50%); padding: 2px; border: 2px solid #71664f; border-radius: 4px; background: #171713; transition: filter 0.25s var(--ease), box-shadow 0.35s var(--ease), border-color 0.3s var(--ease), scale 0.45s var(--spring), opacity 0.3s var(--ease); }
   :global(.talent-node .icon) { width: 100% !important; height: 100% !important; border: 0; border-radius: inherit; }
   :global(.talent-node.tiered) { width: calc(var(--node-size) * 3); aspect-ratio: 3; border-radius: 4px; gap: 4px; }
   .tier-icon { position: relative; min-width: 0; flex: 1; filter: grayscale(1); }
@@ -93,18 +101,22 @@
   .tier-icon small { position: absolute; bottom: -4px; right: 0; background: #171713; font-size: 9px; line-height: 12px; }
   :global(.talent-node.tiered > .rank) { display: none; }
   :global(.talent-node.passive) { border-radius: 50%; }
-  :global(.talent-node.allocated) { border-color: #e8bf63; box-shadow: 0 0 0 1px #755018, 0 0 10px #d4a53325; }
+  :global(.talent-node.allocated) { border-color: #e8bf63; box-shadow: 0 0 0 1px #755018, 0 0 14px #e8bf6355, inset 0 0 8px #e8bf6340; animation: talent-glow 3.2s ease-in-out infinite; }
+  @keyframes talent-glow { 50% { box-shadow: 0 0 0 1px #755018, 0 0 22px #e8bf6380, inset 0 0 10px #e8bf6355; } }
   :global(.talent-node:not(.allocated) .icon) { filter: grayscale(1) brightness(.65); }
   :global(.talent-node.locked) { opacity: .65; }
-  :global(.talent-node:hover), :global(.talent-node:focus-visible) { border-color: #fff0b4; filter: brightness(1.2); z-index: 2; }
+  :global(.talent-node:hover), :global(.talent-node:focus-visible) { border-color: #fff0b4; filter: brightness(1.25); scale: 1.12; z-index: 2; box-shadow: 0 0 0 1px #755018, 0 0 24px #fff0b466; }
   :global(.talent-node:active:not(:disabled)) { transform: translate(-50%, -50%) scale(.97); }
   :global(.talent-node.unmatched) { opacity: .2; }
   .rank { position: absolute; bottom: -9px; left: 50%; transform: translateX(-50%); background: #171713; border: 1px solid #71664f; border-radius: 3px; color: #d4c9b0; font-size: 10px; padding: 0 3px; line-height: 14px; }
   .choice-mark { position: absolute; right: -8px; top: -8px; color: #e8bf63; font-size: 10px; text-shadow: 0 1px #000; }
-  :global(.talent-tooltip) { z-index: 1200; max-width: 340px; background: #16191ff5; border: 1px solid #796749; border-radius: 6px; padding: 16px; display: grid; gap: 10px; box-shadow: 0 12px 32px #0008; }
-  :global(.talent-tooltip strong) { color: #efcd7d; }
+  :global(.talent-tooltip) { z-index: 1200; max-width: 340px; background: linear-gradient(180deg, #e8bf6314, transparent 40%), rgb(18 20 25 / 0.92); -webkit-backdrop-filter: blur(20px) saturate(1.4); backdrop-filter: blur(20px) saturate(1.4); border: 1px solid #796749; border-radius: 12px; padding: 16px; display: grid; gap: 10px; box-shadow: 0 20px 50px -10px #000c, 0 0 30px -12px #e8bf6366, inset 0 1px 0 #fff1; animation: talent-tip 0.3s var(--ease); }
+  @keyframes talent-tip { from { opacity: 0; transform: translateY(4px) scale(0.97); } }
+  :global(.talent-tooltip strong) { color: #efcd7d; font-family: var(--font-display); font-size: 16px; text-shadow: 0 0 14px #e8bf6355; }
   :global(.talent-tooltip p) { font-size: 13px; white-space: pre-line; }
   :global(.talent-tooltip .reason) { color: var(--warn); }
   .talent-choice { width: 100%; text-align: left; justify-content: start; }
   .dimmed { opacity: .35; }
+  @media (prefers-reduced-motion: reduce) { :global(:root:not([data-motion='full']) .talent-node.allocated) { animation: none; } }
+  :global(:root[data-motion='reduced'] .talent-node.allocated) { animation: none; }
 </style>

@@ -1,7 +1,7 @@
 // Hash routing; not a library because app has flat routes and P11.5 share payloads in hash. Character data never in query string (P03.2).
 
 export const ROUTES = [
-  'character', 'talents', 'quick', 'compare', 'gear', 'droptimizer', 'crests', 'advanced',
+  'character', 'talents', 'quick', 'compare', 'gear', 'droptimizer', 'crests', 'pi', 'advanced',
   'reports', 'help',
 ] as const
 export type RouteName = (typeof ROUTES)[number]
@@ -14,6 +14,7 @@ export const ROUTE_LABELS: Record<RouteName, string> = {
   gear: 'Top Gear',
   droptimizer: 'Droptimizer',
   crests: 'Crest Sim',
+  pi: 'Power Infusion',
   advanced: 'Advanced',
   reports: 'Reports',
   help: 'Help',
@@ -27,6 +28,7 @@ export const ROUTE_BLURBS: Record<RouteName, string> = {
   gear: 'Search the best legal combination of what you own.',
   droptimizer: 'What a single drop would be worth.',
   crests: 'Where to spend the crests you have.',
+  pi: 'What Power Infusion is worth per spec, 1 to 10 targets.',
   advanced: 'Raw scripts, stat weights, engine options.',
   reports: 'Everything you have run on this device.',
   help: 'Versions, what this browser can do, and what leaves it.',

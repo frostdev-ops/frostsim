@@ -44,12 +44,40 @@
   {#if !embedded}<GearStrip items={gear} size={40} />{/if}
 </section>
 <style>
-  .character-banner { min-width: 0; border-radius: 8px; background: var(--surface-2); padding: 18px; display: flex; flex-direction: column; gap: 16px; }
+  .character-banner {
+    position: relative;
+    min-width: 0;
+    border-radius: 12px;
+    border: 1px solid var(--glass-edge);
+    background:
+      radial-gradient(34rem 12rem at 0% 0%, color-mix(in oklab, var(--class-color, var(--accent)) 16%, transparent), transparent 70%),
+      radial-gradient(20rem 10rem at 100% 100%, rgb(101 203 229 / 0.06), transparent 70%),
+      var(--well);
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    overflow: hidden;
+  }
+  /* Class-coloured edge light. */
+  .character-banner::before {
+    content: '';
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 3px;
+    background: linear-gradient(180deg, transparent, var(--class-color, var(--accent)), transparent);
+    box-shadow: 0 0 18px var(--class-color, var(--accent));
+  }
   .identity { display: flex; align-items: center; gap: 16px; }
-  h2 { color: var(--class-color, var(--text)); font-size: 22px; letter-spacing: .04em; }
+  h2 {
+    color: var(--class-color, var(--text));
+    font-size: 24px;
+    letter-spacing: .04em;
+    text-shadow: 0 0 22px color-mix(in oklab, var(--class-color, var(--accent)) 45%, transparent);
+  }
   .profile-link { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; }
   .progression { display: flex; flex-wrap: wrap; gap: 16px 32px; border-top: 1px solid var(--border); padding-top: 14px; }
   .progression > div { display: flex; flex-direction: column; gap: 4px; }
   .progression strong { font-variant-numeric: tabular-nums; }
-  .score { color: var(--accent); }
+  .score { color: var(--accent); font-family: var(--font-display); font-size: 1.15rem; text-shadow: 0 0 14px var(--accent-glow); }
 </style>

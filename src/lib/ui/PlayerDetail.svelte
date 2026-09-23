@@ -356,10 +356,16 @@
     height: 0.55rem;
     min-width: 2px;
     border-radius: 999px;
-    background: currentColor;
-    opacity: 0.8;
+    background: linear-gradient(90deg, color-mix(in oklab, currentColor 55%, transparent), currentColor);
+    box-shadow: 0 0 10px color-mix(in oklab, currentColor 45%, transparent);
+    opacity: 0.9;
+    transform-origin: left center;
+    animation: bar-grow 1s var(--ease) 0.2s backwards;
     transition: width var(--t-panel) var(--ease);
   }
+  @keyframes bar-grow { from { transform: scaleX(0); } }
+  @media (prefers-reduced-motion: reduce) { :global(:root:not([data-motion='full'])) .bar { animation: none; } }
+  :global(:root[data-motion='reduced']) .bar { animation: none; }
   .school { font-size: var(--fs-xs); font-weight: 600; }
   /* Colour is a hint; the school name is always printed next to it. */
   .school-fire { color: #e2703a; }

@@ -70,19 +70,26 @@
     text-align: center;
   }
   .frame {
+    position: relative;
     width: var(--size);
     height: var(--size);
-    border-radius: var(--r2);
+    border-radius: 14px;
     overflow: hidden;
-    border: 1px solid var(--accent-border);
-    box-shadow: none;
-    background: var(--surface-2);
+    border: 1px solid color-mix(in oklab, var(--class-color, var(--accent)) 55%, transparent);
+    box-shadow: 0 0 24px -8px var(--class-color, var(--accent)), inset 0 0 20px rgb(0 0 0 / 0.4);
+    background:
+      radial-gradient(circle at 30% 20%, color-mix(in oklab, var(--class-color, var(--accent)) 30%, transparent), transparent 70%),
+      var(--surface-2);
     display: grid;
     place-items: center;
     line-height: 0;
   }
-  .frame.empty { border-color: var(--border); box-shadow: none; }
+  .frame.empty { border-color: color-mix(in oklab, var(--class-color, var(--accent)) 40%, transparent); }
   .frame img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .fill { width: 100%; height: 100%; }
-  .glyph { font-size: calc(var(--size) * 0.45); font-weight: 700; color: var(--text-faint); line-height: 1; }
+  .glyph {
+    font: 700 calc(var(--size) * 0.46) / 1 var(--font-display);
+    color: var(--class-color, var(--accent));
+    text-shadow: 0 0 18px var(--class-color, var(--accent));
+  }
 </style>

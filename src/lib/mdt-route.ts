@@ -39,10 +39,14 @@ export async function decodeMdt(text: string): Promise<unknown> {
   text = text.trim().replace(/\s/g, '')
   if (text.length > LIMIT) throw Error('MDT export exceeds the 256 KB limit.')
   if (text.startsWith('!~MDT2~')) {
-    const bytes = fromBase64Url(text.slice(7))
     let raw: Uint8Array
-    try { raw = await pipe(bytes, new DecompressionStream('deflate-raw'), LIMIT) }
-    catch { raw = await pipe(bytes, new DecompressionStream('deflate'), LIMIT) }
+    // Truncated exports are the common failure (chat clients wrap the string), and the
+    // decompressor's own message says nothing useful to the person who pasted it.
+    try {
+      const bytes = fromBase64Url(text.slice(7))
+      try { raw = await pipe(bytes, new DecompressionStream('deflate-raw'), LIMIT) }
+      catch { raw = await pipe(bytes, new DecompressionStream('deflate'), LIMIT) }
+    } catch { throw Error('This MDT string is incomplete or damaged. Copy the whole export from MDT.') }
     const { Decoder, setSizeLimits } = await import('cbor-x')
     setSizeLimits({ maxArraySize: 10000, maxMapSize: 10000, maxObjectSize: 10000 })
     // WoW serializes Lua strings as CBOR byte strings (including keys). Decode to Maps, then normalize.

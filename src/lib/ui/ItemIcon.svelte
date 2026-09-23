@@ -53,10 +53,12 @@
     width: var(--s);
     height: var(--s);
     border: 1px solid var(--q);
-    border-radius: var(--r1);
+    border-radius: 0.3rem;
     background: var(--surface-2);
     overflow: hidden;
+    box-shadow: 0 0 10px -3px var(--q), inset 0 0 0 1px rgb(0 0 0 / 0.4);
   }
+  .icon img { transition: scale 0.5s var(--spring); }
   .icon img { width: 100%; height: 100%; display: block; object-fit: cover; }
   .placeholder { display: grid; place-items: center; color: var(--text-muted); font-size: calc(var(--s) / 2); line-height: 1; }
 </style>

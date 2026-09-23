@@ -432,8 +432,8 @@ button {
     transform var(--t-control) var(--spring),
     box-shadow var(--t-control) var(--ease);
 }
-button:hover:not(:disabled) { background: var(--surface-3); border-color: var(--border-strong); }
-button:active:not(:disabled) { filter: brightness(.92); }
+button:where(:hover:not(:disabled)) { background: var(--surface-3); border-color: var(--border-strong); }
+button:where(:active:not(:disabled)) { filter: brightness(.92); }
 
 button.primary {
   background: var(--accent);
@@ -442,17 +442,17 @@ button.primary {
   font-weight: 650;
   box-shadow: none;
 }
-button.primary:hover:not(:disabled) {
+button.primary:where(:hover:not(:disabled)) {
   background: var(--accent-hi);
   border-color: var(--accent-hi);
   box-shadow: none;
 }
 
 button.ghost { background: transparent; border-color: transparent; color: var(--text-muted); }
-button.ghost:hover:not(:disabled) { background: var(--surface-3); color: var(--text); }
+button.ghost:where(:hover:not(:disabled)) { background: var(--surface-3); color: var(--text); }
 
 button.danger { color: var(--bad); border-color: var(--border); }
-button.danger:hover:not(:disabled) { background: var(--bad-soft); border-color: var(--bad); }
+button.danger:where(:hover:not(:disabled)) { background: var(--bad-soft); border-color: var(--bad); }
 
 button.sm { min-height: 1.8rem; padding: 0.15rem 0.6rem; font-size: var(--fs-sm); }
 

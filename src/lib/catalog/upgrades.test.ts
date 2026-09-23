@@ -51,6 +51,13 @@ describe.skipIf(gate)('engine-pinned upgrade identities' + gate, () => {
           expect(catalog.resolve(maxed.items[i])?.itemLevel).toBeGreaterThanOrEqual(known.rank.itemLevel);
           expect(itemUpgradeTrack(maxed.items[i])?.rank.rank).toBe(index >= 6 && difficulty === 'mythic' ? 9 : 6);
         }
+        const rolled = atRaidDifficulty(source, metadata, raidRewards.build, difficulty, false, true);
+        expect(rolled.items.length).toBe(dropped.items.length);
+        for (const [i, roll] of rolled.items.entries()) {
+          expect(catalog.resolve(roll)?.itemLevel).toBe(difficulty === 'mythic' && index >= 6 ? 344 : { lfr: 292, normal: 305, heroic: 318, mythic: 334 }[difficulty]);
+          expect(serializeItem(roll)).not.toContain('ilevel=');
+          expect(roll.instanceId).not.toBe(dropped.items[i].instanceId);
+        }
         if (difficulty === 'mythic') mythicLevels.push(catalog.resolve(dropped.items[0])!.itemLevel);
       }
       expect(JSON.stringify(source)).toBe(original);

@@ -7,6 +7,7 @@
   import ItemIcon from './ItemIcon.svelte'
   import ItemTooltip from './ItemTooltip.svelte'
   import ItemLink from './ItemLink.svelte'
+  import { Portal } from 'bits-ui'
 
   interface Props {
     item: ItemInstance | null
@@ -124,6 +125,9 @@
 </div>
 
 {#if tipAt && info && item}
+  <!-- Portalled: a glass panel ancestor (backdrop-filter) would otherwise
+       become the containing block for this fixed layer and misplace it. -->
+  <Portal>
   <div
     class="tip-layer"
     style:left="{tipAt.x}px"
@@ -132,6 +136,7 @@
   >
     <ItemTooltip item={info.resolved ?? { itemId: item.itemId, name: info.name }} note={item?.source === 'hypothetical' ? 'You do not own this item; it is in the search as a hypothetical.' : undefined} />
   </div>
+  </Portal>
 {/if}
 
 <style>
@@ -147,8 +152,16 @@
     padding-left: calc(var(--s3) + 3px);
     border: 1px solid var(--border);
     border-radius: var(--r2);
-    background: color-mix(in oklab, var(--surface) 72%, transparent);
+    background:
+      radial-gradient(22rem circle at var(--mx, -30rem) var(--my, 50%), color-mix(in oklab, var(--q, var(--accent)) 12%, transparent), transparent 55%),
+      linear-gradient(90deg, color-mix(in oklab, var(--q, var(--border)) 9%, transparent), transparent 45%),
+      rgb(255 255 255 / 0.025);
     text-align: left;
+    transition:
+      border-color 0.3s var(--ease),
+      background 0.3s var(--ease),
+      box-shadow 0.35s var(--ease),
+      transform 0.4s var(--spring);
     min-height: 0;
     min-width: 0;
     max-width: 100%;
@@ -159,9 +172,15 @@
     position: absolute;
     inset: 0 auto 0 0;
     width: 3px;
-    background: var(--q, var(--border));
-    opacity: 0.85;
+    background: linear-gradient(180deg, color-mix(in oklab, var(--q, var(--border)) 60%, white), var(--q, var(--border)));
+    box-shadow: 0 0 10px var(--q, transparent);
+    opacity: 0.9;
   }
+  .item:hover {
+    border-color: color-mix(in oklab, var(--q, var(--border-strong)) 45%, transparent);
+    box-shadow: 0 8px 26px -14px var(--q, var(--accent)), inset 0 1px 0 rgb(255 255 255 / 0.04);
+  }
+  .item:hover .name { text-shadow: 0 0 14px color-mix(in oklab, currentColor 55%, transparent); }
   .item.compact { padding: 0.3rem var(--s2); }
   .item.card { padding: var(--s4); min-height: 6rem; gap: var(--s3); align-items: center; }
   .card .top { flex-wrap: wrap; gap: var(--s1); }
@@ -169,32 +188,28 @@
   .card .min { gap: 0.2rem; }
   .card .trailing { position: absolute; right: var(--s2); top: var(--s1); font-size: 0.625rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); }
   .card.selected { box-shadow: inset 0 0 0 1px var(--accent-border); }
-  .interactive {
-    cursor: pointer;
-    transition:
-      border-color var(--t-control) var(--ease),
-      background var(--t-control) var(--ease),
-      transform var(--t-control) var(--spring);
+  .interactive { cursor: pointer; }
+  .interactive:hover { transform: translateX(2px); }
+  .selected {
+    border-color: var(--accent-border);
+    background: linear-gradient(90deg, rgb(101 203 229 / 0.18), rgb(101 203 229 / 0.05));
+    box-shadow: 0 0 0 1px rgb(101 203 229 / 0.25), 0 10px 30px -16px var(--accent-glow);
   }
-  .interactive:hover {
-    border-color: var(--border-strong);
-    background: var(--surface-2);
-    transform: translateX(1px);
-  }
-  .selected { border-color: var(--accent); background: var(--accent-soft); }
   .selected::after { content: '✓'; color: var(--accent); font-weight: 700; flex: none; }
   .slot { flex: none; width: 5.25rem; }
   .min { min-width: 0; gap: 0; }
   /* Every nesting level needs min-width: 0 or longest stat line sets row width and page scrolls sideways. */
   .top { flex-wrap: nowrap; min-width: 0; max-width: 100%; }
   .min > span { min-width: 0; max-width: 100%; }
-  .name { font-weight: 550; }
+  .name { font-weight: 580; transition: text-shadow 0.3s var(--ease); }
   .ilvl {
     flex: none;
-    padding: 0 0.3rem;
+    padding: 0 0.35rem;
     border-radius: var(--r1);
-    background: var(--surface-2);
+    border: 1px solid var(--border);
+    background: var(--well);
     color: var(--text-muted);
+    font-weight: 600;
     font-variant-numeric: tabular-nums;
   }
   .trailing { flex: none; font-weight: 600; font-size: var(--fs-sm); }

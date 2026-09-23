@@ -85,6 +85,7 @@ export function inlineTransport(state: WorkerState = newState()): Transport {
 }
 
 export class CatalogClient {
+  private readonly talentTrees = new Map<number, Promise<TalentTree | null>>();
   private constructor(private readonly transport: Transport) {}
 
   static create(transport?: Transport): CatalogClient {
@@ -147,9 +148,16 @@ export class CatalogClient {
     return r.kind === 'setBonuses' ? r.sets : [];
   }
 
-  async talentTree(classId: number): Promise<TalentTree | null> {
-    const r = await this.transport.send({ kind: 'talentTree', classId });
-    return r.kind === 'talentTree' ? r.tree : null;
+  /** Cached per class: every talent preview on a page would otherwise copy the whole tree out of the worker. Read-only. */
+  talentTree(classId: number): Promise<TalentTree | null> {
+    let request = this.talentTrees.get(classId);
+    if (!request) {
+      request = this.transport.send({ kind: 'talentTree', classId }).then((r) => r.kind === 'talentTree' ? r.tree : null);
+      // A failed fetch is not remembered, so the next caller retries.
+      request.then((tree) => { if (!tree) this.talentTrees.delete(classId); }, () => this.talentTrees.delete(classId));
+      this.talentTrees.set(classId, request);
+    }
+    return request;
   }
 
   /** Coverage matrix for gating features and explaining missing data. */

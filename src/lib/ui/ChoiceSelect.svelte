@@ -41,9 +41,10 @@
 <style>
   .choice-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
   .choice { min-width: 0; display: grid; gap: 6px; }
-  :global(.choice-trigger) { width: 100%; justify-content: start; text-align: left; background: var(--surface-3); padding: 5px 10px; }
-  :global(.choice-popover) { z-index: 1100; width: min(390px, calc(100vw - 24px)); background: var(--surface); border: 1px solid var(--border-strong); border-radius: 8px; padding: 10px; box-shadow: var(--shadow-3); animation: appear var(--t-dialog) ease; }
+  :global(.choice-trigger) { width: 100%; justify-content: start; text-align: left; background: var(--field); padding: 5px 10px; }
+  :global(.choice-popover) { z-index: 1100; width: min(390px, calc(100vw - 24px)); background: linear-gradient(180deg, var(--glass-hi), transparent 30%), var(--glass-strong); -webkit-backdrop-filter: blur(24px) saturate(1.6); backdrop-filter: blur(24px) saturate(1.6); border: 1px solid var(--glass-edge); border-radius: 14px; padding: 10px; box-shadow: var(--shadow-3), inset 0 1px 0 var(--rim); animation: appear 0.35s var(--ease); }
   .choice-list { max-height: 310px; overflow-y: auto; margin-top: 8px; }
-  .choice-option { width: 100%; text-align: left; border: 0; justify-content: start; padding: 8px; font-size: 14px; }
+  .choice-option { width: 100%; text-align: left; border: 0; justify-content: start; padding: 8px; font-size: 14px; background: transparent; box-shadow: none; border-radius: 8px; }
+  .choice-option:hover { background: linear-gradient(90deg, rgb(101 203 229 / 0.14), transparent); }
   @keyframes appear { from { opacity: 0; transform: translateY(-4px); } }
 </style>

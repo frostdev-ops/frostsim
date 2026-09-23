@@ -1687,21 +1687,24 @@
   .top-gear { padding-bottom: 6rem; }
   .gear-workspace { gap: 20px; }
   .gear-section { scroll-margin-top: 9rem; min-width: 0; }
-  .quick-nav { position: sticky; top: 5rem; z-index: 12; display: flex; flex-wrap: wrap; gap: var(--s2); padding: var(--s2); border: 1px solid var(--border); border-radius: var(--r3); background: var(--surface-2); box-shadow: var(--shadow-1); }
+  .quick-nav { position: sticky; top: 5.25rem; z-index: 12; display: flex; flex-wrap: wrap; gap: var(--s2); padding: var(--s2); border: 1px solid var(--glass-edge); border-radius: 12px; background: var(--glass-strong); -webkit-backdrop-filter: blur(20px) saturate(1.5); backdrop-filter: blur(20px) saturate(1.5); box-shadow: var(--shadow-2), inset 0 1px 0 var(--rim); }
   .gear-filter { width: min(18rem, 100%); }
-  .slot-card { border: 1px solid var(--border); border-radius: var(--r3); overflow: hidden; background: var(--surface); transition: border-color 160ms ease; }
+  .slot-card { border: 1px solid var(--border); border-radius: var(--r3); overflow: hidden; background: rgb(255 255 255 / 0.025); transition: border-color 0.3s var(--ease), box-shadow 0.4s var(--ease); }
+  .slot-card:hover { border-color: var(--border-strong); }
   .slot-heading { display: flex; justify-content: space-between; align-items: center; background: var(--surface-2); }
   .slot-actions { padding-right: var(--s3); flex-shrink: 0; }
   .gear-items { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s2); }
   .loadout-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(12rem, 100%), 1fr)); gap: var(--s3); }
-  .loadout-card { padding: var(--s4); display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); border: 1px solid var(--border); border-radius: var(--r3); background: var(--surface-2); cursor: pointer; transition: border-color 160ms, background 160ms; }
+  .loadout-card { padding: var(--s4); display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); border: 1px solid var(--border); border-radius: var(--r3); background: var(--surface-2); cursor: pointer; transition: border-color 0.3s var(--ease), background 0.3s var(--ease), box-shadow 0.4s var(--ease), translate 0.45s var(--spring); }
+  .loadout-card:hover { border-color: var(--accent-border); translate: 0 -2px; box-shadow: 0 14px 30px -18px var(--accent-glow); }
   .loadout-card span { flex-basis: 100%; }
   .loadout-card input { width: auto; }
-  .loadout-card.picked { border-color: var(--accent); background: var(--accent-soft); }
+  .loadout-card.picked { border-color: var(--accent); background: linear-gradient(135deg, rgb(101 203 229 / 0.2), rgb(165 139 247 / 0.08)); box-shadow: 0 0 0 1px rgb(101 203 229 / 0.3), 0 0 24px -8px var(--accent-glow); }
   .loadout-card.baseline { cursor: default; }
-  .run-dock { position: fixed; left: 50%; transform: translateX(-50%); width: min(calc(100% - 2rem), calc(var(--content-max) - 2rem)); bottom: var(--s3); z-index: 20; display: flex; align-items: center; justify-content: space-between; gap: var(--s3); padding: var(--s4) var(--s5); background: var(--surface); border: 1px solid var(--accent-border); border-radius: var(--r4); box-shadow: var(--shadow-3); }
+  .run-dock { position: fixed; left: 50%; transform: translateX(-50%); width: min(calc(100% - 2rem), calc(var(--content-max) - 2rem)); bottom: var(--s3); z-index: 20; display: flex; align-items: center; justify-content: space-between; gap: var(--s3); padding: var(--s4) var(--s5); background: linear-gradient(180deg, var(--glass-hi), transparent 50%), var(--glass-strong); -webkit-backdrop-filter: blur(26px) saturate(1.6); backdrop-filter: blur(26px) saturate(1.6); border: 1px solid var(--accent-border); border-radius: 18px; box-shadow: var(--shadow-3), 0 0 50px -20px var(--accent-glow), inset 0 1px 0 var(--rim); animation: dock-in 0.7s var(--spring) 0.2s backwards; }
+  @keyframes dock-in { from { opacity: 0; translate: 0 30px; } }
   .run-dock strong { font-variant-numeric: tabular-nums; }
-  .slot-card.active { border-color: var(--accent-border); }
+  .slot-card.active { border-color: var(--accent-border); box-shadow: 0 0 30px -16px var(--accent-glow); }
   .slot-head {
     all: unset;
     display: flex;
@@ -1732,7 +1735,7 @@
     .slot-heading { flex-wrap: wrap; }
     .slot-actions { padding: 0 var(--s3) var(--s2); }
     .run-dock { padding: var(--s3); flex-wrap: wrap; }
-    .run-dock .primary { flex: 1; }
+    .run-dock .primary { flex: 1; white-space: nowrap; }
   }
   @media (prefers-reduced-motion: reduce) { .slot-card, .loadout-card { transition: none; } }
 </style>

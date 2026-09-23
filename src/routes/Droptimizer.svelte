@@ -25,7 +25,8 @@
   import { retentionMessage, retentionOf } from '../lib/retention'
   import { sendItems } from '../lib/handoff.svelte'
   import { dropSettings } from '../lib/settings.svelte'
-  import { MAX_ITEM_LEVEL, upgradeSeason, upgradeTracks, withUpgradeRank } from '../lib/catalog/upgrades'
+  import { MAX_ITEM_LEVEL, upgradeSeason, upgradeTracks, withMaxUpgrade, withUpgradeRank } from '../lib/catalog/upgrades'
+  import { MIN_KEY, isMplusSource, mplusReward, mplusRewardReference } from '../lib/catalog/mplusRewards'
   import { atRaidDifficulty, hasRaidRewards, raidDifficulties, raidRewardLabel, raidRewardReferences, type RaidDifficulty } from '../lib/catalog/raidRewards'
   import { serializeItem } from '../lib/catalog/serialize'
   import { display } from '../lib/items'
@@ -88,9 +89,14 @@
   let chosenInstances = $state<Record<string, string[]>>({})
   /** When result exists, setup collapses; this reopens it. */
   let setupOpen = $state(false)
-  let rewardMode = $state<'raid' | 'custom'>('raid')
+  /** 'raid' and 'mplus' both mean automatic levels; the selection decides which table applies. */
+  let rewardMode = $state<'raid' | 'mplus' | 'custom'>('raid')
   let raidDifficulty = $state<RaidDifficulty>('heroic')
   let maxRaidUpgrade = $state(false)
+  let keyLevel = $state(10)
+  /** Nebulous Voidcore bonus roll: Great Vault level for the content. */
+  let bonusRoll = $state(false)
+  const mplusLevel = $derived(mplusReward(keyLevel, bonusRoll))
   /** Custom scenarios remain available for sources without verified reward mappings. */
   let sourceItemLevel = $state<number | null>(null)
   let sourceTrackId = $state<number | null>(null)
@@ -105,7 +111,19 @@
   }
 
   function evaluatedSource(source: DropSource): DropSource {
-    if (useRaidRewards) return atRaidDifficulty(source, selectedSources.find(loot => loot.id === source.id)!, app.catalogManifest?.engine.clientDataVersion, raidDifficulty, maxRaidUpgrade)
+    if (useRaidRewards) return atRaidDifficulty(source, selectedSources.find(loot => loot.id === source.id)!, app.catalogManifest?.engine.clientDataVersion, raidDifficulty, maxRaidUpgrade, bonusRoll)
+    if (useMplusRewards) {
+      if (!mplusLevel) return { ...source, items: [] }
+      const { track, rank } = mplusLevel
+      return {
+        ...source, hypothetical: true,
+        label: `${source.label} (+${keyLevel}${bonusRoll ? ' bonus roll' : ''}${maxRaidUpgrade ? ', fully upgraded' : ''})`,
+        items: source.items.map((item) => {
+          const drop = withUpgradeRank(item, track.id, rank.rank)
+          return maxRaidUpgrade ? withMaxUpgrade(drop)! : drop
+        }),
+      }
+    }
     if (sourceTrackId !== null && sourceTrack) return {
       ...source, hypothetical: true,
       label: `${source.label} (${sourceTrack.label} ${sourceRank}/${sourceTrack.max})`,
@@ -196,8 +214,10 @@
     selectedInstances.flatMap(t => t.bosses.filter(b => chosenInstances[t.key].includes(b.id))),
   )
   const raidAvailable = $derived(selectedSources.length > 0 && selectedSources.every(source => hasRaidRewards(source, app.catalogManifest?.engine.clientDataVersion)))
-  const useRaidRewards = $derived(rewardMode === 'raid' && raidAvailable)
-  const rewardReady = $derived(useRaidRewards || (!!sourceItemLevel && sourceItemLevel <= MAX_ITEM_LEVEL))
+  const mplusAvailable = $derived(selectedSources.length > 0 && selectedSources.every(isMplusSource))
+  const useRaidRewards = $derived(rewardMode !== 'custom' && raidAvailable)
+  const useMplusRewards = $derived(rewardMode !== 'custom' && mplusAvailable)
+  const rewardReady = $derived(useRaidRewards || (useMplusRewards ? !!mplusLevel : !!sourceItemLevel && sourceItemLevel <= MAX_ITEM_LEVEL))
   function pickInstance(key: string): void {
     if (chosenInstances[key]) {
       const next = { ...chosenInstances }
@@ -466,7 +486,7 @@
         tool: 'droptimizer',
         title: app.job.title,
         completion: r.incomplete ? 'partial' : 'complete',
-        requestSnapshot: { sources: selectedSources.map(s => s.id), raidDifficulty: useRaidRewards ? raidDifficulty : undefined, maxRaidUpgrade: useRaidRewards ? maxRaidUpgrade : undefined, itemLevel: useRaidRewards ? undefined : sourceItemLevel, trackId: useRaidRewards ? undefined : sourceTrackId, rank: !useRaidRewards && sourceTrackId ? sourceRank : undefined, allEligibleSlots: allSlots, settings: dropSettings.snapshot() },
+        requestSnapshot: { sources: selectedSources.map(s => s.id), raidDifficulty: useRaidRewards ? raidDifficulty : undefined, keyLevel: useMplusRewards ? keyLevel : undefined, bonusRoll: useRaidRewards || useMplusRewards ? bonusRoll : undefined, maxRaidUpgrade: useRaidRewards || useMplusRewards ? maxRaidUpgrade : undefined, itemLevel: useRaidRewards || useMplusRewards ? undefined : sourceItemLevel, trackId: useRaidRewards || useMplusRewards ? undefined : sourceTrackId, rank: !useRaidRewards && !useMplusRewards && sourceTrackId ? sourceRank : undefined, allEligibleSlots: allSlots, settings: dropSettings.snapshot() },
         summary: {
           dps: r.baseline?.mean,
           searchTiming: liveTiming ?? undefined,
@@ -612,7 +632,7 @@
             {stored?.label ?? character.name}
             {#if selectedInstances.length}
               · {selectedInstances.length} sources · {selectedSources.length} bosses
-              {#if useRaidRewards}· {raidDifficulties[raidDifficulty]} · {maxRaidUpgrade ? 'fully upgraded' : 'as dropped'}{:else if sourceItemLevel}· item level {sourceItemLevel}{/if}
+              {#if useRaidRewards || useMplusRewards}· {useRaidRewards ? raidDifficulties[raidDifficulty] : `+${keyLevel}`} · {bonusRoll ? 'bonus roll' : 'as dropped'}{maxRaidUpgrade ? ', fully upgraded' : ''}{:else if sourceItemLevel}· item level {sourceItemLevel}{/if}
             {/if}
             · {dropSettings.fightStyle} · {dropSettings.targets}T · {dropSettings.maxTime}s
           </p>
@@ -751,7 +771,7 @@
                     <label class="check small">
                       <input type="checkbox" checked={chosenInstances[instance.key].includes(boss.id)} onchange={() => toggleBoss(instance.key, boss.id)} />
                       {boss.name}
-                      {#if useRaidRewards}<span class="xs muted">{raidRewardLabel(boss, raidDifficulty, maxRaidUpgrade)}</span>{/if}
+                      {#if useRaidRewards}<span class="xs muted">{raidRewardLabel(boss, raidDifficulty, maxRaidUpgrade, bonusRoll)}</span>{/if}
                     </label>
                   {/each}
                   <button class="ghost sm" onclick={() => chosenInstances = { ...chosenInstances, [instance.key]: instance.bosses.map(b => b.id) }}>All bosses</button>
@@ -760,9 +780,19 @@
               </details>
             {/each}
             <div class="spread">
-              <label class="field inline"><span>Loot levels</span><select value={useRaidRewards ? 'raid' : 'custom'} onchange={e => rewardMode = e.currentTarget.value as 'raid' | 'custom'}><option value="raid" disabled={!raidAvailable}>Raid boss rewards</option><option value="custom">Custom track / item level</option></select></label>
+              <label class="field inline"><span>Loot levels</span><select value={useRaidRewards ? 'raid' : useMplusRewards ? 'mplus' : 'custom'} onchange={e => rewardMode = e.currentTarget.value as 'raid' | 'mplus' | 'custom'}><option value="raid" disabled={!raidAvailable}>Raid boss rewards</option><option value="mplus" disabled={!mplusAvailable}>Mythic+ key level</option><option value="custom">Custom track / item level</option></select></label>
               {#if useRaidRewards}
                 <label class="field inline"><span>Raid difficulty</span><select bind:value={raidDifficulty}>{#each Object.entries(raidDifficulties) as [value, label]}<option {value}>{label}</option>{/each}</select></label>
+              {:else if useMplusRewards}
+                <label class="field inline">
+                  <span>Key level {#if needsLevel}<span class="required-label">Required</span>{/if}</span>
+                  <input bind:this={itemLevelInput} class:needs-choice={needsLevel} type="number" min={MIN_KEY} max="30" step="1" value={keyLevel}
+                    aria-describedby="drop-level-help" oninput={e => keyLevel = e.currentTarget.valueAsNumber} />
+                </label>
+                {#if mplusLevel}<span class="xs muted">{mplusLevel.track.label} {mplusLevel.rank.rank}/{mplusLevel.track.max} · {mplusLevel.rank.itemLevel}</span>{/if}
+              {/if}
+              {#if useRaidRewards || useMplusRewards}
+                <label class="check small" title="Nebulous Voidcore loot drops at the Great Vault level for the content."><input type="checkbox" bind:checked={bonusRoll} />Bonus roll</label>
                 <label class="check small"><input type="checkbox" bind:checked={maxRaidUpgrade} />Upgrade to max in track</label>
               {:else}
               <label class="field inline"><span>Upgrade track</span><select title={upgradeSeason.name} value={sourceTrackId ?? ''} onchange={(e) => chooseRewardTrack(e.currentTarget.value ? Number(e.currentTarget.value) : null)}><option value="">Custom item level</option>{#each upgradeTracks as track (track.id)}<option value={track.id}>{track.label}</option>{/each}</select></label>
@@ -779,7 +809,7 @@
                 <input type="checkbox" bind:checked={allSlots} />Try every eligible slot
               </label>
             </div>
-            <p id="drop-level-help" class="xs muted">{#if useRaidRewards}Uses each boss’s drop level and track. Mythic final-boss and Very Rare drops stay at 344, including when upgraded. <a href={raidRewardReferences[0]} target="_blank" rel="noreferrer">Reward details</a>.{:else}Custom levels apply to all selected sources and may not be obtainable.{#if !raidAvailable} Automatic raid rewards require a supported raid selection.{/if}{/if}</p>
+            <p id="drop-level-help" class="xs muted">{#if useRaidRewards && bonusRoll}Bonus rolls drop at the raid Great Vault level for the difficulty, the same for every boss. Mythic final-boss and Very Rare drops stay at 344. <a href={raidRewardReferences.at(-1)} target="_blank" rel="noreferrer">Reward details</a>.{:else if useRaidRewards}Uses each boss’s drop level and track. Mythic final-boss and Very Rare drops stay at 344, including when upgraded. <a href={raidRewardReferences[0]} target="_blank" rel="noreferrer">Reward details</a>.{:else if useMplusRewards}{bonusRoll ? 'Bonus rolls drop at the Great Vault level for the key.' : 'End-of-dungeon level for the key.'}{!mplusLevel ? ` Enter a key level of ${MIN_KEY} or higher.` : ''} <a href={mplusRewardReference} target="_blank" rel="noreferrer">Reward details</a>.{:else}Custom levels apply to all selected sources and may not be obtainable.{#if !raidAvailable && !mplusAvailable} Automatic levels require only supported raid bosses or only Mythic+ dungeons.{/if}{/if}</p>
             {#if previewItems.length}
               <details class="disclosure">
                 <summary>Preview loot · {fmtInt(previewItems.length)} items</summary>
@@ -1002,12 +1032,12 @@
   @keyframes quest-glow { 0%, 100% { box-shadow: 0 0 5px 1px #c99b4b22; } 50% { box-shadow: 0 0 16px 2px #e6b94d40; } }
   @media (prefers-reduced-motion: reduce) { .needs-choice { animation: none; box-shadow: 0 0 8px #c99b4b25; } }
   :global([data-motion='reduced']) .needs-choice { animation: none; box-shadow: 0 0 8px #c99b4b25; }
-  .work-summary { display: flex; flex-wrap: wrap; gap: 20px 48px; padding: 16px 20px; background: var(--surface-2); border-radius: var(--r2); }
+  .work-summary { display: flex; flex-wrap: wrap; gap: 20px 48px; padding: 16px 20px; background: radial-gradient(30rem 8rem at 0% 0%, rgb(101 203 229 / 0.08), transparent 70%), var(--surface-2); border: 1px solid var(--border); border-radius: var(--r3); }
   .work-summary > div { display: flex; flex-direction: column; gap: 5px; }
   .work-summary strong { font-variant-numeric: tabular-nums; }
   .boss-picks { padding-top: 12px; gap: 12px 20px; }
   .tile-check { position: absolute; top: 8px; right: 8px; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 4px; border: 1px solid var(--border); background: var(--surface); color: var(--text-muted); }
-  .tile.on .tile-check { background: var(--accent); color: var(--surface); border-color: var(--accent); }
+  .tile.on .tile-check { background: var(--grad); color: var(--text-on-accent); border-color: transparent; box-shadow: 0 0 12px var(--accent-glow); }
   .check { display: inline-flex; align-items: center; gap: var(--s2); }
   .check input { width: auto; }
   .search { max-width: 28rem; }
@@ -1038,10 +1068,22 @@
     overflow: hidden;
     cursor: pointer;
     transition:
-      transform var(--t-control) var(--ease),
-      border-color var(--t-control) var(--ease),
-      box-shadow var(--t-control) var(--ease);
+      transform 0.45s var(--spring),
+      border-color 0.3s var(--ease),
+      box-shadow 0.4s var(--ease);
   }
+  /* Light sweep across the art on hover. */
+  .tile::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    background: linear-gradient(105deg, transparent 35%, rgb(255 255 255 / 0.18) 50%, transparent 65%);
+    translate: -120% 0;
+    transition: translate 0.9s var(--ease);
+    pointer-events: none;
+  }
+  .tile:hover::before { translate: 120% 0; }
   .tile img {
     position: absolute;
     inset: 0;
@@ -1050,20 +1092,20 @@
     height: 100%;
     object-fit: cover;
     filter: grayscale(0.9) brightness(0.8);
-    transition: filter var(--t-panel) var(--ease), transform var(--t-panel) var(--ease);
+    transition: filter 0.5s var(--ease), transform 0.8s var(--ease);
   }
   .tile::after {
     content: '';
     position: absolute;
     inset: 0;
     z-index: -1;
-    background: linear-gradient(to top, color-mix(in oklab, var(--surface-2) 90%, transparent) 8%, transparent 55%);
+    background: linear-gradient(to top, rgb(8 10 14 / 0.92) 8%, transparent 60%);
   }
-  .tile:hover { transform: translateY(-2px); border-color: var(--accent-border); }
-  .tile:hover img, .tile.on img { filter: grayscale(0) brightness(1); transform: scale(1.05); }
+  .tile:hover { transform: translateY(-3px); border-color: var(--accent-border); box-shadow: 0 16px 34px -18px var(--accent-glow); }
+  .tile:hover img, .tile.on img { filter: grayscale(0) brightness(1); transform: scale(1.08); }
   .tile.on {
     border-color: var(--accent);
-    box-shadow: 0 0 0 1px var(--accent), 0 0 16px var(--accent-glow);
+    box-shadow: 0 0 0 1px var(--accent), 0 0 24px var(--accent-glow), inset 0 0 30px -10px var(--accent-glow);
   }
   .tile:focus-visible { box-shadow: var(--focus); }
   .tile-name {

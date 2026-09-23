@@ -1,5 +1,8 @@
 <script lang="ts">
+  import { Tween } from 'svelte/motion'
+  import { expoOut } from 'svelte/easing'
   import { fmtInt, fmtPct } from '../format'
+  import { reducedMotion } from '../theme.svelte'
   import type { ConfidenceInterval, Distribution } from '../simc/report'
 
   interface Props {
@@ -43,6 +46,14 @@
     return { short: 'no interval', long: 'The engine reported no uncertainty for this run.' }
   })
 
+  // The headline counts up to its value. Screen readers get the final number
+  // only, from the sr-only copy; the counting digits are hidden from them.
+  const finite = $derived(value !== undefined && Number.isFinite(value))
+  const shown = new Tween(0, { easing: expoOut })
+  $effect(() => {
+    if (value !== undefined && Number.isFinite(value)) void shown.set(value, { duration: reducedMotion() ? 0 : 1300 })
+  })
+
   const up = $derived(delta !== undefined && delta > 0)
   const down = $derived(delta !== undefined && delta < 0)
 </script>
@@ -50,7 +61,8 @@
 <div class="metric-block {size}">
   {#if label}<div class="xs muted">{label}</div>{/if}
   <div class="row-tight baseline">
-    <output class="value">{fmtInt(value ?? NaN)}</output>
+    <span class="value" aria-hidden="true">{fmtInt(finite ? Math.round(shown.current) : NaN)}</span>
+    <span class="sr-only">{fmtInt(value ?? NaN)}</span>
     <span class="unit muted">{unit}</span>
     {#if delta !== undefined && Number.isFinite(delta)}
       <span class="delta num" class:up class:down>
@@ -65,16 +77,29 @@
 <style>
   .baseline { align-items: baseline; }
   .value {
+    font-family: var(--font-display);
     font-size: var(--fs-metric);
-    font-weight: 720;
-    letter-spacing: -0.035em;
+    font-weight: 700;
+    letter-spacing: -0.02em;
     line-height: 1.02;
     font-variant-numeric: tabular-nums;
-    /* Headline number is where accent carries the type. */
-    background: linear-gradient(180deg, var(--text), color-mix(in oklab, var(--accent) 34%, var(--text)));
+    /* Headline number is where accent carries the type: ice gradient with a
+       light sweep that crosses it once the count lands. */
+    background:
+      linear-gradient(100deg, transparent 40%, rgb(255 255 255 / 0.9) 50%, transparent 60%) 160% 0 / 250% 100% no-repeat,
+      linear-gradient(180deg, #ffffff 15%, var(--accent-hi) 60%, var(--accent) 100%);
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
+    filter: drop-shadow(0 0 22px rgb(101 203 229 / 0.35));
+    animation: glint 1.4s var(--ease) 1.1s backwards;
+  }
+  @keyframes glint { from { background-position: 160% 0, 0 0; } to { background-position: -60% 0, 0 0; } }
+  :global(:root[data-theme='light']) .value {
+    background: linear-gradient(180deg, var(--text), var(--accent));
+    -webkit-background-clip: text;
+    background-clip: text;
+    filter: none;
   }
   @supports not (background-clip: text) {
     .value { color: var(--text); }
@@ -87,6 +112,7 @@
   .uncertainty { margin-top: 0.15rem; }
 
   .delta {
+    animation: pop 0.6s var(--spring) 0.9s backwards;
     margin-left: var(--s2);
     padding: 0.1rem 0.4rem;
     font-size: var(--fs-sm);
@@ -109,4 +135,10 @@
     background: color-mix(in oklab, var(--bad) 12%, transparent);
   }
   .delta .pct { opacity: 0.8; margin-left: 0.25rem; }
+  .delta.up { box-shadow: 0 0 18px -6px var(--good); }
+  @keyframes pop { from { opacity: 0; transform: scale(0.6); } }
+  @media (prefers-reduced-motion: reduce) {
+    :global(:root:not([data-motion='full'])) .value, :global(:root:not([data-motion='full'])) .delta { animation: none; }
+  }
+  :global(:root[data-motion='reduced']) .value, :global(:root[data-motion='reduced']) .delta { animation: none; }
 </style>

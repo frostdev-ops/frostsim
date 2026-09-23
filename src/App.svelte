@@ -22,7 +22,7 @@
   import { titleCase } from './lib/format'
   import type { Component } from 'svelte'
   import {
-    href, navigate, ROUTE_BLURBS, ROUTE_LABELS, ROUTES, router, type RouteName,
+    href, navigate, ROUTE_BLURBS, ROUTE_LABELS, router, type RouteName,
   } from './lib/router.svelte'
   import { BLIZZARD_ATTRIBUTION } from './lib/battlenet/contract'
   import { apply as applyTheme, prefs, setMotion, setTheme } from './lib/theme.svelte'
@@ -30,6 +30,14 @@
   import type { ImportedCharacter } from './lib/import/character'
   import Banner from './lib/ui/Banner.svelte'
   import Dialog from './lib/ui/Dialog.svelte'
+  import SiteLegal from './lib/ui/SiteLegal.svelte'
+  import Backdrop from './lib/fx/Backdrop.svelte'
+  import { installPointerFx } from './lib/fx/pointer'
+  import { navIndicator } from './lib/fx/nav'
+  import {
+    ChartColumn, CircleCheck, CircleQuestionMark, Coins, Crown, Gem, GitCompareArrows, Info, Menu,
+    Network, Settings, Sparkles, SquareTerminal, TriangleAlert, User, X, Zap,
+  } from '@lucide/svelte'
   import Character from './routes/Character.svelte'
   import QuickSim from './routes/QuickSim.svelte'
   import Compare from './routes/Compare.svelte'
@@ -55,6 +63,7 @@
   const LAZY: Partial<Record<RouteName, () => Promise<{ default: Component }>>> = {
     talents: () => import('./routes/Talents.svelte'),
     help: () => import('./routes/Help.svelte'),
+    pi: () => import('./routes/PowerInfusion.svelte'),
   }
 
   const lazyLoader = $derived(LAZY[router.name])
@@ -140,6 +149,35 @@
   })
 
   $effect(() => installShortcuts())
+  $effect(() => installPointerFx())
+
+  const ROUTE_ICONS: Partial<Record<RouteName, Component>> = {
+    character: User, talents: Network, quick: Zap, compare: GitCompareArrows, gear: Crown,
+    droptimizer: Gem, crests: Coins, pi: Sparkles, advanced: SquareTerminal, reports: ChartColumn,
+  }
+  const TOAST_ICONS = { good: CircleCheck, bad: TriangleAlert, info: Info }
+
+  // Eleven routes read as four jobs. The header shows the groups; each page
+  // shows its own group's tools as a strip, and hovering a group previews it.
+  // Help sits with Settings as an icon and belongs to no group.
+  const NAV_GROUPS: { id: string; label: string; icon: Component; routes: RouteName[] }[] = [
+    { id: 'character', label: 'Character', icon: User, routes: ['character', 'talents'] },
+    { id: 'simulate', label: 'Simulate', icon: Zap, routes: ['quick', 'compare', 'pi', 'advanced'] },
+    { id: 'gear', label: 'Gear', icon: Gem, routes: ['gear', 'droptimizer', 'crests'] },
+    { id: 'reports', label: 'Reports', icon: ChartColumn, routes: ['reports'] },
+  ]
+  const group = $derived(NAV_GROUPS.find((g) => g.routes.includes(router.name)))
+  // A group link returns to the tool last used in that group this session.
+  const lastInGroup = $state<Record<string, RouteName>>({})
+  $effect(() => { if (group) lastInGroup[group.id] = router.name })
+
+  let scrolled = $state(false)
+  $effect(() => {
+    const on = () => (scrolled = scrollY > 8)
+    on()
+    addEventListener('scroll', on, { passive: true })
+    return () => removeEventListener('scroll', on)
+  })
 
   // Close mobile nav on navigation.
   $effect(() => {
@@ -233,32 +271,56 @@
   })
 </script>
 
+<Backdrop />
+
 <a class="skip" href="#main">Skip to content</a>
 
-<header class="topbar">
-  <div class="wrap bar">
+<header class="topbar" class:scrolled>
+  <div class="wrap">
+  <div class="bar">
     <a class="brand" href={href('character')}>
       <img class="brand-logo" src="/brand/frostsim-logo-web.png" width="180" height="48" alt="Frostsim" />
+      <span class="brand-sheen" aria-hidden="true"></span>
     </a>
 
     <button
       class="ghost sm nav-toggle"
       aria-expanded={navOpen}
       aria-controls="main-nav"
+      aria-label="Menu"
       onclick={() => (navOpen = !navOpen)}
     >
-      Menu
+      {#if navOpen}<X size={18} />{:else}<Menu size={18} />{/if}
     </button>
 
-    <nav id="main-nav" class:open={navOpen} aria-label="Tools">
-      {#each ROUTES as name (name)}
-        <a
-          href={href(name)}
-          aria-current={router.name === name ? 'page' : undefined}
-          title={ROUTE_LABELS[name]}
-        >
-          {ROUTE_LABELS[name]}
-        </a>
+    <nav id="main-nav" class="groups" class:open={navOpen} aria-label="Tools" use:navIndicator={router.name}>
+      {#each NAV_GROUPS as g (g.id)}
+        {@const target = lastInGroup[g.id] ?? g.routes[0]}
+        <div class="group" class:multi={g.routes.length > 1}>
+          <a
+            class="group-link"
+            href={href(target)}
+            data-track
+            data-on={group === g ? '' : undefined}
+            aria-current={router.name === target ? 'page' : undefined}
+          >
+            <g.icon size={16} strokeWidth={2.1} aria-hidden="true" />
+            <span>{g.label}</span>
+          </a>
+          {#if g.routes.length > 1}
+            <div class="flyout">
+              <div class="flyout-card">
+                {#each g.routes as name}
+                  {@const Icon = ROUTE_ICONS[name]}
+                  <a class="flyout-item" href={href(name)} class:on={router.name === name} aria-current={router.name === name ? 'page' : undefined}>
+                    <span class="flyout-icon" aria-hidden="true">{#if Icon}<Icon size={17} />{/if}</span>
+                    <span class="flyout-text"><strong>{ROUTE_LABELS[name]}</strong><span>{ROUTE_BLURBS[name]}</span></span>
+                  </a>
+                {/each}
+              </div>
+            </div>
+          {/if}
+        </div>
       {/each}
     </nav>
 
@@ -270,21 +332,38 @@
         </a>
       {/if}
       {#if character}
-        <a class="who" href={href('character')}>
-          <span class="truncate">{stored?.label ?? character.name}</span>
-          <span class="xs faint nowrap">
-            {character.spec ? titleCase(character.spec) : classLabel(character)}
+        <a class="who" href={href('character')} data-class={character.className}>
+          <span class="who-mark" aria-hidden="true">{(stored?.label ?? character.name).slice(0, 1).toUpperCase()}</span>
+          <span class="who-text">
+            <span class="truncate">{stored?.label ?? character.name}</span>
+            <span class="xs faint nowrap">
+              {character.spec ? titleCase(character.spec) : classLabel(character)}
+            </span>
           </span>
         </a>
       {/if}
-      <button class="ghost sm" onclick={() => (settingsOpen = true)} aria-label="Settings">⚙</button>
+      <a class="icon-btn help-btn" href={href('help')} aria-label="Help" aria-current={router.name === 'help' ? 'page' : undefined}><CircleQuestionMark size={18} /></a>
+      <button class="ghost sm gear-btn" onclick={() => (settingsOpen = true)} aria-label="Settings"><Settings size={18} /></button>
     </div>
+  </div>
   </div>
 </header>
 
 <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">{ended}</div>
 
 <main id="main" class="wrap" tabindex="-1">
+  {#if group && group.routes.length > 1}
+    <nav class="subnav" aria-label="{group.label} tools" use:navIndicator={router.name}>
+      {#each group.routes as name}
+        {@const Icon = ROUTE_ICONS[name]}
+        <a href={href(name)} data-track data-on={router.name === name ? '' : undefined} aria-current={router.name === name ? 'page' : undefined}>
+          {#if Icon}<Icon size={15} strokeWidth={2.1} aria-hidden="true" />{/if}
+          <span>{ROUTE_LABELS[name]}</span>
+        </a>
+      {/each}
+    </nav>
+  {/if}
+
   {#if capabilityMessage}
     <Banner kind="bad" title="The simulation engine cannot start here" live>
       <p>{capabilityMessage.advice}</p>
@@ -479,6 +558,7 @@
 </main>
 
 <footer class="wrap foot xs faint">
+  {#if import.meta.env.VITE_SITE_LEGAL}<SiteLegal />{/if}
   {#if media.configured}
     <!-- Blizzard API terms require conspicuous attribution without implying endorsement. -->
     <p>{media.attribution || BLIZZARD_ATTRIBUTION}</p>
@@ -496,7 +576,12 @@
 <!-- Toasts: non-blocking, never the only copy of info. -->
 <div class="toasts" aria-live="polite" aria-atomic="false">
   {#each app.toasts as t (t.id)}
-    <div class="toast {t.kind}">{t.text}</div>
+    {@const Icon = TOAST_ICONS[t.kind]}
+    <div class="toast {t.kind}">
+      <Icon size={18} aria-hidden="true" />
+      <span>{t.text}</span>
+      <span class="toast-timer" aria-hidden="true"></span>
+    </div>
   {/each}
 </div>
 
@@ -565,8 +650,9 @@
         {/each}
       </div>
       <p class="xs muted">
-        Reduced motion removes transitions everywhere, including during a run. Final values always
-        appear immediately regardless of this setting.
+        Reduced motion removes transitions everywhere, including during a run, stills the animated
+        background, and shows result numbers at once instead of counting up. Screen readers always
+        get the final value immediately.
       </p>
     </fieldset>
 
@@ -691,187 +777,484 @@
     padding: var(--s2) var(--s3);
     background: var(--surface);
     border-radius: var(--r2);
-    z-index: 10;
+    z-index: 60;
   }
   .skip:focus { left: var(--s3); top: var(--s2); box-shadow: var(--focus); }
 
+  /* ---- Header: a floating glass bar ---------------------------------- */
   .topbar {
     position: sticky;
     top: 0;
-    z-index: 5;
-    background: color-mix(in oklab, var(--surface-2) 85%, transparent);
-    backdrop-filter: blur(8px) saturate(1.3);
-    -webkit-backdrop-filter: blur(8px) saturate(1.3);
-    border-bottom: 1px solid var(--border);
+    z-index: 50;
+    padding-top: 0.75rem;
+    transition: padding 0.4s var(--ease);
   }
-  /* Cold hairline under header, accent edge-to-edge. */
-  .topbar::after {
-    content: '';
-    position: absolute;
-    inset: auto 0 -1px;
-    height: 1px;
-    background: linear-gradient(
-      90deg, transparent, color-mix(in oklab, var(--accent) 45%, transparent) 30%,
-      color-mix(in oklab, var(--accent) 45%, transparent) 70%, transparent
-    );
-    pointer-events: none;
-  }
+  .topbar.scrolled { padding-top: 0.4rem; }
   .bar {
+    position: relative;
     display: flex;
     align-items: center;
     gap: var(--s4);
-    min-height: var(--header-h);
+    min-height: 3.75rem;
+    padding: 0 0.6rem 0 0.9rem;
+    border-radius: 1.1rem;
+    border: 1px solid var(--glass-edge);
+    background: color-mix(in oklab, var(--glass-strong) 70%, transparent);
+    -webkit-backdrop-filter: blur(26px) saturate(1.7);
+    backdrop-filter: blur(26px) saturate(1.7);
+    box-shadow: 0 12px 40px -18px rgb(0 0 0 / 0.7), inset 0 1px 0 var(--rim);
+    transition: background 0.4s var(--ease), box-shadow 0.4s var(--ease), border-color 0.4s var(--ease);
+  }
+  /* The open mobile menu sits over page content; don't let it show through. */
+  .bar:has(.groups.open) { background: var(--glass-strong); }
+  .scrolled .bar {
+    background: var(--glass-strong);
+    border-color: color-mix(in oklab, var(--accent) 22%, var(--glass-edge));
+    box-shadow: 0 18px 50px -16px rgb(0 0 0 / 0.8), 0 0 0 1px rgb(0 0 0 / 0.2), inset 0 1px 0 var(--rim);
+  }
+  /* Cold hairline that glows along the bottom edge. */
+  .bar::after {
+    content: '';
+    position: absolute;
+    inset: auto 12% -1px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--accent), var(--accent-3), transparent);
+    opacity: 0.55;
+    pointer-events: none;
   }
 
   .brand {
+    position: relative;
     display: inline-flex;
     align-items: center;
-    gap: var(--s2);
-    font-weight: 700;
-    letter-spacing: -0.02em;
-    color: var(--text);
-    text-decoration: none;
     flex: none;
+    text-decoration: none;
+    transition: filter 0.4s var(--ease), transform 0.5s var(--spring);
   }
-  /* Original angular frost shard, not a logo lift. */
-  .brand-logo { display: block; width: 180px; height: 48px; object-fit: cover; object-position: center; }
+  .brand:hover { filter: drop-shadow(0 0 14px var(--accent-glow)); transform: scale(1.02); }
+  .brand-logo { display: block; width: 168px; height: 45px; object-fit: cover; object-position: center; }
+  /* A light sweep across the logo, masked to its own letterforms. */
+  .brand-sheen {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(100deg, transparent 38%, rgb(255 255 255 / 0.95) 50%, transparent 62%);
+    background-size: 260% 100%;
+    background-position: 130% 0;
+    -webkit-mask: url('/brand/frostsim-logo-web.png') center / cover no-repeat;
+    mask: url('/brand/frostsim-logo-web.png') center / cover no-repeat;
+    mix-blend-mode: overlay;
+    /* Once, not on a loop: a running blend inside the blurred bar keeps the GPU compositing every frame. */
+    animation: sheen 7s var(--ease) 1.2s;
+    pointer-events: none;
+  }
+  @keyframes sheen {
+    0% { background-position: 130% 0; }
+    22%, 100% { background-position: -30% 0; }
+  }
 
-  nav { display: flex; gap: 0.1rem; flex-wrap: wrap; flex: 1 1 auto; min-width: 0; }
-  nav a {
+  /* ---- Navigation --------------------------------------------------- */
+  .groups {
     position: relative;
-    padding: 0.35rem 0.65rem;
-    border-radius: var(--r2);
+    display: flex;
+    justify-content: center;
+    gap: 0.25rem;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  .group { position: relative; }
+  .group-link, .subnav a {
+    position: relative;
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    border-radius: 0.7rem;
     color: var(--text-muted);
     text-decoration: none;
-    font-size: var(--fs-sm);
-    font-weight: 550;
+    font-weight: 580;
     white-space: nowrap;
-    transition: background var(--t-nav) var(--ease), color var(--t-nav) var(--ease);
+    transition: color 0.3s var(--ease);
   }
-  nav a:hover { background: var(--surface-3); color: var(--text); }
-  nav a[aria-current='page'] { background: var(--accent-soft); color: var(--accent); }
-  /* Selected indicator: color and rule, never page-scale movement. */
-  nav a[aria-current='page']::after {
+  .group-link { padding: 0.55rem 0.95rem; font-size: 0.95rem; }
+  .group-link :global(svg), .subnav a :global(svg) {
+    opacity: 0.7;
+    transition: opacity 0.3s var(--ease), transform 0.45s var(--spring), color 0.3s var(--ease);
+  }
+  .group-link:hover, .subnav a:hover { color: var(--text); }
+  .group-link:hover :global(svg), .subnav a:hover :global(svg) { opacity: 1; transform: translateY(-1px) scale(1.12); }
+  .group-link[data-on], .subnav a[data-on] { color: var(--accent-hi); }
+  .group-link[data-on] :global(svg), .subnav a[data-on] :global(svg) {
+    opacity: 1;
+    color: var(--accent);
+    filter: drop-shadow(0 0 6px var(--accent-glow));
+  }
+  :global(:root[data-theme='light']) :is(.group-link, .subnav a)[data-on] { color: var(--accent); }
+
+  /* Two gliding indicators drawn by lib/fx/nav.ts: ::before marks the current
+     item, ::after follows the pointer. */
+  .groups::before, .groups::after, .subnav::before, .subnav::after {
     content: '';
     position: absolute;
-    inset: auto 0.65rem -1px;
-    height: 2px;
-    border-radius: 2px;
-    background: var(--accent);
-    box-shadow: 0 0 8px var(--accent-glow);
+    left: 0;
+    top: 0;
+    border-radius: 0.7rem;
+    pointer-events: none;
+    opacity: 0;
+    transition:
+      translate 0.55s var(--spring),
+      width 0.55s var(--spring),
+      height 0.55s var(--spring),
+      opacity 0.3s var(--ease);
   }
+  .groups::before, .subnav::before {
+    width: var(--pill-w);
+    height: var(--pill-h);
+    translate: var(--pill-x) var(--pill-y);
+    background:
+      linear-gradient(90deg, #5cc6e3, #7fb4ff, #a58bf7) bottom center / 52% 2px no-repeat,
+      linear-gradient(180deg, rgb(101 203 229 / 0.2), rgb(101 203 229 / 0.06));
+    box-shadow: inset 0 0 0 1px rgb(101 203 229 / 0.3), 0 8px 24px -10px var(--accent-glow);
+  }
+  .groups::after, .subnav::after {
+    width: var(--hover-w);
+    height: var(--hover-h);
+    translate: var(--hover-x) var(--hover-y);
+    background: rgb(255 255 255 / 0.055);
+  }
+  :global(:root[data-theme='light']) :is(.groups, .subnav)::after { background: rgb(12 26 43 / 0.05); }
+  /* :global — the action sets these attributes, so Svelte can't see them. */
+  .groups:global([data-pill])::before, .subnav:global([data-pill])::before,
+  .groups:global([data-hover])::after, .subnav:global([data-hover])::after { opacity: 1; }
 
-  .trailing { flex: none; }
-  .update-strip {
-    padding: var(--s2) var(--s3);
-    border: 1px solid var(--accent-border);
-    border-radius: var(--r2);
-    background: var(--accent-soft);
+  /* Hovering a group previews its tools. Pointer convenience only: the same
+     links are the strip at the top of every page in that group. */
+  .flyout {
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    z-index: 60;
+    padding-top: 0.85rem;
+    visibility: hidden;
+    opacity: 0;
+    transform: translateX(-50%) translateY(-8px) scale(0.97);
+    transform-origin: top center;
+    transition: opacity 0.2s var(--ease), transform 0.35s var(--spring), visibility 0s linear 0.2s;
   }
+  .group.multi:hover .flyout {
+    visibility: visible;
+    opacity: 1;
+    transform: translateX(-50%);
+    transition: opacity 0.25s var(--ease) 0.06s, transform 0.45s var(--spring) 0.06s, visibility 0s linear 0.06s;
+  }
+  .flyout-card {
+    position: relative;
+    display: grid;
+    gap: 0.15rem;
+    width: 21rem;
+    padding: 0.45rem;
+    border: 1px solid var(--glass-edge);
+    border-radius: 1rem;
+    background: linear-gradient(180deg, var(--glass-hi), transparent 40%), var(--glass-strong);
+    -webkit-backdrop-filter: blur(26px) saturate(1.6);
+    backdrop-filter: blur(26px) saturate(1.6);
+    box-shadow: var(--shadow-3), inset 0 1px 0 var(--rim), 0 0 60px -24px var(--accent-glow);
+  }
+  .flyout-card::before {
+    content: '';
+    position: absolute;
+    inset: -1px 20% auto;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--accent), var(--accent-3), transparent);
+  }
+  .flyout-item {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.75rem;
+    align-items: center;
+    padding: 0.6rem 0.7rem;
+    border-radius: 0.75rem;
+    color: var(--text);
+    text-decoration: none;
+    transition: background 0.25s var(--ease), translate 0.35s var(--spring);
+  }
+  .flyout-item:hover { background: linear-gradient(90deg, rgb(101 203 229 / 0.13), rgb(101 203 229 / 0.02)); translate: 3px 0; }
+  .flyout-item.on { background: rgb(101 203 229 / 0.1); box-shadow: inset 0 0 0 1px rgb(101 203 229 / 0.25); }
+  .flyout-icon {
+    display: grid;
+    place-items: center;
+    width: 2.25rem;
+    height: 2.25rem;
+    border-radius: 0.65rem;
+    color: var(--accent);
+    background: radial-gradient(circle at 30% 20%, rgb(101 203 229 / 0.28), transparent 70%), rgb(255 255 255 / 0.04);
+    box-shadow: inset 0 0 0 1px rgb(101 203 229 / 0.22);
+    transition: box-shadow 0.3s var(--ease), color 0.3s var(--ease);
+  }
+  .flyout-item:hover .flyout-icon { color: var(--accent-hi); box-shadow: inset 0 0 0 1px var(--accent-border), 0 0 18px -4px var(--accent-glow); }
+  .flyout-text { display: grid; gap: 0.1rem; min-width: 0; }
+  .flyout-text strong { font-family: var(--font-display); font-size: 0.95rem; font-weight: 600; letter-spacing: 0.01em; }
+  .flyout-text span { font-size: var(--fs-xs); color: var(--text-muted); line-height: 1.35; }
+
+  /* The page's own tool strip. */
+  .subnav {
+    position: relative;
+    display: flex;
+    gap: 0.2rem;
+    width: fit-content;
+    max-width: 100%;
+    overflow-x: auto;
+    padding: 0.3rem;
+    border: 1px solid var(--glass-edge);
+    border-radius: 0.95rem;
+    background: var(--glass);
+    -webkit-backdrop-filter: blur(18px) saturate(1.5);
+    backdrop-filter: blur(18px) saturate(1.5);
+    box-shadow: var(--panel-shadow), inset 0 1px 0 var(--rim);
+    animation: subnav-in 0.6s var(--ease) backwards;
+    scrollbar-width: none;
+  }
+  .subnav a { padding: 0.5rem 0.95rem; font-size: var(--fs-sm); }
+  @keyframes subnav-in { from { opacity: 0; translate: 0 -8px; } }
+
+  .icon-btn {
+    display: inline-grid;
+    place-items: center;
+    width: 2.25rem;
+    height: 2.25rem;
+    border-radius: var(--r2);
+    color: var(--text-muted);
+    transition: color 0.3s var(--ease), background 0.3s var(--ease);
+  }
+  .icon-btn:hover { color: var(--text); background: rgb(255 255 255 / 0.06); }
+  .icon-btn[aria-current='page'] { color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent-border); }
+  .help-btn :global(svg) { transition: rotate 0.6s var(--spring); }
+  .help-btn:hover :global(svg) { rotate: -15deg; }
+
+  .trailing { flex: none; gap: var(--s2); }
+  .gear-btn :global(svg) { transition: rotate 0.7s var(--spring); }
+  .gear-btn:hover :global(svg) { rotate: 90deg; }
+
   .who {
     display: flex;
-    flex-direction: column;
-    max-width: 11rem;
-    padding: 0.1rem var(--s2);
-    border-left: 1px solid var(--border);
+    align-items: center;
+    gap: 0.55rem;
+    max-width: 13rem;
+    padding: 0.25rem 0.7rem 0.25rem 0.3rem;
+    border: 1px solid var(--glass-edge);
+    border-radius: 999px;
+    background: rgb(255 255 255 / 0.03);
     color: var(--text);
     text-decoration: none;
     font-size: var(--fs-sm);
-    line-height: 1.25;
+    line-height: 1.2;
+    transition: border-color 0.3s var(--ease), background 0.3s var(--ease), box-shadow 0.3s var(--ease);
   }
+  .who:hover {
+    border-color: color-mix(in oklab, var(--class-color, var(--accent)) 50%, transparent);
+    box-shadow: 0 0 20px -8px var(--class-color, var(--accent));
+  }
+  .who-mark {
+    flex: none;
+    display: grid;
+    place-items: center;
+    width: 1.9rem;
+    height: 1.9rem;
+    border-radius: 50%;
+    font: 700 0.85rem var(--font-display);
+    color: var(--class-color, var(--accent));
+    background: radial-gradient(circle at 30% 25%, color-mix(in oklab, var(--class-color, var(--accent)) 35%, transparent), transparent 70%), rgb(0 0 0 / 0.3);
+    box-shadow: inset 0 0 0 1.5px color-mix(in oklab, var(--class-color, var(--accent)) 60%, transparent);
+  }
+  .who-text { display: flex; flex-direction: column; min-width: 0; }
+
   .job-chip {
+    position: relative;
     display: inline-flex;
     align-items: center;
-    gap: 0.35rem;
-    padding: 0.15rem 0.55rem;
-    border: 1px solid var(--accent-border);
-    border-radius: var(--r-pill);
+    gap: 0.45rem;
+    padding: 0.3rem 0.75rem;
+    border-radius: 999px;
     background: var(--accent-soft);
-    color: var(--accent);
+    color: var(--accent-hi);
     text-decoration: none;
     font-weight: 600;
+    isolation: isolate;
+    overflow: hidden;
   }
+  /* A comet runs around the chip while the engine works. */
+  .job-chip::before {
+    content: '';
+    position: absolute;
+    inset: -60%;
+    z-index: -2;
+    background: conic-gradient(from 0deg, transparent 0 70%, var(--accent) 88%, #fff 92%, transparent 96%);
+    animation: spin 1.6s linear infinite;
+  }
+  .job-chip::after {
+    content: '';
+    position: absolute;
+    inset: 1.5px;
+    z-index: -1;
+    border-radius: inherit;
+    background: color-mix(in oklab, var(--glass-strong) 88%, var(--accent));
+  }
+  @keyframes spin { to { rotate: 1turn; } }
   .pulse {
-    width: 0.45rem;
-    height: 0.45rem;
+    width: 0.5rem;
+    height: 0.5rem;
     border-radius: 50%;
     background: currentColor;
-    animation: breathe 1.6s ease-in-out infinite;
+    box-shadow: 0 0 0 0 var(--accent-glow);
+    animation: breathe 1.6s ease-out infinite;
   }
-  @keyframes breathe { 50% { opacity: 0.25; } }
-  @media (prefers-reduced-motion: reduce) {
-    :global(:root:not([data-motion='full'])) .pulse { animation: none; }
+  @keyframes breathe {
+    0% { box-shadow: 0 0 0 0 var(--accent-glow); }
+    100% { box-shadow: 0 0 0 8px transparent; }
   }
-  :global(:root[data-motion='reduced']) .pulse { animation: none; }
 
   .nav-toggle { display: none; }
 
   main {
     display: block;
-    padding-block: var(--s5) var(--s6);
+    padding-block: var(--s6) var(--s7);
     min-height: 60vh;
   }
   main:focus { outline: none; }
   main > :global(* + *) { margin-top: var(--s4); }
-  /* A short settle on the incoming screen. Never delays a final value. */
-  main :global(> .stack),
-  main :global(> .empty) { animation: settle var(--t-reveal) var(--ease); }
-  @keyframes settle { from { opacity: 0; transform: translateY(4px); } }
-  @media (prefers-reduced-motion: reduce) {
-    :global(:root:not([data-motion='full'])) main :global(> .stack),
-    :global(:root:not([data-motion='full'])) main :global(> .empty) { animation: none; }
+
+  .update-strip {
+    padding: var(--s2) var(--s3);
+    border: 1px solid var(--accent-border);
+    border-radius: var(--r3);
+    background: var(--accent-soft);
+    -webkit-backdrop-filter: blur(16px);
+    backdrop-filter: blur(16px);
+    box-shadow: 0 0 30px -12px var(--accent-glow);
   }
-  :global(:root[data-motion='reduced']) main :global(> .stack),
-  :global(:root[data-motion='reduced']) main :global(> .empty) { animation: none; }
 
-  .foot { padding-block: var(--s4) var(--s6); border-top: 1px solid var(--border); }
+  .foot {
+    position: relative;
+    padding-block: var(--s5) var(--s6);
+  }
+  .foot::before {
+    content: '';
+    position: absolute;
+    inset: 0 var(--s4) auto;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--border-strong) 20%, color-mix(in oklab, var(--accent) 40%, transparent) 50%, var(--border-strong) 80%, transparent);
+  }
 
+  /* ---- Toasts -------------------------------------------------------- */
   .toasts {
     position: fixed;
     inset-inline: var(--s4);
-    bottom: var(--s4);
+    bottom: var(--s5);
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: var(--s2);
     pointer-events: none;
-    z-index: 20;
+    z-index: 1200;
   }
   .toast {
-    max-width: min(28rem, 100%);
-    padding: var(--s2) var(--s3);
-    border-radius: var(--r3);
-    background: var(--glass);
-    backdrop-filter: blur(var(--glass-blur)) saturate(1.3);
-    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(1.3);
-    border: 1px solid var(--border);
-    box-shadow: var(--shadow-2);
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    max-width: min(30rem, 100%);
+    padding: 0.7rem 1rem;
+    border-radius: 0.9rem;
+    overflow: hidden;
+    background: var(--glass-strong);
+    -webkit-backdrop-filter: blur(24px) saturate(1.6);
+    backdrop-filter: blur(24px) saturate(1.6);
+    border: 1px solid var(--glass-edge);
+    box-shadow: var(--shadow-3), 0 0 40px -16px var(--tone, var(--accent));
     font-size: var(--fs-sm);
-    animation: rise var(--t-reveal) var(--spring);
+    font-weight: 520;
+    animation: toast-in 0.6s var(--spring);
   }
-  .toast.good { border-color: var(--good); }
-  .toast.bad { border-color: var(--bad); }
-  @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+  .toast :global(svg) { flex: none; color: var(--tone, var(--accent)); filter: drop-shadow(0 0 6px var(--tone, var(--accent))); }
+  .toast.good { --tone: var(--good); }
+  .toast.bad { --tone: var(--bad); }
+  .toast.info { --tone: var(--accent); }
+  .toast-timer {
+    position: absolute;
+    inset: auto 0 0 0;
+    height: 2px;
+    background: var(--tone, var(--accent));
+    transform-origin: left;
+    animation: drain 5.2s linear forwards;
+    opacity: 0.8;
+  }
+  @keyframes toast-in { from { opacity: 0; transform: translateY(18px) scale(0.92); } }
+  @keyframes drain { to { transform: scaleX(0); } }
 
   fieldset { margin: 0; padding: 0; border: 0; }
-  legend { padding: 0; font-weight: 600; margin-bottom: var(--s2); }
-  .kv { display: grid; grid-template-columns: auto 1fr; gap: 0.2rem var(--s3); margin: 0; }
+  legend { padding: 0; font-weight: 600; margin-bottom: var(--s2); font-family: var(--font-display); letter-spacing: 0.04em; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 0.3rem var(--s3); margin: 0; }
   .kv dt { color: var(--text-muted); }
   .kv dd { margin: 0; }
   .err-text { color: var(--bad); }
 
+  /* The character chip shrinks to its mark when space is short or a run is
+     showing its status chip. */
+  .trailing:has(.job-chip) .who-text { display: none; }
+  .trailing:has(.job-chip) .who { padding: 0.2rem; }
+  @media (max-width: 72rem) {
+    .who-text { display: none; }
+    .who { padding: 0.2rem; }
+    .group-link { padding-inline: 0.75rem; }
+  }
+  /* Narrow: the groups fold into a menu that lists every tool under its group. */
   @media (max-width: 56rem) {
     .nav-toggle { display: inline-flex; order: 3; }
-    nav {
+    .groups {
       order: 5;
       flex-basis: 100%;
       display: none;
-      padding-bottom: var(--s2);
+      grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr));
+      gap: 0.5rem 0.75rem;
+      padding: 0.35rem 0 0.8rem;
     }
-    nav.open { display: flex; }
+    .groups.open { display: grid; animation: drop 0.4s var(--ease); }
+    .groups::before, .groups::after { display: none; }
+    .group-link { padding: 0.5rem 0.4rem; font-family: var(--font-display); color: var(--text); }
+    .flyout, .group.multi:hover .flyout {
+      position: static;
+      visibility: visible;
+      opacity: 1;
+      transform: none;
+      padding-top: 0;
+      transition: none;
+    }
+    .flyout-card { width: auto; padding: 0; border: 0; background: none; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+    .flyout-card::before { display: none; }
+    .flyout-item { padding: 0.45rem 0.5rem; }
+    .flyout-icon { width: 1.9rem; height: 1.9rem; }
+    .flyout-text span { display: none; }
+    .trailing { margin-left: auto; }
     .bar { flex-wrap: wrap; padding-block: var(--s2); gap: var(--s2); }
-    /* Spec line removed; name alone fits with brand and menu. */
-    .who { max-width: 8rem; }
-    .who .xs { display: none; }
+    @keyframes drop { from { opacity: 0; transform: translateY(-6px); } }
   }
+  @media (max-width: 30rem) {
+    .brand-logo { width: 140px; height: 38px; }
+    .topbar { padding-top: 0.5rem; }
+    .subnav a span { display: none; }
+    .subnav a[data-on] span { display: inline; }
+  }
+
+  /* Reduced motion: indicators jump, loops stop. */
+  @media (prefers-reduced-motion: reduce) {
+    :global(:root:not([data-motion='full'])) :is(.brand-sheen, .pulse, .toast, .toast-timer),
+    :global(:root:not([data-motion='full'])) .job-chip::before { animation: none; }
+    :global(:root:not([data-motion='full'])) :is(.groups, .subnav)::before,
+    :global(:root:not([data-motion='full'])) :is(.groups, .subnav)::after { transition: none; }
+    :global(:root:not([data-motion='full'])) :is(.flyout, .subnav) { transition: none; animation: none; }
+  }
+  :global(:root[data-motion='reduced']) :is(.brand-sheen, .pulse, .toast, .toast-timer),
+  :global(:root[data-motion='reduced']) .job-chip::before { animation: none; }
+  :global(:root[data-motion='reduced']) :is(.groups, .subnav)::before,
+  :global(:root[data-motion='reduced']) :is(.groups, .subnav)::after { transition: none; }
+  :global(:root[data-motion='reduced']) :is(.flyout, .subnav) { transition: none; animation: none; }
 </style>

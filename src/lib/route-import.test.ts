@@ -40,6 +40,9 @@ describe('route imports', () => {
     expect(route.enemies).toBe(2)
     expect(route.lines[0]).toContain('bloodlust=1')
     expect(route.lines[0]).toContain('delay=10')
+    // A real MDT export is raw-deflate in padded standard base64, not the zlib/base64url shape above.
+    const rawDeflated = '!~MDT2~' + btoa(String.fromCharCode(...await pipe(raw, new CompressionStream('deflate-raw'))))
+    expect(translateMdt(await decodeMdt(rawDeflated), catalog, { keyLevel: 14, healthPercent: 20, delaySeconds: 10 }).enemies).toBe(2)
     expect(() => translateMdt({ value: { currentDungeonIdx: -1 } }, catalog, { keyLevel: 14, healthPercent: 20, delaySeconds: 10 })).toThrow(/mapping/)
     expect(decodeAce('^1^T^Svalue^T^ScurrentDungeonIdx^N163^t^t^^')).toEqual({ value: { currentDungeonIdx: 163 } })
     expect(() => decodeAce('^1^T^Svalue')).toThrow()

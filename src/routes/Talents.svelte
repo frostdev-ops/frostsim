@@ -168,10 +168,10 @@
   .talent-page { gap: 20px; }
   .talent-page > .spread > .row { flex-wrap: nowrap; }
   .talent-page > .spread > .row input, .talent-page > .spread > .row select { width: 220px; }
-  .tree-board { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 2fr); gap: 20px; background: #202328; padding: 24px 12px; min-height: 620px; }
+  .tree-board { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 2fr); gap: 20px; background: radial-gradient(50rem 26rem at 50% -6rem, #e8bf6314, transparent 70%), radial-gradient(40rem 30rem at 50% 110%, rgb(101 203 229 / 0.05), transparent 70%), rgb(20 22 27 / 0.62); padding: 24px 12px; min-height: 620px; }
   .tree-column { min-width: 0; }
   .tree-column header { text-align: center; display: grid; gap: 6px; margin-bottom: 24px; }
-  .tree-column h2 { color: #e7d6af; font-size: 20px; }
+  .tree-column h2 { color: #e7d6af; font-size: 20px; letter-spacing: 0.06em; text-transform: uppercase; text-shadow: 0 0 18px #e8bf6355; }
   .tree-column header span { color: var(--text-muted); font-size: 13px; }
   .hero-select { width: 100%; font-size: 13px; color: #e7c774; border-color: #766040; margin-bottom: 20px; }
   .hero-column { padding-top: 48px; }

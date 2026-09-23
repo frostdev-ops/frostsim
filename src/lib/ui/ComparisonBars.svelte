@@ -119,6 +119,7 @@
       <li
         class="row"
         class:winner={hasWinner && row.id === leader?.id}
+        style:--i={Math.min(i, 12)}
         in:fly|global={{ y: 6, duration: ms('reveal'), delay: stagger(i) }}
       >
         <div class="label">
@@ -288,13 +289,17 @@
     border-radius: var(--r2);
     border: 1px solid transparent;
     transition:
-      background var(--t-control) var(--ease),
-      border-color var(--t-control) var(--ease),
-      transform var(--t-control) var(--ease);
+      background 0.3s var(--ease),
+      border-color 0.3s var(--ease),
+      box-shadow 0.3s var(--ease),
+      transform 0.4s var(--spring);
   }
   .row:hover {
-    background: color-mix(in oklab, var(--accent) 8%, transparent);
+    background:
+      radial-gradient(24rem circle at var(--mx, 50%) var(--my, 50%), rgb(101 203 229 / 0.12), transparent 60%),
+      rgb(255 255 255 / 0.02);
     border-color: color-mix(in oklab, var(--accent) 30%, transparent);
+    box-shadow: 0 10px 30px -18px var(--accent-glow);
     /* Lift, not jump: 1px is interactive without shifting neighbours. */
     transform: translateY(-1px);
   }
@@ -303,13 +308,28 @@
     border-color: var(--border);
   }
   .winner {
-    background: color-mix(in oklab, var(--good) 11%, transparent);
-    border-color: color-mix(in oklab, var(--good) 40%, transparent);
+    position: relative;
+    overflow: hidden;
+    background: linear-gradient(90deg, color-mix(in oklab, var(--good) 16%, transparent), color-mix(in oklab, var(--good) 4%, transparent));
+    border-color: color-mix(in oklab, var(--good) 45%, transparent);
+    box-shadow: 0 0 30px -14px var(--good);
   }
+  /* A light sweep crosses the winning row once it lands. */
+  .winner::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(100deg, transparent 35%, rgb(255 255 255 / 0.14) 50%, transparent 65%);
+    translate: -110% 0;
+    animation: sweep 1.6s var(--ease) 0.9s forwards;
+    pointer-events: none;
+  }
+  @keyframes sweep { to { translate: 110% 0; } }
 
   .label { display: flex; align-items: center; gap: 0.4rem; min-width: 0; font-size: var(--fs-sm); }
   .label .name { flex: 0 1 auto; }
-  .crown { color: var(--good); font-size: 0.7em; }
+  .crown { color: var(--good); font-size: 0.8em; filter: drop-shadow(0 0 6px var(--good)); animation: crown 2.4s ease-in-out infinite; }
+  @keyframes crown { 50% { filter: drop-shadow(0 0 2px var(--good)); } }
   .pick {
     all: unset;
     cursor: pointer;
@@ -324,8 +344,9 @@
   .track {
     position: relative;
     height: 1.35rem;
-    border-radius: var(--r1);
+    border-radius: 0.35rem;
     background: var(--bar-track);
+    box-shadow: inset 0 1px 2px rgb(0 0 0 / 0.3);
     overflow: hidden;
   }
   /* Baseline as line every bar starts from; reference the whole screen uses. */
@@ -342,16 +363,20 @@
     position: absolute;
     top: 3px;
     bottom: 3px;
-    border-radius: 2px;
+    border-radius: 3px;
     background: var(--accent);
+    transform-origin: left center;
+    animation: grow 0.9s var(--ease) calc(var(--i, 0) * 45ms + 120ms) backwards;
     transition:
       width var(--t-panel) var(--ease),
       left var(--t-panel) var(--ease);
   }
+  .fill.down { transform-origin: right center; }
+  @keyframes grow { from { transform: scaleX(0); opacity: 0.4; } }
   /* Gains right and lighten outward, losses left and lighten inward: both leave baseline. */
   .fill.up {
-    background: linear-gradient(90deg, color-mix(in oklab, var(--gain) 55%, transparent), var(--gain));
-    box-shadow: 0 0 8px color-mix(in oklab, var(--gain) 30%, transparent);
+    background: linear-gradient(90deg, color-mix(in oklab, var(--gain) 45%, transparent), var(--gain) 85%, color-mix(in oklab, var(--gain) 40%, white));
+    box-shadow: 0 0 12px color-mix(in oklab, var(--gain) 45%, transparent);
   }
   .fill.down {
     background: linear-gradient(270deg, color-mix(in oklab, var(--loss) 50%, transparent), var(--loss));
@@ -384,6 +409,12 @@
   .delta { font-size: var(--fs-xs); font-weight: 600; }
 
   .more { align-self: flex-start; }
+  @media (prefers-reduced-motion: reduce) {
+    :global(:root:not([data-motion='full'])) :is(.fill, .crown) { animation: none; }
+    :global(:root:not([data-motion='full'])) .winner::after { animation: none; }
+  }
+  :global(:root[data-motion='reduced']) :is(.fill, .crown) { animation: none; }
+  :global(:root[data-motion='reduced']) .winner::after { animation: none; }
   .baseline-cells { background: var(--surface-2); }
 
   @media (max-width: 44rem) {

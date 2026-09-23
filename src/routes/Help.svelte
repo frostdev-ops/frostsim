@@ -308,18 +308,19 @@
          unverifiable to a reader and not quite true. -->
     <ul class="small">
       <li>
-        <strong>The simulation never leaves.</strong> There is no simulation server. Your
-        character, talents, gear, settings and every result are computed here and stored in this
-        browser only.
+        <strong>Simulations run locally.</strong> There is no simulation server. Profile text,
+        custom scripts and simulation results are processed and saved in this browser.
       </li>
       <li>
         <strong>Item and spell ID numbers do leave</strong>, to this same site's
         <code>/api/</code> path, which asks Blizzard's game data service for names and icons.
-        ID numbers only &mdash; never your character's name, realm, profile text or results.
+        Character portraits and Raider.IO lookups also send region, realm and character name
+        through this site's proxy to the relevant provider. They do not send full profiles or results.
       </li>
       <li>
-        <strong>Nothing goes to analytics or logging</strong>, because Frostsim has none
-        configured. If that ever changes, this line changes with it.
+        <strong>No advertising or analytics SDK is configured.</strong> Optional diagnostic logs
+        stay in this browser unless you share them. Hosting infrastructure can record connection
+        details and requested URLs in operational logs.
       </li>
       <li>
         <strong>Links and exports carry what you chose to put in them.</strong> The sample

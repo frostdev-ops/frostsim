@@ -37,6 +37,7 @@
 <style>
   .preview { --tree-height: 260px; display: grid; grid-template-columns: 2fr 1fr 2fr; gap: 12px; align-items: center; max-height: 280px; overflow: hidden; padding: 12px 4px; background: #202328; border-radius: 6px; }
   .preview :global(.rank), .preview :global(.choice-mark) { display: none; }
-  .preview :global(.talent-node) { border-width: 1px; padding: 0; pointer-events: none; }
+  /* No idle glow: an infinite box-shadow animation on every allocated node of every preview repaints each frame. */
+  .preview :global(.talent-node) { border-width: 1px; padding: 0; pointer-events: none; animation: none; }
   .preview-placeholder { min-height: 160px; display: grid; place-items: center; }
 </style>

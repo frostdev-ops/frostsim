@@ -6,6 +6,9 @@ const KEY = 'frostsim.trace'
 const KEEP = 60
 
 export function trace(event: string, detail?: Record<string, unknown>): void {
+  try {
+    if (localStorage.getItem('frostsim.storage-choice.v1') !== 'diagnostics') return
+  } catch { return }
   const line = `${new Date().toISOString().slice(11, 23)} ${event}${
     detail ? ' ' + JSON.stringify(detail) : ''
   }`

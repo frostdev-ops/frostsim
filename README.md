@@ -34,6 +34,7 @@ Paste your `/simc` addon export, pick what you want to know, and run it.
 | **Top Gear** | Every legal combination of the gear you select, searched adaptively and finished with an independent verification of the finalists. |
 | **Droptimizer** | Every drop from a boss or dungeon measured against your current gear, with per-item gains and their error bars. |
 | **Crest Sim** | What to spend your crests on. Measures each upgrade, solves the budget exactly, then simulates the finished plans in full. |
+| **Power Infusion** | What one Power Infusion is worth to each spec from single target to ten, how much of it lands on the main target, and a drawer of charts per spec. Reference data, not your character. |
 | **Advanced** | Raw simc options for anything the screens do not cover. |
 | **Reports** | Every run is saved locally, reopenable, and shareable as a portable file. |
 
@@ -52,6 +53,14 @@ Elimination is deliberately conservative. Overlapping error bars never eliminate
 The Crest Sim answers a question a stat weight cannot: given what you hold and what you can still earn, which upgrades buy the most damage?
 
 It simulates each item at its top reachable rank, derives the intermediate ranks by interpolation, solves an exact multi-budget knapsack over the crest types, then simulates the finished plans in full so the headline number is measured rather than added up. Upgrade costs come from the game's own data tables at a pinned client build, including the high-watermark discount. Where the game does not publish a number, Frostsim asks you for it instead of inventing one.
+
+### Power Infusion, per spec and per target count
+
+A priest deciding who gets Power Infusion wants two numbers: how much damage it adds, and whether that damage lands on the boss or spreads over the adds. The Power Infusion page shows both at 1 to 10 targets for every spec SimulationCraft ships a default profile for, each with its 95% margin of error. Beast Mastery and Marksmanship Hunters and Subtlety Rogues get a second row with SimulationCraft's priority-target option on, which answers how much of Power Infusion's gain a funnel build puts into the main target.
+
+Each spec opens a drawer: damage per second over the fight with and without Power Infusion, when it was up, what it added second by second, the gain from 1 to 10 targets, where the damage comes from, and which abilities and pets the extra damage came from. The breakdown is the same one Quick Sim uses, so pets and child spells are counted the same way. Charts and each spec's data load only when a drawer is first opened, and the hashed files are cached by the browser after that.
+
+This is the one place Frostsim shows numbers it did not simulate on your machine. The page ranks every spec on SimulationCraft's default profiles, which is shared reference data rather than anything about you, so it is simulated once, offline, and shipped as static JSON stamped with the engine commit. No server runs a sim for it.
 
 <details>
 <summary><strong>More screens</strong></summary>
@@ -103,6 +112,20 @@ The engine build needs the Emscripten SDK and takes a while on a first run; the 
 | `npm test` | The translation layer, no WebAssembly needed |
 | `npm run check` | Type and template checking |
 | `npm run catalog:build` | Regenerate item, talent and upgrade catalogs from the pinned checkout |
+| `npm run data:power-infusion` | Re-simulate the Power Infusion data after a patch (see below) |
+| `npm run test:data` | Tests for the Power Infusion generator |
+
+### Regenerating the Power Infusion data
+
+`scripts/generate_power_infusion.py` simulates every spec's default profile at 1 to 10 targets, with and without Power Infusion, and with the funnel option on for specs that have one: about 630 simulations, roughly 90 minutes on a 16-thread machine. It refuses to run unless the checkout and the built engine match `engine.lock.json`. After a patch:
+
+```sh
+npm run engine:bootstrap          # after bumping engine.lock.json
+npm run engine:build
+npm run data:power-infusion       # or: python3 scripts/generate_power_infusion.py --tier MID3
+```
+
+It needs Python 3.9 or newer and nothing else, and runs on macOS, Linux and Windows (`py scripts/generate_power_infusion.py`; the engine build steps above still need Git Bash or WSL there). In a terminal it shows a live dashboard: progress, time left, the sims running now, every spec's progress by target count, and the machine's CPU and memory. `p` pauses, `+` and `-` change how many sims run side by side, and `q` stops after the running sims. Finished specs are written as they complete, so an interrupted run picks up where it stopped. `--specs "Frost Mage,Outlaw Rogue"` runs a subset, `--plain` prints one line per sim, and `--help` lists the rest.
 
 **Verify anything visual against `serve:pages`, never only `dev`.** The production policy is deliberately not applied to the dev server, so a change can look correct there and fail in production.
 

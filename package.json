@@ -21,6 +21,8 @@
     "engine:manifest": "node scripts/engine-manifest.mjs",
     "catalog:build": "node scripts/catalog/build-catalogs.mjs",
     "engine:smoke": "./scripts/engine-smoke.sh",
+    "data:power-infusion": "python3 scripts/generate_power_infusion.py",
+    "test:data": "python3 -m unittest scripts/test_generate_power_infusion.py",
     "engine:bench": "node scripts/engine-bench.mjs",
     "release:package": "node scripts/package-release.mjs",
     "engine:candidate": "node scripts/engine-candidate.mjs",
@@ -30,6 +32,7 @@
     "@sveltejs/vite-plugin-svelte": "^7.3.0",
     "@tsconfig/svelte": "^5.0.8",
     "@types/node": "^24.13.3",
+    "@types/three": "^0.186.0",
     "oxlint": "1.83.0",
     "svelte": "^5.57.0",
     "svelte-check": "^4.7.6",
@@ -45,6 +48,8 @@
     "@fontsource/chakra-petch": "^5.3.0",
     "@lucide/svelte": "^1.46.0",
     "bits-ui": "^2.19.2",
-    "cbor-x": "^1.6.6"
+    "cbor-x": "^1.6.6",
+    "layerchart": "^2.5.0",
+    "three": "^0.186.0"
   }
 }

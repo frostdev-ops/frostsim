@@ -110,6 +110,34 @@ function splitOptions(text: string): Map<string, string> {
   return out
 }
 
+export interface RoutePull {
+  pull: number
+  delay: number
+  bloodlust: boolean
+  enemies: { name: string; health: number; boss: boolean }[]
+}
+
+/** Per-pull view of validated route lines, for previewing an import. Reads only what a line carries. */
+export function routePulls(route: ParsedRoute): RoutePull[] {
+  return route.lines.map((line, index) => {
+    const options = splitOptions(PULL.exec(line)?.[1] ?? '')
+    return {
+      pull: Number(options.get('pull')) || index + 1,
+      delay: Number(options.get('delay')) || 0,
+      bloodlust: options.get('bloodlust') === '1',
+      enemies: (options.get('enemies') ?? '').split('|').filter(Boolean).flatMap(entry => {
+        const parts = entry.split(':')
+        const name = parts[0].replace(/^"|"$/g, '')
+        const boss = name.startsWith('BOSS_')
+        const enemy = { name: boss ? name.slice(5) : name, health: Number(parts[1]) || 0, boss }
+        // NAME:HEALTH:RACE:COUNT spawns COUNT copies, which is what the summary counts.
+        // Capped so a pasted route cannot allocate an unbounded list on the main thread.
+        return Array.from({ length: Math.min(Number(parts[3]) || 1, 100) }, () => ({ ...enemy }))
+      }),
+    }
+  })
+}
+
 /** Settings problems, using the engine's own documented bounds. */
 export function checkSettings(s: RouteSettings): RouteIssue[] {
   const issues: RouteIssue[] = []
