@@ -137,6 +137,12 @@ Trusted HTTPS is part of the same requirement rather than a separate nicety. A s
 
 `public/_headers` holds the policy the app expects, and `npm run serve:pages` applies it locally so it can be checked before it reaches a real host.
 
+## Frostsim Cloud, on the `cloud` branch
+
+Optional online features are developed on the long-lived `cloud` branch: sign-in with Battle.net or Discord, cloud character slots, hosted full-detail report links, paid cloud runs on native SimulationCraft built from the same engine pack as the browser, and a Discord bot. All of it is public under the same license, the account server and the cloud worker agent included.
+
+`main` stays the browser app described above. It carries only the pieces that change nothing for anyone: the pure request assembly the browser and the server share, an engine hook that does nothing unless account code registers it, and a build flag that is off by default. A build from `main`, or a `cloud` build without `VITE_FEATURE_ACCOUNTS=1`, makes no request to the account server, and CI checks that. The design, its contracts and its risks are in [`server/account/DESIGN.md`](https://github.com/frostdev-ops/frostsim/blob/cloud/server/account/DESIGN.md) on that branch.
+
 ## Built with
 
 [Svelte 5](https://svelte.dev), TypeScript and [Vite](https://vite.dev) for the application. [SimulationCraft](https://github.com/simulationcraft/simc) compiled with [Emscripten](https://emscripten.org) for the engine, running on pthreads inside a Web Worker. [Vitest](https://vitest.dev) for the translation layer.

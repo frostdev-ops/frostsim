@@ -1,11 +1,11 @@
 // Run settings, one instance per tool (P08.15); module-level state and localStorage copy persist across screens and reloads.
 
 import {
-  DEFAULT_SETTINGS, FIGHT_STYLES, LIMITS, type Accuracy, type FightStyle, withPlayerScopedLines,
+  DEFAULT_SETTINGS, FIGHT_STYLES, LIMITS, type Accuracy, type FightStyle,
 } from './simc/options'
 import { FIGHT_PRESETS, findPreset, presetForStyle } from './simc/client'
-import { RAID_BUFFS, raidBuffLines, type RaidBuff, type RaidBuffSelection } from './simc/raid-buffs'
-import { importRouteExport } from './dungeonRoute'
+import { RAID_BUFFS, type RaidBuff, type RaidBuffSelection } from './simc/raid-buffs'
+import { scenarioLines } from './simc/quick-request'
 
 const KEY = 'frostsim.settings'
 
@@ -111,16 +111,15 @@ export class ToolSettings {
     if (this.fightStyle === 'Ultraxion') this.maxTime = 366
   }
 
-  /** Profile lines this scenario contributes, for `SimRequest.extraProfileLines`. */
+  /** Profile lines this scenario contributes, for `SimRequest.extraProfileLines`. Shared with server-built runs so they cannot drift. */
   extraProfileLines(): string[] | undefined {
-    const lines = [...raidBuffLines(this.raidBuffs), ...(findPreset(this.presetId)?.profileLines ?? [])]
-    if (this.fightStyle === 'DungeonRoute' && this.routeText) {
-      const route = importRouteExport(this.routeText)
-      if (route.issues.length) throw new Error(route.issues[0].message)
-      lines.push(...route.profileLines)
-    }
-    const actor = Object.entries({ ...this.consumables, ...this.equipmentOptions }).filter(([, value]) => value).map(([key, value]) => `${key}=${value}`)
-    return withPlayerScopedLines(lines, actor)
+    return scenarioLines({
+      presetId: this.presetId,
+      fightStyle: this.fightStyle,
+      raidBuffs: this.raidBuffs,
+      routeText: this.routeText,
+      actorOptions: { ...this.consumables, ...this.equipmentOptions },
+    })
   }
 
   apply(s: Partial<SettingsSnapshot>): void {

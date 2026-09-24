@@ -2,8 +2,8 @@ import { encodeBinary, decodeBinary, MAX_BINARY } from './report-codec'
 import { pipe, toBase64Url, fromBase64Url } from './share'
 import { parseAddonExport, GEAR_SLOTS, type ItemInstance } from '../import/character'
 import { damageBreakdown, type DamageRow, type PlayerDetail, type BuffRow } from '../simc/detail'
-import type { SimOutcome } from '../simc/job'
-import type { ConfidenceInterval, ReportLog, Timeline } from '../simc/report'
+import type { SimRequest } from '../simc/assemble'
+import type { ConfidenceInterval, ReportLog, SimReport, Timeline } from '../simc/report'
 import type { OptimizationResult } from '../optimization/types'
 import { routeSummary } from '../dungeonRoute'
 
@@ -24,7 +24,17 @@ export interface SharedReport {
 const r1 = (n: number | undefined) => n === undefined ? null : Math.round(n * 10) / 10
 const clean = <T>(v: T): T => JSON.parse(JSON.stringify(v))
 
-export function reportSnapshot(outcome: SimOutcome, detail: PlayerDetail): SharedReport {
+/** The part of a SimOutcome reportSnapshot reads. Structural, so the account server can import this file without job.ts (import.meta.env, __ENGINE_COMPAT__). */
+interface SnapshotSource {
+  report: SimReport
+  request: Pick<SimRequest, 'characterSnapshot' | 'profile' | 'extraProfileLines' | 'profilesets'>
+  appElapsedSeconds: number
+  engineNotices: ReportLog[]
+  inputWarnings: string[]
+  profilesetStatus: { missing: string[] }
+}
+
+export function reportSnapshot(outcome: SnapshotSource, detail: PlayerDetail): SharedReport {
   const report = outcome.report, p = report.players[0]
   if (!p || report.players.length !== 1) throw new Error('Share single-character reports individually. Use the report file for multi-actor simulations.')
   const character = outcome.request.characterSnapshot ?? parseAddonExport(outcome.request.profile)

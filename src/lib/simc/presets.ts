@@ -1,7 +1,6 @@
 // Fight presets and Advanced capability predicate (P10.5, P10.7, P10.8); preset is named scenario as option lines, UI never assembles, what ran always inspectable; option lines are upstream fight_style enum values (util.cpp:545-555), case-insensitive parsing; two Raidbots presets have no upstream fight_style, synthetic scenarios built from custom enemy, Frostsim constructions from upstream options (P10.8).
 
 import { FIGHT_STYLES, type FightStyle } from './options'
-import type { EngineCapability } from './capability'
 
 export type PresetSupport = { ok: true } | { ok: false; reason: string }
 
@@ -140,8 +139,12 @@ export interface AdvancedCapability {
   reasons: string[]
 }
 
+/** The EngineCapability fields advancedCapability reads. Structural, so server code (Discord, Loothing) can import presets without
+ *  type-checking versions.ts, which reads import.meta.env and __ENGINE_COMPAT__ (CLAUDE.md D15). */
+type CapabilityFields = { ok: true; artifact: string; profilesets: boolean } | { ok: false; reason?: string; detail: string }
+
 /** What Advanced can offer on loaded engine (P10.5); fallback lacks profilesets so comparison becomes N sequential runs, not transparent substitute. */
-export function advancedCapability(capability: EngineCapability | null | undefined): AdvancedCapability {
+export function advancedCapability(capability: CapabilityFields | null | undefined): AdvancedCapability {
   if (!capability || !capability.ok) {
     return {
       rawScript: false,

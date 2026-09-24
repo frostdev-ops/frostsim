@@ -55,3 +55,6 @@ dist-server/
 
 # Power Infusion runs from each machine (--out pi-runs/<machine>/...); merged by scripts/merge_power_infusion.py.
 /pi-runs/
+
+# Local account-server environment (npm run account:serve). Same rule as .dev.vars (CLAUDE.md D15).
+.dev.account.env

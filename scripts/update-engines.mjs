@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // Engine publisher: newest green upstream `midnight` commit -> validated pack -> index, replaced LAST.
 // One channel. Clients run the newest pack whose `compat` equals their own (scripts/engine-compat.mjs).
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync, readdirSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, readdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { brotliCompressSync, constants as zlib, gzipSync } from 'node:zlib';
+import { createHash, createHmac } from 'node:crypto';
+import { brotliCompressSync, constants as zlib, gzipSync, zstdCompressSync } from 'node:zlib';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
@@ -193,8 +193,8 @@ async function build(candidate, commit, output, id) {
   console.log(`Build workspace: ${work}`);
   try {
     // Explicit source allowlist only; no .env, private exports, binaries, or deploy dirs.
-    for (const file of ['scripts', 'patches', 'src', 'tests', 'functions', 'package.json', 'package-lock.json',
-      'engine.lock.json', 'tsconfig.json', 'tsconfig.app.json', 'tsconfig.node.json', 'vite.config.ts',
+    for (const file of ['scripts', 'patches', 'src', 'tests', 'functions', 'server', 'package.json', 'package-lock.json',
+      'engine.lock.json', 'tsconfig.json', 'tsconfig.app.json', 'tsconfig.node.json', 'tsconfig.server.json', 'vite.config.ts',
       'svelte.config.js', 'index.html', '.nvmrc']) cpSync(join(root, file), join(work, file), { recursive: true });
     mkdirSync(join(work, 'public/engine'), { recursive: true });
     cpSync(join(root, 'public/engine/sim-worker.js'), join(work, 'public/engine/sim-worker.js'));
@@ -317,14 +317,14 @@ function describe(status) {
     `**Checked:** ${status.checkedAt}`, '', 'Logs: `journalctl -u frostsim-engine-update.service` on the VPS.'].join('\n');
 }
 
-async function notify(previous, status) {
+async function notify(previous, status, label = ALERT_LABEL) {
   const token = githubToken();
   if (!token) { console.log('Alerts disabled: no GitHub token file (FROSTSIM_GITHUB_ENV_FILE)'); return; }
-  const [open] = await alertApi(token, `/issues?labels=${ALERT_LABEL}&state=open&per_page=1`);
+  const [open] = await alertApi(token, `/issues?labels=${label}&state=open&per_page=1`);
   const action = issueAction(open, previous, status);
   if (action === 'open') {
     const issue = await alertApi(token, '/issues', { method: 'POST', body: JSON.stringify({
-      title: `Engine updater ${status.state}: ${status.reason}`.slice(0, 200), labels: [ALERT_LABEL], body: describe(status) }) });
+      title: `Engine updater ${status.state}: ${status.reason}`.slice(0, 200), labels: [label], body: describe(status) }) });
     status.issueUrl = issue.html_url;
   } else if (action === 'comment') {
     await alertApi(token, `/issues/${open.number}/comments`, { method: 'POST', body: JSON.stringify({ body: describe(status) }) });
@@ -333,6 +333,118 @@ async function notify(previous, status) {
     await alertApi(token, `/issues/${open.number}/comments`, { method: 'POST', body: JSON.stringify({ body: `Recovered.\n\n${describe(status)}` }) });
     await alertApi(token, `/issues/${open.number}`, { method: 'PATCH', body: JSON.stringify({ state: 'closed' }) });
   } else if (open && status.state !== 'current') status.issueUrl = open.html_url;
+}
+
+// Native simc for the compute workers (CLAUDE.md D14): built from each pack's own source archive with
+// cmake/ninja/g++ inside this unit's Nice/CPUQuota/MemoryMax (no docker), uploaded to R2, recorded as native.json.
+// SigV4 is signed here with node:crypto: the updater source has no node_modules, and the work tree that has
+// aws4fetch is gone by the time a pack is published (and never existed for packs published before this).
+const NATIVE_ALERT_LABEL = 'engine-updater-native';
+
+/** R2 credentials, read in-process like githubToken(). null when the file is absent: native builds are off. */
+export function r2Credentials(file = process.env.FROSTSIM_R2_ENV_FILE || '/opt/frostsim/engine-updater/r2.env') {
+  if (!existsSync(file)) return null;
+  // Both services bind /opt/frostsim read-only, so a world-readable r2.env hands them the bucket write key.
+  if (statSync(file).mode & 0o007) throw new Error(`${file} is readable by other users; chmod 640 (root:frostsim-build)`);
+  const text = readFileSync(file, 'utf8');
+  const value = name => text.match(new RegExp(`^${name}=(.+)$`, 'm'))?.[1].trim();
+  const creds = { accountId: value('R2_ACCOUNT_ID'), accessKeyId: value('R2_ACCESS_KEY_ID'), secretAccessKey: value('R2_SECRET_ACCESS_KEY'),
+    bucket: value('R2_ENGINES_BUCKET') || 'frostsim-engines' };
+  if (!/^[0-9a-f]{32}$/.test(creds.accountId ?? '') || !creds.accessKeyId || !creds.secretAccessKey || !/^[a-z0-9-]{3,63}$/.test(creds.bucket)) {
+    throw new Error('r2.env needs R2_ACCOUNT_ID (32 hex), R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY');
+  }
+  return creds;
+}
+
+const uriEncode = text => encodeURIComponent(text).replace(/[!'()*]/g, c => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+const hmac = (key, text) => createHmac('sha256', key).update(text).digest();
+
+/** AWS Signature V4 Authorization value. Signs host and every header given (x-amz-date required); no query strings. */
+export function sigV4({ method, url, headers, payloadHash }, { accessKeyId, secretAccessKey, region, service }) {
+  const { host, pathname, search } = new URL(url);
+  if (search) throw new Error('sigV4 does not sign query strings');
+  const all = Object.fromEntries([['host', host], ...Object.entries(headers).map(([k, v]) => [k.toLowerCase(), String(v).trim().replace(/\s+/g, ' ')])]);
+  const names = Object.keys(all).sort();
+  const date = all['x-amz-date'], day = date.slice(0, 8), scope = `${day}/${region}/${service}/aws4_request`;
+  const canonical = [method, pathname.split('/').map(s => uriEncode(decodeURIComponent(s))).join('/'), '',
+    names.map(n => `${n}:${all[n]}\n`).join(''), names.join(';'), payloadHash].join('\n');
+  let key = `AWS4${secretAccessKey}`;
+  for (const part of [day, region, service, 'aws4_request']) key = hmac(key, part);
+  const signature = hmac(key, ['AWS4-HMAC-SHA256', date, scope, sha256(canonical)].join('\n')).toString('hex');
+  return `AWS4-HMAC-SHA256 Credential=${accessKeyId}/${scope}, SignedHeaders=${names.join(';')}, Signature=${signature}`;
+}
+
+async function r2Put(creds, key, body, headers, fetchFn) {
+  const url = `https://${creds.accountId}.r2.cloudflarestorage.com/${creds.bucket}/${key}`;
+  const signed = { ...headers, 'x-amz-content-sha256': sha256(body), 'x-amz-date': new Date().toISOString().replace(/[-:]|\.\d{3}/g, '') };
+  signed.authorization = sigV4({ method: 'PUT', url, headers: signed, payloadHash: signed['x-amz-content-sha256'] }, { ...creds, region: 'auto', service: 's3' });
+  const response = await fetchFn(url, { method: 'PUT', headers: signed, body, signal: AbortSignal.timeout(300_000) });
+  if (!response.ok) throw new Error(`R2 PUT ${key}: HTTP ${response.status}`);
+}
+
+/** Retained packs with a source archive and no native.json yet, in index order (newest first). */
+export function nativeTargets(output, packs) {
+  return packs.filter(p => {
+    const pack = join(output, 'engine/versions', p.id);
+    return existsSync(join(pack, 'source/simc.tar.gz')) && !existsSync(join(pack, 'native.json'));
+  });
+}
+
+/** One pack: build, smoke, zstd, upload binary then its .sha256 sibling, and write native.json last. */
+export async function buildNative(output, id, creds, { exec = run, fetchFn = fetch } = {}) {
+  const pack = join(output, 'engine/versions', id);
+  const work = mkdtempSync(join(process.env.FROSTSIM_BUILD_TMP ?? tmpdir(), 'frostsim-native-'));
+  try {
+    mkdirSync(join(work, 'vendor/simc'), { recursive: true });
+    exec(work, 'tar', ['-xzf', join(pack, 'source/simc.tar.gz'), '-C', 'vendor/simc']);
+    // cloud/sim-bench/build-native.sh's flags. The threaded wasm build applies no patches, so neither does this.
+    // ccache (installed by install-engine-updater.sh, CCACHE_* set in the unit) turns each pack after the first, and every
+    // retry of a failed pack, into a changed-files build, as build-engine.sh does for the wasm.
+    exec(work, 'cmake', ['-S', 'vendor/simc', '-B', 'build/native', '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', '-DBUILD_GUI=OFF',
+      '-DBUILD_TESTING=OFF', '-DSC_NO_NETWORKING=ON', '-DCMAKE_CXX_FLAGS=-DSC_USE_PTR=0',
+      '-DCMAKE_CXX_COMPILER_LAUNCHER=ccache', '-DCMAKE_C_COMPILER_LAUNCHER=ccache']);
+    exec(work, 'cmake', ['--build', 'build/native']);
+    const binary = join(work, 'build/native/simc');
+    exec(work, binary, ['vendor/simc/profiles/MID2/MID2_Mage_Frost.simc', 'iterations=50', 'threads=2', 'json=native-smoke.json,version=2']);
+    assert(json(join(work, 'native-smoke.json')).sim.players[0].collected_data.dps.mean > 0, 'Native smoke produced no DPS');
+    const zst = zstdCompressSync(readFileSync(binary));
+    const native = { key: `engines/${id}/simc-linux-x64.zst`, sha256: sha256(zst), bytes: zst.length, builtAt: new Date().toISOString() };
+    await r2Put(creds, native.key, zst, { 'content-type': 'application/zstd', 'x-amz-meta-sha256': native.sha256 }, fetchFn);
+    await r2Put(creds, `${native.key}.sha256`, Buffer.from(native.sha256), { 'content-type': 'text/plain' }, fetchFn);
+    writeJson(join(pack, 'native.json'), native);
+    return native;
+  } finally { rmSync(work, { recursive: true, force: true }); }
+}
+
+/**
+ * Sets only `nativeStatus`, on the index as it is on disk now. main() has already written the pack change and rotated
+ * `.previous`; writing through writeIndex again would overwrite that rollback copy, and would revert an operator's rollback made
+ * while the (hours-long, on the first run) native phase ran.
+ */
+export function writeNativeStatus(indexPath, status) {
+  const index = json(indexPath);
+  index.nativeStatus = status;
+  writeJson(`${indexPath}.tmp`, index);
+  renameSync(`${indexPath}.tmp`, indexPath);
+}
+
+/** Never fails the pack or the run: failures go to their own alert issue and `nativeStatus` in the index. */
+async function nativeBuilds(output, index, indexPath) {
+  const status = { checkedAt: new Date().toISOString(), state: 'current', reason: null, upstreamHead: index.status?.upstreamHead ?? null };
+  try {
+    const creds = r2Credentials();
+    if (!creds) { console.log('Native builds disabled: no R2 credential file'); return; }
+    const failures = [];
+    for (const pack of nativeTargets(output, index.packs)) {
+      try { console.log(`Native ${pack.id}: ${(await buildNative(output, pack.id, creds)).key}`); }
+      catch (err) { failures.push(`${pack.id}: ${err.message}`); console.error(err.stack ?? err.message); }
+    }
+    if (failures.length) Object.assign(status, { state: 'failed', reason: `Native build failed for ${failures.join('; ')}` });
+  } catch (err) { Object.assign(status, { state: 'failed', reason: `Native builds: ${err.message}` }); }
+  try { await notify(index.nativeStatus ?? null, status, NATIVE_ALERT_LABEL); }
+  catch (err) { console.error(`Native alert failed: ${err.message}`); }
+  try { writeNativeStatus(indexPath, status); }
+  catch (err) { console.error(`Native status not recorded: ${err.message}`); }
 }
 
 async function main() {
@@ -411,6 +523,8 @@ async function main() {
   writeIndex(indexPath, index);
   prune(output, index);
   console.log(`Engine check ${status.state}; newest for compat ${compat}: ${index.packs.find(p => p.compat === compat)?.id ?? 'none'}`);
+  // After the index is live, so a slow native build never delays a pack reaching browsers.
+  await nativeBuilds(output, index, indexPath);
   if (status.state === 'failed') process.exitCode = 1;
 }
 

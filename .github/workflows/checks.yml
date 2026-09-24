@@ -15,6 +15,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history: the surface guard below builds the merge base.
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -34,6 +37,21 @@ jobs:
 
       - name: Production build
         run: npm run build
+
+      # Accounts and cloud compute are opt-in (CLAUDE.md D14, D15): the flag-off build must be today's app.
+      # The merge base is built with this job's node_modules; a base whose lockfile differs is measured
+      # with the new dependencies, which isolates the source change.
+      - name: Build the merge base
+        run: |
+          base="$(git merge-base HEAD "origin/${{ github.base_ref || github.event.repository.default_branch }}")"
+          git worktree add --detach "$RUNNER_TEMP/base" "$base"
+          ln -s "$PWD/node_modules" "$RUNNER_TEMP/base/node_modules"
+          (cd "$RUNNER_TEMP/base" && npm run build)
+
+      # Guarded server, API and service-worker files unchanged; no account chunk, quoted "/api/v1 or
+      # "frostsim.account" in dist/assets; entry set within 512 B gzip of the merge base's.
+      - name: Existing surface unchanged
+        run: node scripts/check-surface.mjs --base "$RUNNER_TEMP/base/dist"
 
       # The engine binaries are gitignored, so a CI build has no public/engine/simc.wasm and
       # cannot regenerate the manifest. What CI can do is refuse a manifest that disagrees
