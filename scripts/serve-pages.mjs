@@ -5,6 +5,7 @@ import { createServer } from 'node:http';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { extname, join, resolve, normalize, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ACCOUNT_API_URL, isAccountApi, proxyAccountApi } from './account-proxy.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const argv = process.argv.slice(2);
@@ -111,6 +112,9 @@ const server = createServer(async (req, res) => {
     res.end(body);
   };
 
+  // Account server first, like nginx's `^~ /api/v1/`; everything else under /api/ is the Battle.net handler as before.
+  if (isAccountApi(req.url)) return proxyAccountApi(req, res, Object.fromEntries(headersFor(pathname)));
+
   if (pathname.startsWith('/api/')) {
     const fn = await loadHandler();
     if (!fn) return send(503, 'No functions/api handler');
@@ -161,6 +165,7 @@ server.listen(port, '127.0.0.1', () => {
   console.log(`pages-like server on http://localhost:${port}  (dist: ${distDir.replace(root + '/', '')})`);
   console.log(`  header rules: ${headerRules.map((r) => r.pattern).join(', ') || '(none — is _headers in dist?)'}`);
   console.log(`  api handler:  ${existsSync(join(root, 'functions/api/[[path]].ts')) ? 'functions/api/[[path]].ts' : '(absent)'}`);
+  console.log(`  /api/v1/*:    proxied to ${ACCOUNT_API_URL}`);
   const names = Object.keys(readDevVars());
   console.log(`  env from .dev.vars: ${names.length ? names.join(', ') : '(none)'} — names only, values never printed`);
   console.log('  NOT workerd: Node fetch primitives, no bindings. wrangler pages dev remains the pre-release check.');

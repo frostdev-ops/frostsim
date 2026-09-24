@@ -5,6 +5,7 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import type { Plugin } from 'vite'
 import { fileURLToPath } from 'node:url'
 import { engineCompat } from './scripts/engine-compat.mjs'
+import { isAccountApi, proxyAccountApi } from './scripts/account-proxy.mjs'
 
 // COOP/COEP required for SharedArrayBuffer; engine worker fails to start without them.
 const crossOriginIsolation = {
@@ -25,9 +26,39 @@ function productionCsp(): string | null {
 
 // Service worker updates only on byte change; stamp emitted asset names so worker updates when app changes.
 function stampServiceWorker(): Plugin {
+  // Chunks (and their CSS) reachable only through a dynamic import of src/lib/account/ (VITE_FEATURE_ACCOUNTS builds, CLAUDE.md D15)
+  // load on use and stay out of the precache.
+  const accountOnly = new Set<string>()
   return {
     name: 'frostsim-stamp-service-worker',
     apply: 'build',
+    generateBundle(_, bundle) {
+      const chunk = (f: string) => {
+        const o = bundle[f]
+        return o?.type === 'chunk' ? o : undefined
+      }
+      // Module ids, not facadeModuleId: rolldown leaves the facade null on a dynamically imported chunk that is also imported statically.
+      const account = (f: string) => !!chunk(f)?.moduleIds.some((id) => id.includes('/src/lib/account/'))
+      // Follows the output chunk graph (tree-shaken, unlike the module graph) and every static import whatever the chunk is named.
+      const walk = (stack: string[]) => {
+        const seen = new Set<string>()
+        for (let f = stack.pop(); f !== undefined; f = stack.pop()) {
+          const c = chunk(f)
+          if (!c || seen.has(f)) continue
+          seen.add(f)
+          stack.push(...c.imports, ...c.dynamicImports.filter((d) => !account(d)))
+        }
+        return seen
+      }
+      const names = Object.keys(bundle)
+      const app = walk(names.filter((f) => chunk(f)?.isEntry))
+      const appCss = new Set([...app].flatMap((f) => [...(chunk(f)?.viteMetadata?.importedCss ?? [])]))
+      for (const f of walk(names.filter(account))) {
+        if (app.has(f)) continue
+        accountOnly.add(f)
+        chunk(f)?.viteMetadata?.importedCss.forEach((css) => appCss.has(css) || accountOnly.add(css))
+      }
+    },
     closeBundle() {
       const swPath = new URL('./dist/sw.js', import.meta.url)
       const htmlPath = new URL('./dist/index.html', import.meta.url)
@@ -39,7 +70,7 @@ function stampServiceWorker(): Plugin {
       // Full asset list, not just index.html (which misses dynamic chunks); emitted here not in worker.
       // Per-spec Power Infusion details (~70 KB each) load on demand and are cached on first open.
       const assets = readdirSync(new URL('./dist/assets/', import.meta.url))
-        .filter((f) => !f.startsWith('pi-detail-'))
+        .filter((f) => !f.startsWith('pi-detail-') && !accountOnly.has(`assets/${f}`))
         .map((f) => `/assets/${f}`)
         .sort()
 
@@ -51,6 +82,17 @@ function stampServiceWorker(): Plugin {
         `// build: ${build}\nself.__FROSTSIM_ASSETS = ${JSON.stringify(assets)}\n${source}`,
       )
       this.info?.(`service worker stamped with build ${build}, ${assets.length} assets`)
+    },
+  }
+}
+
+// /api/v1/* goes to the account server (npm run account:serve), registered before the Battle.net /api middleware (CLAUDE.md D15).
+function accountApiDev(): Plugin {
+  return {
+    name: 'frostsim-account-api-dev',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => (isAccountApi(req.url) ? proxyAccountApi(req, res) : next()))
     },
   }
 }
@@ -117,10 +159,12 @@ if (siteLegal.some(Boolean) && !siteLegal.every(Boolean)) throw new Error('Both 
 export default defineConfig({
   define: {
     'import.meta.env.VITE_SITE_LEGAL': JSON.stringify(siteLegal.every(Boolean)),
+    // Accounts and cloud features compile out unless built with VITE_FEATURE_ACCOUNTS=1 (CLAUDE.md D15).
+    'import.meta.env.VITE_FEATURE_ACCOUNTS': JSON.stringify(process.env.VITE_FEATURE_ACCOUNTS === '1'),
     // The app runs only engine packs built from the same contract (scripts/update-engines.mjs).
     __ENGINE_COMPAT__: JSON.stringify(engineCompat(fileURLToPath(new URL('.', import.meta.url)))),
   },
-  plugins: [svelte(), stampServiceWorker(), gameDataProxyDev()],
+  plugins: [svelte(), stampServiceWorker(), accountApiDev(), gameDataProxyDev()],
   server: { headers: crossOriginIsolation },
   preview: {
     headers: csp ? { ...crossOriginIsolation, 'Content-Security-Policy': csp } : crossOriginIsolation,

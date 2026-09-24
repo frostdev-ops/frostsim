@@ -280,8 +280,9 @@ function parseItemOptions(value: string): {
   }
 }
 
-/** # Skull of the Damned Necrolyte (328) -> name + item level. */
-const NAMED_ITEM_COMMENT = /^(.+?)\s+\((\d+)\)$/
+/** # Skull of the Damned Necrolyte (328) -> name + item level. The name ends on a non-space so it cannot trade characters with `\s+`
+ *  (that overlap was quadratic in a run of spaces). Same result as `^(.+?)\s+…` on the trimmed comment body it is given. */
+export const NAMED_ITEM_COMMENT = /^(.*?\S)\s+\((\d+)\)$/
 
 function identityOf(i: Omit<ItemInstance, 'instanceId' | 'lineNumber'>): string {
   return [
@@ -548,7 +549,9 @@ export function parseAddonExport(text: string): ImportedCharacter {
 /** True when the text looks like something the parser can use at all. */
 export function looksLikeProfile(text: string): boolean {
   const head = text.replace(BOM, '').slice(0, 4000).toLowerCase()
-  return [...CLASS_KEYS].some((k) => new RegExp(`(^|\\n)\\s*${k}\\s*=`, 'm').test(head))
+  // Line start, then same-line whitespace only: `(^|\n)\s*` let every line start in a run of blank lines rescan the rest of it
+  // (quadratic). Equivalent, since a class key after blank lines still follows the last line break of that run.
+  return [...CLASS_KEYS].some((k) => new RegExp(`^[^\\S\\n\\r\\u2028\\u2029]*${k}\\s*=`, 'm').test(head))
 }
 
 /** Spec or gear change updates same character; realm/region changes do not. */

@@ -1,29 +1,12 @@
 // Browser job controller: one sim, one state machine, one settlement (P01.1-P01.3, P01.12). All terminal paths go through finish().
 
-import { applyWeeklyDefaults } from './weekly-defaults'
-import { hasFirstPull } from '../dungeonRoute'
 import {
-  buildArgs,
-  clampThreads,
-  profilesetLines,
-  sanitizeProfile,
-  slotProblems,
-  validateSlots,
-  validateExtraOptions,
-  validateExtraProfileLines,
-  validateProfile,
-  validateProfilesets,
-  validateSettings,
   PROFILE_PATH,
   REPORT_PATH,
   HTML_REPORT_PATH,
-  type Accuracy,
-  type ProfileSlots,
-  type ProfilesetSpec,
-  type RunMode,
-  type SimSettings,
   type ValidationIssue,
 } from './options'
+import { assembleRun, validateRequest, type JobLimits, type SimRequest } from './assemble'
 import { parseEngineNotice, profilesetStatus, type ReportLog, type SimReport } from './report'
 import {
   detectEngineCapability,
@@ -95,14 +78,8 @@ export interface JobEvent {
   warning?: string
 }
 
-export interface JobLimits {
-  /** Worker start through engine module instantiation, which includes wasm download. */
-  initTimeoutMs?: number
-  /** Whole-run wall clock, enforced on main thread because wasm one is blocked. */
-  deadlineMs?: number
-  /** Longest silence before treating job as stalled; not proof of death but indicator when unexpected (stallWindow governs armed cases). */
-  stallTimeoutMs?: number
-}
+// Request shape, validation and assembly live in assemble.ts so the account server can bundle them (CLAUDE.md D14).
+export { validateRequest, type JobLimits, type SimRequest } from './assemble'
 
 /** Grace period for engine worker to reap pthreads from inside print callback before blind terminate; generous to avoid orphaning threads. */
 const THREAD_REAP_GRACE_MS = 15_000
@@ -113,27 +90,17 @@ export const DEFAULT_LIMITS: Required<JobLimits> = {
   stallTimeoutMs: 180_000,
 }
 
-export interface SimRequest {
-  schemaVersion: 1
-  /** Identity of this run for the whole of its life. */
-  jobId?: string
-  /** 'guided' lets UI state fight style/duration/targets/accuracy; 'raw' is Expert Mode where script owns settings. */
-  mode?: RunMode
-  profile: string
-  /** Display-only snapshot, never translated into engine options. */
-  characterSnapshot?: import('../import/character').ImportedCharacter
-  settings: SimSettings
-  accuracy: Accuracy
-  profilesets?: ProfilesetSpec[]
-  /** Advanced raw option lines, wins over UI settings but never over infrastructure. */
-  extraOptions?: string[]
-  /** Lines appended to profile text, not passed as arguments (e.g. fight preset profileLines); ORDER affects scope. */
-  extraProfileLines?: string[]
-  /** Expert Mode injection slots (P10.3) assembled in engine order; scope mistakes reported as warnings. */
-  slots?: ProfileSlots
-  /** Also produce simc's own HTML report readable through getHtmlReport(); off by default. */
-  htmlReport?: boolean
-  limits?: JobLimits
+/** A cloud run reaches `ready` only after queue and server boot, then may still replay here with its own 180 s load (remote.ts gives up waiting 150 s after the start message). */
+const REMOTE_INIT_TIMEOUT_MS = 360_000
+
+/** Cloud engine factory for one request on this engine folder (its pack id), or null to run in this browser; must not submit anything itself (CLAUDE.md D14). */
+export type RemoteEngine = (req: SimRequest, engineDir: string) => ((variant: EngineVariant, engineDir?: string) => Worker) | null
+
+let remoteEngine: RemoteEngine | null = null
+
+/** Registered by account code after sign-in, so anonymous use never loads any of it (CLAUDE.md D14). */
+export function setRemoteEngine(fn: RemoteEngine | null): void {
+  remoteEngine = fn
 }
 
 export interface SimOutcome {
@@ -154,6 +121,8 @@ export interface SimOutcome {
   /** Exact profile text and arguments given to engine; not a reconstruction from MEMFS (reflects sanitizeProfile comments). */
   effectiveProfile: string
   effectiveArgs: readonly string[]
+  /** Where the engine ran; a cloud run that replayed here says 'browser'. Optional because saved reports rebuild outcomes without it. */
+  placement?: 'browser' | 'cloud'
   /** Raw report bytes, never parsed on main thread; export only. */
   getRawJson(): Blob
   /** simc's HTML report (null if not requested or engine failed to write); UNTRUSTED: unescaped user content, safe only for viewers. */
@@ -350,30 +319,7 @@ function freeze<T>(value: T): T {
   return clone
 }
 
-export function validateRequest(req: SimRequest, maxThreads: number): ValidationIssue[] {
-  if (!req || typeof req !== 'object') return [{ field: 'request', message: 'request must be an object' }]
-  if (req.schemaVersion !== 1) {
-    return [{ field: 'schemaVersion', message: `unsupported request schema ${JSON.stringify(req.schemaVersion)}` }]
-  }
-  const extras = Array.isArray(req.extraOptions) ? req.extraOptions : []
-  const appended = Array.isArray(req.extraProfileLines) ? req.extraProfileLines : []
-  const style = [...extras.join('\n').matchAll(/^\s*fight_style\s*=\s*(\w+)/gm)].at(-1)?.[1]
-    ?? (req.mode === 'raw' && typeof req.profile === 'string' ? [...req.profile.matchAll(/^\s*fight_style\s*=\s*(\w+)/gm)].at(-1)?.[1] : undefined)
-    ?? req.settings?.fightStyle
-  return [
-    ...(style === 'DungeonRoute' && !hasFirstPull([req.profile, ...appended, ...extras, ...Object.values(req.slots ?? {})].join('\n'))
-      ? [{ field: 'fightStyle', message: 'Dungeon Route needs a route with pull=1. Configure it in Advanced, or choose Dungeon Slice.' }] : []),
-    ...validateProfile(req.profile),
-    ...validateSettings(req.settings, req.accuracy, maxThreads, req.mode ?? 'guided'),
-    ...validateProfilesets(req.profilesets),
-    ...validateExtraOptions(req.extraOptions),
-    ...validateExtraProfileLines(req.extraProfileLines),
-    ...validateSlots(req.slots),
-  ]
-}
-
 export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, deps: JobDeps = {}): RunHandle {
-  const createEngineWorker = deps.createEngineWorker ?? defaultDeps.createEngineWorker
   const createReportWorker = deps.createReportWorker ?? defaultDeps.createReportWorker
   const now = deps.now ?? defaultDeps.now
   const graceMs = deps.threadReapGraceMs ?? THREAD_REAP_GRACE_MS
@@ -409,6 +355,7 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
   let sawProgress = false
   /** simc's HTML report, when the run asked for one and the engine wrote it. */
   let htmlReportBytes: ArrayBuffer | null = null
+  let placement: 'browser' | 'cloud' = 'browser'
   /** The engine said the script declared no actor. See the log handler. */
   let sawNothingToSim = false
   let lastEngineError = ''
@@ -419,6 +366,8 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
   let resolveResult!: (outcome: SimOutcome) => void
   let rejectResult!: (err: unknown) => void
   let inputWarnings: string[] = []
+  /** This browser's thread clamp notice; a cloud run picks its own threads, so it never applied there. */
+  let clampWarning: string | undefined
   /** Classified notices from the engine's stderr, including ones the report drops. */
   const engineNotices: ReportLog[] = []
 
@@ -630,62 +579,31 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
 
       threadedArtifact = capability.artifact === 'threaded' && capability.manifest.capabilities.threads === true
 
+      // On the frozen request after the local check; the cloud fake submits only on the start message, so refused runs cost nothing.
+      const remote = deps.createEngineWorker ? null : remoteEngine?.(req, capability.engineDir) ?? null
+
       const issues = validateRequest(req, capability.maxThreads)
       if (issues.length) throw new SimValidationError(issues)
 
       const requestedIds = (req.profilesets ?? []).map((p) => p.id)
-      if (requestedIds.length && !capability.profilesets) {
+      // A cloud run has profilesets; remote.ts refuses them itself if it has to replay on this build.
+      if (requestedIds.length && !capability.profilesets && !remote) {
         throw new SimEngineError(
           'profilesets-unsupported',
           'This engine build has no profileset support, so multi-candidate runs cannot run on it.',
         )
       }
 
-      // Pool ceiling from artifact not request; saved 16-thread setting opened against fallback is clamped not refused.
-      const mode = req.mode ?? 'guided'
-      const effectiveThreads = clampThreads(req.settings.threads, capability.maxThreads)
-      const sanitized = sanitizeProfile(req.profile, mode)
-      inputWarnings = sanitized.warnings
-      if (effectiveThreads !== req.settings.threads) {
-        inputWarnings = [
-          `Running on ${effectiveThreads} thread${effectiveThreads === 1 ? '' : 's'} instead of ${req.settings.threads}: this engine build allows at most ${capability.maxThreads}.`,
-          ...inputWarnings,
-        ]
-      }
+      // Pool ceiling from artifact not request; warnings in one synchronous loop keep the old event order.
+      const { profile: profileText, args, warnings, threads } = assembleRun(req, capability.maxThreads)
+      inputWarnings = warnings
+      // assembleRun puts the clamp first.
+      if (threads !== req.settings.threads) clampWarning = warnings[0]
       for (const warning of inputWarnings) emit(state, { warning })
-
-      // Assembled in engine read order (that order IS the scope P10.3); everything after sanitisation so app lines never rewritten, profilesets last.
-      const slots = req.slots ?? {}
-      const slotWarnings = slotProblems(slots)
-      for (const warning of slotWarnings) emit(state, { warning })
-      inputWarnings = [...inputWarnings, ...slotWarnings]
-
-      const profileText =
-        [
-          slots.header,
-          slots.preActor,
-          mode === 'guided' ? applyWeeklyDefaults(sanitized.text) : sanitized.text,
-          slots.postActor,
-          ...(req.extraProfileLines ?? []),
-          ...(req.profilesets?.length ? profilesetLines(req.profilesets) : []),
-          slots.footer,
-        ]
-          .filter((part): part is string => typeof part === 'string' && part.trim().length > 0)
-          .map((part) => part.replace(/\n+$/, ''))
-          .join('\n') + '\n'
-
-      const args = buildArgs({
-        settings: req.settings,
-        accuracy: req.accuracy,
-        extraOptions: req.extraOptions,
-        maxThreads: capability.maxThreads,
-        mode,
-        htmlReport: req.htmlReport,
-      })
       effectiveProfile = profileText
       effectiveArgs = args
 
-      const limits = { ...DEFAULT_LIMITS, ...req.limits }
+      const limits = { ...DEFAULT_LIMITS, ...(remote ? { initTimeoutMs: REMOTE_INIT_TIMEOUT_MS } : {}), ...req.limits }
       stallMs = limits.stallTimeoutMs
 
       // Cross-tab exclusion after validation so invalid request never takes waiting slot.
@@ -701,14 +619,9 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
       slot = acquired
 
       emit('acquiring')
-      engineWorker = createEngineWorker(capability.artifact, capability.engineDir)
+      engineWorker = (deps.createEngineWorker ?? remote ?? defaultDeps.createEngineWorker)(capability.artifact, capability.engineDir)
       wireEngineWorker(req, requestedIds, capability)
-
-      deadlineTimer = setTimeout(() => fail(new SimTimeoutError('deadline', limits.deadlineMs)), limits.deadlineMs)
-      initTimer = setTimeout(
-        () => fail(new SimTimeoutError('initializing', limits.initTimeoutMs)),
-        limits.initTimeoutMs,
-      )
+      armTimers(limits)
 
       // Stay in acquiring until worker says bytes in hand; download dominates cold start.
       heartbeat()
@@ -731,6 +644,14 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
     } catch (err) {
       fail(err)
     }
+  }
+
+  /** Load time and whole-run deadline for the engine starting now; a cloud replay starts this browser's engine afresh. */
+  function armTimers(limits: Required<JobLimits>): void {
+    clearTimeout(deadlineTimer)
+    clearTimeout(initTimer)
+    deadlineTimer = setTimeout(() => fail(new SimTimeoutError('deadline', limits.deadlineMs)), limits.deadlineMs)
+    initTimer = setTimeout(() => fail(new SimTimeoutError('initializing', limits.initTimeoutMs)), limits.initTimeoutMs)
   }
 
   async function resolveCapability(): Promise<EngineCapability> {
@@ -780,6 +701,12 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
 
         case 'initializing':
           emit('initializing')
+          return
+
+        case 'replaying':
+          // remote.ts handed the run to this browser's engine, however late: a local load and deadline from now, and only its own progress arms the running stall.
+          sawProgress = false
+          armTimers({ ...DEFAULT_LIMITS, ...req.limits })
           return
 
         case 'ready':
@@ -835,11 +762,21 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
           return
         }
 
-        case 'done':
+        case 'done': {
           // Held here not passed through report worker; it's a document to read, not to parse (tens of MB round-trip is pure cost).
           htmlReportBytes = msg.html === undefined ? null : toArrayBuffer(msg.html)
+          // The worker decides: remote.ts replays on this engine mid-run, and the real engine never says 'cloud'.
+          placement = msg.placement === 'cloud' ? 'cloud' : 'browser'
+          // The cloud server assembled its own run; this browser's assembly is only a fallback when it did not say what it ran.
+          const ran = placement === 'cloud' ? msg.effective : undefined
+          if (typeof ran?.profile === 'string' && Array.isArray(ran.args) && ran.args.every((a: unknown) => typeof a === 'string')) {
+            effectiveProfile = ran.profile
+            effectiveArgs = ran.args
+          }
+          if (placement === 'cloud') inputWarnings = inputWarnings.filter((w) => w !== clampWarning)
           void analyze(req, requestedIds, capability, msg.report)
           return
+        }
 
         case 'error': {
           const code = typeof msg.code === 'string' ? msg.code : 'engine'
@@ -926,6 +863,7 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
       engineNotices,
       effectiveProfile,
       effectiveArgs,
+      placement,
       getRawJson: () => new Blob([raw], { type: 'application/json' }),
       getHtmlReport: () =>
         htmlReportBytes === null ? null : new Blob([htmlReportBytes], { type: 'text/html' }),
