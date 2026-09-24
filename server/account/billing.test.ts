@@ -42,7 +42,7 @@ interface Row {
   guild_id: string | null;
   stripe_updated: number;
 }
-interface User { id: string; stripe_customer_id: string | null; suspended_at?: Date | null }
+interface User { id: string; stripe_customer_id: string | null; suspended_at?: Date | null; discord?: string }
 interface Call { method: string; path: string; query: URLSearchParams; form: URLSearchParams; headers: Headers }
 
 /** A Stripe subscription as GET /v1/subscriptions/:id returns it under the pinned version: the period lives on each item. */
@@ -118,6 +118,7 @@ function memoryDb(users: User[]) {
       events.add(v[0] as string);
       return [];
     }
+    if (q.includes('from identities where user_id')) return users.some((u) => u.id === v[0] && u.discord === v[1]) ? [{}] : [];
     if (q.includes('select id from users where id')) return users.filter((u) => u.id === v[0]);
     if (q.includes('select id from users where stripe_customer_id')) return users.filter((u) => u.stripe_customer_id === v[0]);
     if (q.startsWith('select stripe_customer_id')) return users.filter((u) => u.id === v[0]);
@@ -475,11 +476,20 @@ describe('checkout', () => {
   });
 
   it('puts the guild from a valid guild checkout token into the subscription metadata', async () => {
-    const h = harness([{ id: USER, stripe_customer_id: 'cus_1' }]);
+    const h = harness([{ id: USER, stripe_customer_id: 'cus_1', discord: '223456789012345678' }]);
     const token = guildToken({ kind: 'guild-checkout', guildId: GUILD, discordUserId: '223456789012345678' });
     await h.send(post('/api/v1/billing/checkout', { lookupKey: 'discord_guild_monthly', guildToken: token }));
     const form = h.state.calls[1].form;
     expect([form.get('subscription_data[metadata][guild_id]'), form.get('subscription_data[metadata][user_id]')]).toEqual([GUILD, USER]);
+  });
+
+  it('refuses a guild link minted for another Discord user, or a user without Discord linked, before any Stripe call', async () => {
+    const token = guildToken({ kind: 'guild-checkout', guildId: GUILD, discordUserId: '223456789012345678' });
+    for (const users of [[{ id: USER, stripe_customer_id: null, discord: '323456789012345678' }], [{ id: USER, stripe_customer_id: null }]]) {
+      const h = harness(users);
+      expect(await refused(h, { lookupKey: 'discord_guild_monthly', guildToken: token })).toEqual([403, 'forbidden']);
+      expect(h.state.calls).toEqual([]);
+    }
   });
 
   it('refuses guild checkouts without a valid token, and tokens on any other plan', async () => {

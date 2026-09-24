@@ -60,11 +60,15 @@ export function verifyStripeSignature(body: Uint8Array, header: string | null, s
   return signatures.reduce((ok, sig) => safeEqual(sig, expected) || ok, false);
 }
 
-/** The guild a guild checkout link was minted for, or null when it is forged, expired or minted for something else. */
-function guildFromToken(secret: string, token: unknown, nowMs: number): string | null {
+/** The guild and the Discord user a guild checkout link was minted for, or null when it is forged, expired or minted for something
+ *  else. */
+function guildFromToken(secret: string, token: unknown, nowMs: number): { guildId: string; discordUserId: string } | null {
   if (typeof token !== 'string') return null;
-  const payload = verify<{ kind?: unknown; guildId?: unknown }>(secret, GUILD_CHECKOUT_PURPOSE, token, nowMs);
-  return payload?.kind === 'guild-checkout' && typeof payload.guildId === 'string' && GUILD_ID.test(payload.guildId) ? payload.guildId : null;
+  const payload = verify<{ kind?: unknown; guildId?: unknown; discordUserId?: unknown }>(secret, GUILD_CHECKOUT_PURPOSE, token, nowMs);
+  return payload?.kind === 'guild-checkout' && typeof payload.guildId === 'string' && GUILD_ID.test(payload.guildId)
+    && typeof payload.discordUserId === 'string' && GUILD_ID.test(payload.discordUserId)
+    ? { guildId: payload.guildId, discordUserId: payload.discordUserId }
+    : null;
 }
 
 /** Checkout and the portal each make Stripe calls; a looping client must not spend the account's Stripe rate limit for everyone. */
@@ -137,8 +141,15 @@ async function checkout(ctx: RequestCtx): Promise<Response> {
 
   let guildId: string | null = null;
   if (plan.kind === 'guild') {
-    guildId = guildFromToken(ctx.config.env.SESSION_SECRET!, body.guildToken, ctx.now().getTime());
-    if (!guildId) throw new HttpError(400, 'invalid', 'The server link is invalid or has expired. Run /frostsim subscribe again.');
+    const link = guildFromToken(ctx.config.env.SESSION_SECRET!, body.guildToken, ctx.now().getTime());
+    if (!link) throw new HttpError(400, 'invalid', 'The server link is invalid or has expired. Run /frostsim subscribe again.');
+    // The link is bound to the member who ran /frostsim subscribe (Manage Server): only a Frostsim account with that Discord linked pays.
+    const [owner] = await ctx.sql`select 1 from identities where user_id = ${ctx.session!.userId} and provider = 'discord'
+      and subject = ${link.discordUserId}`;
+    if (!owner) {
+      throw new HttpError(403, 'forbidden', 'This server link belongs to the Discord account that ran /frostsim subscribe. Sign in with that Discord account, or run the command yourself.');
+    }
+    guildId = link.guildId;
   } else if (body.guildToken !== undefined) {
     throw new HttpError(400, 'invalid', 'A server link only applies to the Discord server plan.');
   }

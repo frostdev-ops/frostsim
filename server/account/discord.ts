@@ -162,7 +162,8 @@ async function editDeferred(app: Pick<AppCtx, 'config' | 'fetch' | 'log'>, token
   await editReply(app, token, content);
 }
 
-/** The guild when it has a live discord_guild_monthly pool, else null: the run then draws on the user's own allowance. */
+/** The guild when it has a live discord_guild_monthly pool, else null: the run then draws on the user's own allowance. A pool that is
+ *  used up also falls back to the member's own allowance (startSim). */
 async function activePool(app: AppCtx, guildId: string | undefined): Promise<string | null> {
   if (!guildId || !SNOWFLAKE.test(guildId)) return null;
   return (await loadEntitlements(app.sql, { guildId }, app.now())).guilds.length ? guildId : null;
@@ -184,11 +185,18 @@ async function startSim(app: AppCtx, i: Interaction, discordId: string, received
   if (!built) return edit(`No cloud character by that name. Save characters to your Frostsim account: ${manageUrl(app.config)}`);
   const packId = await defaultPack(app);
   if (!packId) return edit('Frostsim Cloud has no engine build ready right now. Try again later.');
-  const guildId = await activePool(app, i.guild_id);
-  const job = await enqueueJob(app, { userId, guildId, source: 'discord', packId, request: built.request });
+  let guildId = await activePool(app, i.guild_id);
+  let job = await enqueueJob(app, { userId, guildId, source: 'discord', packId, request: built.request });
+  // The server's pool is used up for this period: run it on the member's own plan instead, if they have one.
+  const fellBack = !job.ok && guildId !== null && job.code === 'no-allowance';
+  if (fellBack) {
+    guildId = null;
+    job = await enqueueJob(app, { userId, guildId, source: 'discord', packId, request: built.request });
+  }
   if (!job.ok) return edit(`${job.message} ${manageUrl(app.config)}`);
+  const pool = fellBack ? " This server's pool is used up, so it runs on your own plan." : '';
   // Before the token is stored: from then on the task may post the result, and a late "Queued" would overwrite it.
-  await edit(`Queued **${plain(built.label)}** on ${fightLabel(presetId)} in Frostsim Cloud. This message updates when it finishes.`);
+  await edit(`Queued **${plain(built.label)}** on ${fightLabel(presetId)} in Frostsim Cloud.${pool} This message updates when it finishes.`);
   const pending: Pending = { token, label: built.label, presetId, exp: receivedMs + TOKEN_TTL_S * 1000 };
   const saved = await tryRedis(app.redis, app.log,
     async (r) => (await r.set(replyKey(job.id), JSON.stringify(pending), 'EX', TOKEN_TTL_S)) === 'OK', false);

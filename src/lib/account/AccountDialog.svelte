@@ -152,8 +152,8 @@
         <h3 id="acct-guild">Discord server plan</h3>
         {#if me}
           <p class="small">
-            Subscribes the Discord server with ID {guildId ?? 'unknown'} to its own pool of cloud runs, billed to you. Discord shows
-            this link only to whoever ran /frostsim subscribe, so continue only if that was you.
+            Subscribes the Discord server with ID {guildId ?? 'unknown'} to its own pool of cloud runs, billed to you. The link works
+            only for the Frostsim account linked to the Discord account that ran /frostsim subscribe.
           </p>
           <div class="row">
             <button class="primary" disabled={!!busy} onclick={() => checkout('discord_guild_monthly', account.guildToken ?? undefined)}>Continue to checkout</button>

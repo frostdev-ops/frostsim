@@ -145,8 +145,10 @@ once done), `resultBytes`, `cancelJob`. Every source goes through the same check
 returns with `billing-success` or `billing-cancelled`.
 
 **P5 Guild checkout.** `/frostsim subscribe` (Manage Server, from the signed payload) mints a 15-minute signed
-token and links to `#/account/guild/<token>`; the signed-in user checks out `discord_guild_monthly` and the guild
-id travels in the subscription metadata.
+token for that guild and that Discord user, and links to `#/account/guild/<token>`. Checkout of
+`discord_guild_monthly` succeeds only for the Frostsim account linked to that Discord user (403 otherwise); the
+guild id travels in the subscription metadata. A `/sim` whose guild pool is used up for the period runs on the
+member's own allowance instead, and the reply says so.
 
 **P6 Account API** (all under `/api/v1`): `auth/providers`, `auth/:provider/start|callback`, `auth/logout`;
 `me` (GET, PATCH, DELETE), `me/export`, `me/identities/:provider` (DELETE), `me/integrations/loothing` (PUT,

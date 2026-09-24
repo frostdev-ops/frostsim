@@ -249,6 +249,25 @@ describe('/sim', () => {
     expect(mocks.enqueueJob.mock.calls[1][1]).toMatchObject({ userId: USER, guildId: null });
   });
 
+  it('runs on the member\'s own plan when the guild pool is used up, and says so', async () => {
+    const { redis } = fakeRedis();
+    mocks.enqueueJob
+      .mockResolvedValueOnce({ ok: false, status: 402, code: 'no-allowance', message: 'The cloud allowance for this period is used up.' })
+      .mockResolvedValueOnce({ ok: true, id: JOB });
+    await call(redis, sim([{ name: 'character', type: 3, value: CHAR }], inGuild(ALICE, POOL_GUILD)));
+    await vi.waitFor(() => expect(edits).toHaveLength(1));
+    expect(mocks.enqueueJob.mock.calls.map(([, job]) => job.guildId)).toEqual([POOL_GUILD, null]);
+    expect(edits[0].body.content).toMatch(/This server's pool is used up, so it runs on your own plan\./);
+  });
+
+  it('does not fall back for a guild refusal other than a used-up pool', async () => {
+    const { redis } = fakeRedis();
+    mocks.enqueueJob.mockResolvedValueOnce({ ok: false, status: 429, code: 'too-many-jobs', message: 'At most 3 cloud runs can wait at once.' });
+    await call(redis, sim([{ name: 'character', type: 3, value: CHAR }], inGuild(ALICE, POOL_GUILD)));
+    await vi.waitFor(() => expect(edits).toHaveLength(1));
+    expect(mocks.enqueueJob).toHaveBeenCalledTimes(1);
+  });
+
   const refusals: [string, () => void, unknown[], RegExp][] = [
     ['an unlinked user', () => {}, [{ name: 'character', value: CHAR }], new RegExp(`^Link this Discord account to Frostsim first: ${ORIGIN}/#/account$`)],
     ['a user past 30 runs a minute', () => (world.submits = 30), [{ name: 'character', value: CHAR }], /^Too many cloud runs; wait a minute\.$/],
