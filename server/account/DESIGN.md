@@ -1,0 +1,173 @@
+# Frostsim Cloud: design
+
+Optional online features on top of the browser app: accounts, Stripe billing, cloud compute on native simc,
+cloud character slots, hosted report links, and a Discord bot with a Loothing integration. They live on the
+long-lived `cloud` branch. `main` carries only the pieces that change nothing for users: the pure request
+assembly both sides share, a remote-engine seam that is `null` by default, a build flag that is off by default,
+the local `/api/v1` pass-through and the surface guard.
+
+Code comments cite this file as `DESIGN.md <id>`: `A` architecture, `C` contracts, `P` protocols, `R` risks.
+
+## Guarantees
+
+- The browser stays the default and the fallback. Anonymous, browser-only use, the local IndexedDB library,
+  fragment share links (`#/r/`, `#/share/`) and the GET-only `/api/wow` proxy are unchanged.
+- Everything new is opt-in and off by default: `VITE_FEATURE_ACCOUNTS` at build time, `FEATURES` on the server.
+  A flag-off build contains no account code, no quoted `"/api/v1` literal and no `frostsim.account` string, and
+  makes no `/api/v1` request. `scripts/check-surface.mjs` enforces this in CI.
+- Nothing is sent to the account server until the user signs in or opens the account dialog (marker
+  `localStorage['frostsim.account']`).
+
+## Architecture (A)
+
+| # | Decision |
+| --- | --- |
+| A1 | One Node service, `server/account-server.mjs` on `127.0.0.1:3012`, its own systemd unit, user and env file. The Battle.net proxy (`server/api-server.mjs`, `functions/api/**`) is untouched. |
+| A2 | nginx gets one block, `location ^~ /api/v1/`, proxied to 3012 with the same security headers. `/api/wow/*` still matches `location /api/`. |
+| A3 | Plain fetch handler: a regex route table, per-route body caps, no framework. |
+| A4 | Dependencies: `postgres`, `aws4fetch`, `ioredis`. Stripe, Hetzner, OAuth and Discord use `fetch`; HMAC and Ed25519 use `node:crypto`. |
+| A5 | Redis is a cache, never the record: sessions (5 min), rate-limit windows, single-use OAuth states (10 min), job progress lines (the last 500, 1 h), native-build lookups (10 min, 1 min for a miss) and Discord reply tokens (15 min). Every key has a TTL and the `frostsim:` prefix. Without Redis, sessions read Postgres, rate limits fail open, progress lines are dropped and a Discord `/sim` is cancelled because its result could not be posted. |
+| A6 | Job progress reaches the browser by polling about once a second. No SSE. |
+| A7 | One job runs on one worker, up to 32 threads. Jobs are not split across servers. |
+| A8 | The Discord bot is an HTTP interactions endpoint inside the account server. No gateway process. |
+| A9 | OAuth provider tokens are never stored, only `(provider, subject, display_name)`. |
+
+## Contracts (C)
+
+**C1 Runtime.** Logic lives in `server/account/**/*.ts` with extensionless imports and is always bundled with
+esbuild (`npm run account:build`, target `node22`, with a `createRequire` banner). Production runs Node 22, so no
+newer API is used. The server may import the pure browser modules it shares: `src/lib/simc/assemble.ts`,
+`options.ts`, `quick-request.ts`, `presets.ts`, `report.ts`, `detail.ts`, `src/lib/import/character.ts`,
+`src/lib/store/records.ts`, `src/lib/store/report-share.ts`. Never `job.ts`, `capability.ts`, `versions.ts` or
+anything using `import.meta.env`. `tsconfig.server.json` type-checks `server/**` and `functions/**` in
+`npm run check`.
+
+**C2 HTTP.** Request bodies are streamed under a per-route cap (413 over it): 64 KiB by default, 256 KiB for cloud
+characters, 1 MiB for compute submits, worker results and the Stripe webhook, 16 MiB for share blobs. `Set-Cookie` headers are written
+individually. Responses stream. The request origin is `PUBLIC_ORIGIN`, never the Host header. Every
+state-changing session route requires `Origin === PUBLIC_ORIGIN`, and any body it carries must be JSON (for blob
+uploads, `application/gzip`). Errors are `{ error, message }` and never echo an upstream body. Every response
+carries `Cache-Control: no-store` and `nosniff`. Background work runs as named tasks that never overlap
+themselves.
+
+**C3 Config.** Environment names are printed at startup, values never. `FEATURES` is a comma list of
+`accounts`, `billing`, `compute`, `shares`, `discord`; a disabled group answers 404, and disabled compute answers
+503 so the browser runs the sim itself. Any enabled feature makes `DATABASE_URL` and a `SESSION_SECRET` of at least
+32 bytes mandatory: without them the process refuses to start. An enabled feature without its own credentials (Stripe
+keys for `billing`, the R2 keys for `compute` and `shares`, the Discord public key and application id for `discord`)
+answers 503 `unconfigured`.
+`ADMIN_ONLY=1` restricts sessions and jobs to admins (staging); `ADMIN_IDENTITIES` promotes `provider:subject`
+pairs on login. `R2_ENDPOINT` overrides the R2 account endpoint (jurisdiction endpoints, S3-compatible testing).
+
+**C4 Storage.** Postgres is the record: a pool of 5, plain `.sql` migrations applied at startup under an advisory
+lock, each compatible with the previous release. R2 is reached only by the server; the browser gets our own
+URLs. Engines bucket: `engines/<packId>/simc-linux-x64.zst` with `x-amz-meta-sha256` and a sibling `.sha256`.
+Data bucket: `shares/<id>.json.gz`, `results/<jobId>.json.gz` (a 1-day lifecycle rule).
+
+**C5 Data model** (`migrations/`): `users` (role, suspension, Stripe customer, comped allowance), `identities`
+(unique per provider per user), `sessions` (sha256 of the cookie only), `subscriptions` (items with lookup key,
+quantity and `core_hours` from the Price metadata), `stripe_events` (idempotency), `compute_jobs` (the usage
+ledger), `workers`, `cloud_characters` (the addon export text, not a parsed record), `shares`,
+`integration_grants`, `audit_log`.
+
+**C6 Entitlements.** Lookup keys: `compute_s_monthly`, `compute_m_monthly`, `compute_l_monthly` (8, 16, 32
+threads, hosted shares included), `slots_5_monthly` (5 slots per unit), `shares_plus_monthly`,
+`discord_guild_monthly` (a guild pool, 8 threads). Core-hours come from each Price's `core_hours` metadata, not from
+code. Admins can comp core-hours and threads; comped hours without comped threads run at 8.
+`entitlementsFor` is pure. Active statuses are `active`, `trialing`, `past_due`; a subscription stops granting 3
+days after its stored period ends (a missed renewal webhook), and an hourly task re-reads such rows from Stripe.
+Usage is `SUM(core_seconds)` over the current period; guild jobs count only against the guild. The free tier
+grants no compute, slots or hosted shares.
+
+**C7 Auth.** `__Host-fs_sid`: 32 random bytes, only its sha256 stored, `HttpOnly; Secure; SameSite=Lax; Path=/`,
+30 days. `__Host-fs_oauth`: an HMAC-signed state, PKCE verifier, mode and return path, same attributes, 10 minutes,
+consumed once. Return paths must match `#/...`. Sign-in starts only from our own pages or a typed URL (Fetch Metadata
+`Sec-Fetch-Site`), at most 30 starts per IP per 10 minutes. Linking never merges accounts; the last
+identity cannot be unlinked, and unlinking rotates the session and signs out other devices. Suspended users have
+no session.
+
+**C8 Compute.** The server decides threads (the plan's width); the client never sends one. It accepts only a
+structured request, validates it with the browser's own `validateRequest` and `assembleRun`, and refuses Expert
+Mode raw scripts, injection slots, HTML reports, template variables (`$(...)`), control characters, bare tokens simc
+would open as a file, every file option and the options the app sets itself. Refusals: 400 invalid, 402 no plan or
+no allowance, 403 suspended (or not an admin under `ADMIN_ONLY`), 409 no native build for the pack, 429 more than 30
+submits a minute or 3 jobs already queued per user or guild, 503 disabled, unconfigured or no capacity. One job per
+user or guild runs at a time; claims skip a scope with a running job. The allowance is checked again at claim. A queued job
+fails after 15 minutes without a claim while nothing else of its user or guild runs. A job whose worker stops renewing its lease is requeued once, unmetered.
+Metering is threads × the worker's wall seconds, clamped to the coordinator's claim-to-complete time; a cancel or
+failure while running is metered claim-to-then, capped at 1800 s. The request and assembled run are kept 7 days,
+then only the ledger columns remain. Native simc is built per engine pack by `scripts/update-engines.mjs`
+from the pack's own source, so native and wasm are the same revision.
+
+**C9 Browser seam.** `job.ts` exports `setRemoteEngine(fn | null)`, `null` by default. It is consulted after the
+engine capability check, and only for a published engine pack (`/engine/versions/<id>/`) and a guided request without
+Expert Mode text or an HTML report. `src/lib/simc/remote.ts` returns a Worker-shaped object speaking the existing
+worker protocol: it submits the job, polls every second, reports queueing and progress, fetches and decompresses the
+result and posts `done`, so the report renders exactly like a browser run. It replays the run on the real browser
+engine, and says so, when the submit is refused (any error status) or unreachable, when polls keep failing for 60 s,
+when no server claims the job within 150 s (again after a requeue), when the job fails or is cancelled elsewhere, and
+when the result download fails or takes over 150 s. Closing the page cancels the cloud job. Cloud runs carry
+`placement: 'cloud'` and the arguments the worker actually ran.
+
+**C10 Account UI.** Code under `src/lib/account/` is loaded only by dynamic import behind the flag. Hosted links are
+`#/s/<id>` with a 22-character base62 id. Hosted share payload: `gzip(JSON(makePortable('report', { shared, rawReport })))`, at most 16 MiB compressed and 32 MiB
+inflated, validated with `validateReport` on both ends. Blobs are served as `application/gzip` with
+`Content-Security-Policy: default-src 'none'; sandbox`, `Content-Disposition: attachment` and `nosniff`; simc's
+HTML report is never hosted. Limits: 10 share writes a minute per user, 120 views a minute per IP. A share never
+uploaded within a day is revoked. When a user loses hosted shares, their shares expire 30 days later unless they
+resubscribe first.
+
+## Protocols (P)
+
+**P1 Worker protocol.** Workers pull over HTTPS with a per-server bearer token (only its sha256 is stored).
+- Every authenticated worker call is a heartbeat. A worker silent for 3 minutes (10 after creation) is deleted and
+  its jobs released.
+- `POST /api/v1/worker/claim { freeCores, agentVersion }` long-polls up to 25 s. It returns `{ jobId, threads, profile, args, engine: { url, sha256 }, resultPut: { url }, leaseSeconds }` or 204.
+  Presigned URLs last 4200 s. Nothing in a claim identifies the user.
+- `POST /api/v1/worker/jobs/:id/progress { lines }` (at most 200) extends the 60 s lease and answers `{ cancel }`.
+- `POST .../complete { wallSeconds, summary, notices? }` and `POST .../fail { error, notices? }`. `notices` is at
+  most 200 lines of simc's stderr, 500 characters each. A worker that no longer holds the job gets 409.
+- Servers boot from a snapshot with `frostsim-worker.service` disabled; cloud-init writes
+  `/etc/frostsim/worker.env` (coordinator URL and token) and enables it. simc runs under `systemd-run` as a
+  dynamic user with no network, no capabilities and a syscall filter, in an empty root that sees only `/usr`, the
+  engine cache (read-only) and its own job directory. Its share of memory and CPU, 512 tasks, 1 GiB per file and
+  1800 s are its limits. Only the profile and report paths are mapped to the job directory; the agent refuses any
+  other argument that could open a file.
+
+**P2 Engine pack for jobs without a browser** (Discord, Loothing): the newest pack in the updater's index with
+this release's compat and a native build.
+
+**P3 Compute API** (`compute/queue.ts`): `enqueueJob`, `jobView` (lines by cursor; `notices` and `effective`
+once done), `resultBytes`, `cancelJob`. Every source goes through the same checks.
+
+**P4 Sign-in landing.** The callback redirects to `/?account=<code>#<return>` (`signed-in`, `linked`,
+`error-<reason>`). The UI shows the message only when `/me` agrees with it and strips the parameter. Stripe
+returns with `billing-success` or `billing-cancelled`.
+
+**P5 Guild checkout.** `/frostsim subscribe` (Manage Server, from the signed payload) mints a 15-minute signed
+token and links to `#/account/guild/<token>`; the signed-in user checks out `discord_guild_monthly` and the guild
+id travels in the subscription metadata.
+
+**P6 Account API** (all under `/api/v1`): `auth/providers`, `auth/:provider/start|callback`, `auth/logout`;
+`me` (GET, PATCH, DELETE), `me/export`, `me/identities/:provider` (DELETE), `me/integrations/loothing` (PUT,
+DELETE); `admin/users` (GET), `admin/users/:id` (GET, PATCH, DELETE);
+`billing`, `billing/checkout`, `billing/portal`, `stripe/webhook`; `characters` (GET, POST, and GET, PUT, DELETE
+by id); `shares` (GET, POST), `shares/:id` (public GET, owner DELETE), `shares/:id/blob` (owner PUT, public GET);
+`compute/jobs` (POST), `compute/jobs/:id` (GET, DELETE), `compute/jobs/:id/result`; `worker/*` (P1);
+`discord/interactions`; `integrations/loothing/resolve`, `integrations/loothing/jobs`, `integrations/loothing/jobs/:id`
+(bearer token, a linked Discord identity and a grant); `health` (always on, 503 while Postgres is down with any
+feature enabled).
+
+## Risks (R)
+
+- **R1 Hetzner cost runaway or leaked servers.** Label reconciliation, `WORKER_MAX` and
+  `WORKER_MONTHLY_EUR_CAP` with prices read from the Hetzner API, heartbeat reaping, and a snapshot build that
+  deletes its temporary server on any failure. The euro cap is soft by at most two billed hours per worker.
+- **R2 Untrusted simc input on workers.** The browser's own validation, a server refusal list that is a superset
+  of the worker's, and a sandboxed simc on ephemeral servers that hold no credentials beyond their own token.
+- **R3 Native and wasm drift.** Native is built from each pack's own source, jobs name their pack, and results
+  record their placement. Measured locally: native 181,468 ± 87 and wasm 181,388 ± 89 DPS on the same profile.
+- **R4 Contention on the shared host.** A 512 MB and one-CPU cap on the service, a 5-connection pool, TTLs on every
+  Redis key, health probes shared for 5 s.
+- **R5 Legal text.** Nothing is enabled in production before the privacy policy and terms describe accounts,
+  payments and server-side runs.

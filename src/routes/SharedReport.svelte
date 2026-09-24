@@ -10,12 +10,21 @@
   import { titleCase } from '../lib/format'
   let report = $state<SharedReport | null>(null), error = $state(''), copied = $state(false)
   let copyError = $state('')
+  let rawUrl = $state('')
   $effect(() => {
     const payload = router.raw.slice(2)
     let cancelled = false
     report = null; error = ''; copied = false
-    void decodeReport(payload).then(s => { if (!cancelled) report = s }).catch(e => { if (!cancelled) error = e instanceof Error ? e.message : 'This link could not be opened.' })
-    return () => { cancelled = true }
+    // #/s/<id>: a hosted report (CLAUDE.md D15) from a chunk only account builds contain; its raw engine report is a download.
+    const load = import.meta.env.VITE_FEATURE_ACCOUNTS === true && router.raw.startsWith('s/')
+      ? (/^[0-9A-Za-z]{22}$/.test(payload) ? import('../lib/account/hosted') : Promise.reject(new Error('This hosted report link is malformed.')))
+        .then(m => m.openHostedShare(payload)).then(h => {
+          if (h.rawReport && !cancelled) rawUrl = URL.createObjectURL(new Blob([h.rawReport], { type: 'application/json' }))
+          return h.shared
+        })
+      : decodeReport(payload)
+    void load.then(s => { if (!cancelled) report = s }).catch(e => { if (!cancelled) error = e instanceof Error ? e.message : 'This link could not be opened.' })
+    return () => { cancelled = true; if (import.meta.env.VITE_FEATURE_ACCOUNTS === true && rawUrl) { URL.revokeObjectURL(rawUrl); rawUrl = '' } }
   })
   async function copy(text: string) { copyError = ''; try { await navigator.clipboard.writeText(text); copied = true } catch { copyError = 'Clipboard unavailable. Select and copy the link or talent text manually.' } }
 </script>
@@ -37,11 +46,11 @@
       {#if report.damage}<PlayerDetail shared={report} playerName={report.n} showDetails={false} />{/if}
     </div>
     <aside class="report-sidebar">
-      <section class="panel stack-sm"><h2>Report options</h2><button class="primary" onclick={() => copy(location.href)}>{copied ? 'Copied' : 'Copy report link'}</button>{#if copyError}<p class="small" role="alert">{copyError}</p>{/if}<a class="small" href="#/character">Simulate your character</a></section>
+      <section class="panel stack-sm"><h2>Report options</h2><button class="primary" onclick={() => copy(location.href)}>{copied ? 'Copied' : 'Copy report link'}</button>{#if copyError}<p class="small" role="alert">{copyError}</p>{/if}{#if import.meta.env.VITE_FEATURE_ACCOUNTS === true && rawUrl}<a class="small" href={rawUrl} download="frostsim-report.json">Download the engine report (JSON)</a>{/if}<a class="small" href="#/character">Simulate your character</a></section>
       <SimulationDetails shared={report} detail={sharedDetail(report)} />
       <section class="panel stack">
         {#if report.talents}<details class="disclosure"><summary>Talent build</summary><textarea readonly aria-label="Talent export" value={report.talents} rows="4" onfocus={e => e.currentTarget.select()}></textarea><button class="sm" onclick={() => copy(report!.talents)}>Copy talents</button></details>{/if}
-        <details class="disclosure"><summary>Included in this link</summary><p class="small muted">{report.damage?.length ?? 0}/{report.meta.damageCount} contributors · {report.buffs?.length ?? 0}/{report.meta.buffCount} buff uptimes</p><p class="xs muted">Left out: {report.meta.omitted?.join('; ') || 'none'}. Display values are rounded; headline DPS and uncertainty retain their original precision.</p></details>
+        <details class="disclosure"><summary>{import.meta.env.VITE_FEATURE_ACCOUNTS === true && router.raw.startsWith('s/') ? 'Included in this report' : 'Included in this link'}</summary><p class="small muted">{report.damage?.length ?? 0}/{report.meta.damageCount} contributors · {report.buffs?.length ?? 0}/{report.meta.buffCount} buff uptimes</p><p class="xs muted">Left out: {report.meta.omitted?.join('; ') || 'none'}. Display values are rounded; headline DPS and uncertainty retain their original precision.</p></details>
       </section>
     </aside>
   </div>

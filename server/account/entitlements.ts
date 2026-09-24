@@ -1,0 +1,134 @@
+// What a user or a Discord guild may use right now (CLAUDE.md D14, D15; DESIGN.md C6). entitlementsFor is pure; loadEntitlements reads
+// the rows it needs. Free tier: no compute, no slots, no hosted shares (a business decision to revisit, not an invented one).
+
+import type { Db } from './db';
+import { CATALOG, product } from './catalog';
+
+export interface SubscriptionItem {
+  lookupKey: string;
+  quantity: number;
+  /** From the Stripe Price metadata `core_hours`; absent means the item grants no hours. */
+  coreHours?: number;
+}
+
+export interface Subscription {
+  status: string;
+  currentPeriodStart: Date | null;
+  currentPeriodEnd: Date | null;
+  items: SubscriptionItem[];
+  /** Set for a Discord guild pool; such a subscription never counts toward its payer's personal allowance. */
+  guildId: string | null;
+}
+
+/** Admin-comped allowance (users.comp_core_seconds / comp_max_threads). */
+export interface Comp {
+  coreSeconds: number;
+  maxThreads: number | null;
+}
+
+export interface Period {
+  periodStart: Date;
+  periodEnd: Date;
+}
+
+export interface GuildEntitlement extends Period {
+  guildId: string;
+  coreSeconds: number;
+  maxThreads: number;
+}
+
+export interface Entitlements extends Period {
+  coreSeconds: number;
+  maxThreads: number;
+  slots: number;
+  hostedShares: boolean;
+  guilds: GuildEntitlement[];
+}
+
+/** past_due still counts: Stripe is retrying the payment. */
+export const ACTIVE_STATUSES: ReadonlySet<string> = new Set(['active', 'trialing', 'past_due']);
+
+/** How long an active status outlives its stored current_period_end. Past it, a missed renewal (or deletion) webhook counts as a lapse
+ *  instead of granting forever; billing's hourly `billing-resync` task re-reads the subscription from Stripe and restores it. */
+export const RENEWAL_GRACE_MS = 3 * 86_400_000;
+
+export function calendarMonth(now: Date): Period {
+  return {
+    periodStart: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)),
+    periodEnd: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)),
+  };
+}
+
+function live(sub: Subscription, now: Date): boolean {
+  const end = sub.currentPeriodEnd;
+  return ACTIVE_STATUSES.has(sub.status) && (!end || now.getTime() < end.getTime() + RENEWAL_GRACE_MS);
+}
+
+/** The metering window: the stored period, or inside the renewal grace the next one of the same length (not the calendar month,
+ *  which would hand out a fresh allowance mid-cycle). Null when neither contains now. */
+function periodOf(sub: Subscription, now: Date): Period | null {
+  const { currentPeriodStart: start, currentPeriodEnd: end } = sub;
+  if (!start || !end) return null;
+  const period = now < end ? { periodStart: start, periodEnd: end } : { periodStart: end, periodEnd: new Date(2 * end.getTime() - start.getTime()) };
+  return period.periodStart <= now && now < period.periodEnd ? period : null;
+}
+
+/** Comped hours without comped threads run at the smallest compute tier's width instead of 0 threads. */
+const SMALLEST_COMPUTE_THREADS = Math.min(...Object.values(CATALOG).filter((p) => p.kind === 'compute').map((p) => p.maxThreads ?? Infinity));
+
+const units = (quantity: number) => (Number.isFinite(quantity) && quantity > 0 ? Math.floor(quantity) : 0);
+
+export function entitlementsFor(subs: readonly Subscription[], comp: Comp, now: Date): Entitlements {
+  let coreSeconds = comp.coreSeconds;
+  let maxThreads = comp.maxThreads ?? 0;
+  let slots = 0;
+  let hostedShares = false;
+  // ponytail: with two compute subscriptions the first one's period meters both; add per-subscription windows if that case appears.
+  let computePeriod: Period | null = null;
+  const guilds = new Map<string, GuildEntitlement>();
+
+  for (const sub of subs) {
+    if (!live(sub, now)) continue;
+    for (const item of sub.items) {
+      const p = product(item.lookupKey);
+      if (!p) continue;
+      const seconds = (Number(item.coreHours) || 0) * 3600 * units(item.quantity);
+      if (sub.guildId) {
+        if (p.kind !== 'guild') continue;
+        const guild = guilds.get(sub.guildId)
+          ?? { guildId: sub.guildId, coreSeconds: 0, maxThreads: 0, ...(periodOf(sub, now) ?? calendarMonth(now)) };
+        guild.coreSeconds += seconds;
+        guild.maxThreads = Math.max(guild.maxThreads, p.maxThreads ?? 0);
+        guilds.set(sub.guildId, guild);
+        continue;
+      }
+      if (p.kind === 'compute') {
+        coreSeconds += seconds;
+        maxThreads = Math.max(maxThreads, p.maxThreads ?? 0);
+        computePeriod ??= periodOf(sub, now);
+      }
+      if (p.kind === 'slots') slots += (p.slotsPerUnit ?? 0) * units(item.quantity);
+      if (p.hostedShares) hostedShares = true;
+    }
+  }
+  if (coreSeconds > 0 && maxThreads < 1) maxThreads = SMALLEST_COMPUTE_THREADS;
+  return { coreSeconds, maxThreads, slots, hostedShares, ...(computePeriod ?? calendarMonth(now)), guilds: [...guilds.values()] };
+}
+
+/** Rows -> entitlementsFor. For a guild, only subscriptions carrying that guild_id count and the result's `guilds[0]` is it. */
+export async function loadEntitlements(db: Db, who: { userId: string } | { guildId: string }, now: Date): Promise<Entitlements> {
+  const rows = 'userId' in who
+    ? await db`select status, current_period_start, current_period_end, items, guild_id from subscriptions where user_id = ${who.userId}`
+    : await db`select status, current_period_start, current_period_end, items, guild_id from subscriptions where guild_id = ${who.guildId}`;
+  const [user] = 'userId' in who
+    ? await db`select comp_core_seconds::float8 as core_seconds, comp_max_threads as max_threads from users where id = ${who.userId}`
+    : [];
+  const subs: Subscription[] = rows.map((r) => ({
+    status: r.status,
+    currentPeriodStart: r.current_period_start,
+    currentPeriodEnd: r.current_period_end,
+    items: r.items,
+    guildId: r.guild_id,
+  }));
+  return entitlementsFor(subs, { coreSeconds: user?.core_seconds ?? 0, maxThreads: user?.max_threads ?? null }, now);
+}

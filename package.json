@@ -14,7 +14,7 @@
     "preview": "vite preview",
     "test": "vitest run --exclude 'build/**' --exclude 'public/**'",
     "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.server.json",
-    "lint": "oxlint --deny-warnings src scripts functions server",
+    "lint": "oxlint --deny-warnings src scripts functions server cloud/worker",
     "check:surface": "node scripts/check-surface.mjs",
     "engine:build": "./scripts/build-engine.sh",
     "engine:install": "mkdir -p public/engine && cp build/wasm/simc.js build/wasm/simc.wasm public/engine/",
@@ -27,7 +27,9 @@
     "engine:bench": "node scripts/engine-bench.mjs",
     "release:package": "node scripts/package-release.mjs",
     "engine:candidate": "node scripts/engine-candidate.mjs",
-    "serve:pages": "node scripts/serve-pages.mjs"
+    "serve:pages": "node scripts/serve-pages.mjs",
+    "account:build": "esbuild server/account-server.mjs --bundle --platform=node --target=node22 --format=esm --outfile=dist-server/account-server.mjs --log-level=warning \"--banner:js=import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\" && mkdir -p dist-server/account && cp -R server/account/migrations dist-server/account/",
+    "account:serve": "npm run account:build && node --env-file-if-exists=.dev.account.env dist-server/account-server.mjs"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.3.0",

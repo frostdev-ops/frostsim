@@ -110,6 +110,8 @@
     void register().then(() => refreshStatus(catalogBaseUrl()))
     interrupted = takeInterrupted()
     void initMedia()
+    // Account code compiles out unless built with VITE_FEATURE_ACCOUNTS=1 (CLAUDE.md D15); it asks nothing without its marker or a sign-in landing.
+    if (import.meta.env.VITE_FEATURE_ACCOUNTS === true) void import('./lib/account/bootstrap').then((m) => m.bootstrap())
   })
 
   // Decisive half of Top Gear trace: app.start after page.hide means page came back (explains vanished panel).
@@ -347,6 +349,7 @@
       {/if}
       <a class="icon-btn" href={SOURCE_URL} target="_blank" rel="noopener noreferrer" aria-label="Frostsim source code on GitHub (opens in a new tab)" title="Source code on GitHub"><CodeXml size={18} /></a>
       <a class="icon-btn help-btn" href={href('help')} aria-label="Help" aria-current={router.name === 'help' ? 'page' : undefined}><CircleQuestionMark size={18} /></a>
+      {#if import.meta.env.VITE_FEATURE_ACCOUNTS === true}{#await import('./lib/account/AccountButton.svelte') then m}<m.default />{/await}{/if}
       <button class="ghost sm gear-btn" onclick={() => (settingsOpen = true)} aria-label="Settings"><Settings size={18} /></button>
     </div>
   </div>
@@ -526,7 +529,7 @@
     is what makes the message worth reading rather than worth hiding.
   -->
   <svelte:boundary onerror={(e) => trace('screen.render-failed', { message: e instanceof Error ? e.message : String(e) })}>
-    {#if router.raw.startsWith('r/')}
+    {#if router.raw.startsWith('r/') || (import.meta.env.VITE_FEATURE_ACCOUNTS === true && router.raw.startsWith('s/'))}
       <SharedReport />
     {:else if lazyLoader}
       {#await lazyLoader()}
@@ -724,6 +727,34 @@
         {/if}
         {#if offline.error}<p class="xs err-text">{offline.error}</p>{/if}
       </fieldset>
+    {/if}
+
+    {#if import.meta.env.VITE_FEATURE_ACCOUNTS === true}
+      {#await import('./lib/account/placement.svelte') then p}
+        {#if p.placement.entitled}
+          <fieldset class="stack-sm">
+            <legend class="small">Run on</legend>
+            <div class="segmented" role="radiogroup" aria-label="Run on">
+              {#each [['browser', 'This browser'], ['cloud', 'Frostsim Cloud']] as [value, label] (value)}
+                <label>
+                  <input
+                    type="radio"
+                    name="placement"
+                    {value}
+                    checked={p.placement.value === value}
+                    onchange={() => p.setPlacement(value as 'browser' | 'cloud')}
+                  />
+                  {label}
+                </label>
+              {/each}
+            </div>
+            <p class="xs muted">
+              Cloud runs use your plan's core-hours. A run the cloud cannot take runs in this browser instead, with a note on the
+              result.
+            </p>
+          </fieldset>
+        {/if}
+      {/await}
     {/if}
 
     {#if app.capability?.ok}

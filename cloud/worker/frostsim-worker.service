@@ -1,0 +1,19 @@
+# Compute worker agent (CLAUDE.md D14, DESIGN.md P1). Shipped disabled in the snapshot; cloud-init
+# enables it after writing /etc/frostsim/worker.env (coordinator URL and this server's token).
+[Unit]
+Description=Frostsim compute worker agent
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/frostsim/worker.env
+
+[Service]
+# Root because every simc run is its own sandboxed transient unit started through systemd-run.
+# The agent reads worker.env itself, so the token never enters an environment block.
+ExecStart=/usr/bin/node /opt/frostsim-worker/agent.mjs
+# Job units live outside this cgroup; stop them whenever the agent stops or crashes.
+ExecStopPost=-/usr/bin/systemctl kill --signal=SIGKILL frostsim-job-*.service
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

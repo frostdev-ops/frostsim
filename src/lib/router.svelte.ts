@@ -42,10 +42,12 @@ export interface Route {
   raw: string
 }
 
-function parse(hash: string): Route {
+/** `s` (hosted report, CLAUDE.md D15) is an alias like `r`, not a route, and exists only in account builds. `=== true`: vitest
+ *  turns the define into the string "false". */
+export function parse(hash: string, accounts = import.meta.env.VITE_FEATURE_ACCOUNTS === true): Route {
   const raw = hash.replace(/^#\/?/, '')
   const [head = '', ...rest] = raw.split('/').filter(Boolean)
-  const name = head === 'r' ? 'reports' : (ROUTES as readonly string[]).includes(head) ? (head as RouteName) : 'character'
+  const name = head === 'r' || (accounts && head === 's') ? 'reports' : (ROUTES as readonly string[]).includes(head) ? (head as RouteName) : 'character'
   return { name, rest, raw }
 }
 

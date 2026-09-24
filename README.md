@@ -9,7 +9,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/engine-SimulationCraft%20%C2%B7%20WebAssembly-89cbd5" alt="SimulationCraft compiled to WebAssembly">
-  <img src="https://img.shields.io/badge/simulation-100%25%20client--side-89cbd5" alt="All simulation runs in the browser">
+  <img src="https://img.shields.io/badge/simulation-client--side%20by%20default-89cbd5" alt="Simulation runs in the browser by default">
   <img src="https://img.shields.io/badge/license-GPL--3.0--only-89cbd5" alt="GPL-3.0-only">
 </p>
 
@@ -21,7 +21,7 @@
 
 Frostsim is a browser-only alternative to a hosted simulation service. SimulationCraft is compiled to WebAssembly and runs inside a Web Worker on your machine, using its own iteration split and merge logic across real threads. Nothing about your character is uploaded, no job waits in a queue, and the cost of a thousand sims is your own idle CPU.
 
-**The hard constraint is architectural, not a preference.** There is no server route that can start a simulation. A static host serves the bytes and a small proxy answers item lookups, and that is the entire server side.
+**The browser is the default, not a preference.** On `main` there is no server route that can start a simulation: a static host serves the bytes and a small proxy answers item lookups. This `cloud` branch adds an opt-in, paid alternative (below); a default build of it is the app on `main`.
 
 Paste your `/simc` addon export, pick what you want to know, and run it.
 
@@ -137,11 +137,29 @@ Trusted HTTPS is part of the same requirement rather than a separate nicety. A s
 
 `public/_headers` holds the policy the app expects, and `npm run serve:pages` applies it locally so it can be checked before it reaches a real host.
 
-## Frostsim Cloud, on the `cloud` branch
+## Frostsim Cloud (this branch)
 
-Optional online features are developed on the long-lived `cloud` branch: sign-in with Battle.net or Discord, cloud character slots, hosted full-detail report links, paid cloud runs on native SimulationCraft built from the same engine pack as the browser, and a Discord bot. All of it is public under the same license, the account server and the cloud worker agent included.
+This long-lived branch adds optional online features on top of the browser app: sign-in with Battle.net or Discord, cloud character slots, hosted full-detail report links, paid cloud runs on native SimulationCraft, and a Discord bot with a Loothing integration. Everything is public, the account server and the cloud worker agent included. `main` is merged into this branch, never the reverse.
 
-`main` stays the browser app described above. It carries only the pieces that change nothing for anyone: the pure request assembly the browser and the server share, an engine hook that does nothing unless account code registers it, and a build flag that is off by default. A build from `main`, or a `cloud` build without `VITE_FEATURE_ACCOUNTS=1`, makes no request to the account server, and CI checks that. The design, its contracts and its risks are in [`server/account/DESIGN.md`](https://github.com/frostdev-ops/frostsim/blob/cloud/server/account/DESIGN.md) on that branch.
+- **The browser stays the default and the fallback.** Cloud runs are opt-in per user. When the account server refuses a run, is unreachable, or a job fails, the same run replays in the browser and the report says so. Native SimulationCraft on the workers is built from the same engine pack as the browser build, and each result records where it ran.
+- **Off unless switched on.** The UI compiles in only with `VITE_FEATURE_ACCOUNTS=1`; the server enables groups with `FEATURES=accounts,billing,compute,shares,discord`. A default build of this branch makes no request to the account server, and CI checks that.
+- **Where it lives.** `server/account-server.mjs` and `server/account/**` (one Node service behind `/api/v1/`, Postgres and Redis), `cloud/worker/**` (the worker agent, its sandbox and the snapshot build), `src/lib/account/**` and `src/lib/simc/remote.ts` (the browser side). The design, contracts, protocols and risks are in [`server/account/DESIGN.md`](server/account/DESIGN.md).
+
+Running it locally needs Postgres and Redis:
+
+```sh
+cat > .dev.account.env <<'ENV'
+FEATURES=accounts,shares
+DATABASE_URL=postgres://frostsim:...@127.0.0.1:5432/frostsim
+REDIS_URL=redis://frostsim:...@127.0.0.1:6379
+SESSION_SECRET=<48 random bytes, base64>
+PUBLIC_ORIGIN=http://localhost:4180
+ENV
+npm run account:serve                         # bundles and starts it on 127.0.0.1:3012, migrations included
+VITE_FEATURE_ACCOUNTS=1 npm run build && npm run serve:pages
+```
+
+Each feature group needs its own credentials (OAuth apps, Stripe, R2, Hetzner, Discord); a group without them answers `503 unconfigured` instead of failing to start, and startup prints which names are missing. The server tests that need a database run when `FROSTSIM_TEST_PG` and `FROSTSIM_TEST_REDIS` point at disposable instances, and are skipped otherwise.
 
 ## Built with
 
