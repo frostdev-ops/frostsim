@@ -41,7 +41,7 @@
   <div class="spread">
     <h2 class="section-title">Characters</h2>
     <span class="row-tight">
-      <span class="small muted">{used} of {slotsLabel(slots.total)} slot{slots.total === 1 ? '' : 's'} used</span>
+      <span class="small muted">{unlimited ? `${used} character${used === 1 ? '' : 's'} · unlimited slots` : `${used} of ${slotsLabel(slots.total)} slot${slots.total === 1 ? '' : 's'} used`}</span>
       {#if !computeEntitled()}<PremiumPill text="More slots" />{/if}
     </span>
   </div>
