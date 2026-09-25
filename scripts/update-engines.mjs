@@ -160,6 +160,36 @@ export function seasonBody(data) {
  * regenerate both from that build and compare: identical data is stamped into the pack's catalog manifest
  * as `seasonDataBuild` (the app's build it is proven equal to); different data blocks the pack.
  */
+/** The wago.tools tables scripts/generate-presentation.mjs reads (a compat input, so its own fetch stays as it is). */
+const PRESENTATION_TABLES = ['SpellMisc', 'ManifestInterfaceData'];
+const byBuild = (a, b) => { const x = a.split('.').map(Number), y = b.split('.').map(Number); return x.map((n, i) => n - y[i]).find(d => d) ?? 0; };
+
+/**
+ * The directory holding PRESENTATION_TABLES for client build `version`, in fallback order: this build's cache under `dataRoot`,
+ * wago.tools (into that cache, which the talent layout shares), then the newest other build cached there. The pack ships only the
+ * spell names those icons disambiguate, and icons barely move between builds, so a wago.tools outage (2026-09-25) costs at most a
+ * few new spells' names, never the build. Battle.net has no bulk equivalent: its media API answers one learnable spell per call.
+ */
+export async function presentationData(dataRoot, version, fetchFn = fetch) {
+  const dir = join(dataRoot, `talent-layout-${version}`);
+  const complete = d => PRESENTATION_TABLES.every(t => existsSync(join(d, `${t}.csv`)));
+  mkdirSync(dir, { recursive: true });
+  for (const table of PRESENTATION_TABLES.filter(t => !existsSync(join(dir, `${t}.csv`)))) {
+    try {
+      const response = await fetchFn(`https://wago.tools/db2/${table}/csv?build=${version}`, { signal: AbortSignal.timeout(300_000) });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      writeFileSync(join(dir, `${table}.csv.tmp`), await response.text());
+      renameSync(join(dir, `${table}.csv.tmp`), join(dir, `${table}.csv`));
+    } catch (err) { console.error(`wago.tools ${table} for ${version}: ${err.message}`); }
+  }
+  if (complete(dir)) return dir;
+  const older = readdirSync(dataRoot).map(name => /^talent-layout-([\d.]+)$/.exec(name)?.[1])
+    .filter(v => v && v !== version && complete(join(dataRoot, `talent-layout-${v}`))).sort(byBuild).pop();
+  if (!older) throw new Error(`Spell icon data for ${version}: wago.tools failed and no client build's is cached`);
+  console.error(`Spell icon data: using client build ${older}'s, wago.tools has none for ${version} right now`);
+  return join(dataRoot, `talent-layout-${older}`);
+}
+
 function seasonData(work, lock, cacheRoot) {
   const build = lock.expected.clientDataWowVersion;
   const files = ['src/lib/catalog/generated/upgrades.json', 'src/lib/catalog/generated/raid-rewards.json'];
@@ -233,12 +263,12 @@ async function build(candidate, commit, output, id) {
       assert.deepEqual(generatedWeekly.weekly, previousWeekly.weekly);
     } catch { throw new GateError('Upstream changed the guided consumable defaults (generate-weekly-defaults.mjs); Frostsim needs an update'); }
     // Spell names/icons and consumable labels belong to this engine's spell data, so they ship in the pack. Generated here, before
-    // any builder: the type check imports public/presentation.json, and a builder's wago.tools fetch failed (2026-09-25). Its wago.tools
-    // downloads land in the talent layout's persistent cache, so a wago outage blocks only the first build of a client version.
-    const talentCache = join(process.env.FROSTSIM_TALENT_CACHE || join(root, 'build'), `talent-layout-${lock.expected.clientDataWowVersion}`);
-    mkdirSync(talentCache, { recursive: true });
+    // any builder: the type check imports public/presentation.json. The script reads its wago.tools tables from the directory linked
+    // below and fetches none itself.
+    const dataRoot = process.env.FROSTSIM_TALENT_CACHE || join(root, 'build');
+    const talentCache = join(dataRoot, `talent-layout-${lock.expected.clientDataWowVersion}`);
     mkdirSync(join(work, 'build'), { recursive: true });
-    symlinkSync(talentCache, join(work, 'build', `talent-layout-${lock.expected.clientDataWowVersion}`));
+    symlinkSync(await presentationData(dataRoot, lock.expected.clientDataWowVersion), join(work, 'build', `talent-layout-${lock.expected.clientDataWowVersion}`));
     run(work, 'node', ['scripts/generate-presentation.mjs']);
     // The compiles, smokes, tests and type check go to an EC2 builder when ec2.env exists; this host is the fallback.
     const builtOn = await remoteEngineBuild(work, lock.toolchain) ?? 'host';
@@ -710,6 +740,12 @@ export async function runOnBuilder(provider, r2, dir, into, { name, timeoutMs, c
   }
 }
 
+/** The cache goes back to R2 whenever the job exits, failed or not: a job that dies after its compile still leaves a warm cache for
+ *  the next one (2026-09-25). Never fatal; a failed save leaves the previous cache in place. */
+const SAVE_CACHE = ['save_cache() { if [ -n "${CACHE_PUT:-}" ]; then ccache -s | grep -E "Hits|Misses" || true',
+  '  if tar -cf - -C /root ccache | zstd -T0 -3 -q >/root/ccache.tar.zst && curl -fsS --retry 3 -T /root/ccache.tar.zst "$CACHE_PUT" >/dev/null',
+  '  then echo "ccache saved: $(du -h /root/ccache.tar.zst | cut -f1)"; else echo "ccache not saved"; fi; fi; }', 'trap save_cache EXIT'];
+
 /**
  * The builder's shell prelude: fail fast, the pinned Node and emsdk when a job needs them, and ccache restored from R2 when the job
  * carries cache.env (runOnBuilder's `cache`). The builder starts empty every time, so the cache is what makes a rebuild recompile only
@@ -722,7 +758,7 @@ function builderPrelude({ node, emsdk, compilerCheck = 'content' } = {}) {
     `export CCACHE_DIR=/root/ccache CCACHE_BASEDIR=/root/w CCACHE_NOHASHDIR=1 CCACHE_MAXSIZE=8G CCACHE_COMPILERCHECK=${compilerCheck}`,
     'if [ -f cache.env ]; then . ./cache.env; fi',
     'if [ -n "${CACHE_GET:-}" ] && curl -fsS --retry 3 "$CACHE_GET" | zstd -dq | tar -xf - -C /root; then echo "ccache restored: $(du -sh /root/ccache | cut -f1)";',
-    'else rm -rf /root/ccache; echo "ccache: starting empty"; fi',
+    'else rm -rf /root/ccache; echo "ccache: starting empty"; fi', ...SAVE_CACHE,
     ...(node ? [
       `curl -fsSLo /tmp/node.tar.xz https://nodejs.org/dist/v${node}/node-v${node}-linux-x64.tar.xz`,
       `curl -fsSLo /tmp/SHASUMS256.txt https://nodejs.org/dist/v${node}/SHASUMS256.txt`,
@@ -734,10 +770,6 @@ function builderPrelude({ node, emsdk, compilerCheck = 'content' } = {}) {
       'source /opt/emsdk/emsdk_env.sh >/dev/null 2>&1'] : [])];
 }
 
-/** The job's last step: the cache goes back to R2 (never fatal; the next build then starts from the previous cache). */
-const SAVE_CACHE = ['if [ -n "${CACHE_PUT:-}" ]; then ccache -s | grep -E "Hits|Misses" || true',
-  '  if tar -cf - -C /root ccache | zstd -T0 -3 -q >/root/ccache.tar.zst && curl -fsS --retry 3 -T /root/ccache.tar.zst "$CACHE_PUT" >/dev/null',
-  '  then echo "ccache saved: $(du -h /root/ccache.tar.zst | cut -f1)"; else echo "ccache not saved"; fi', 'fi'];
 
 /** The engine job: both wasm artifacts, both node smokes, the real-engine and unit tests and the type check, on every core. */
 export function engineJobScript(toolchain) {
@@ -748,14 +780,14 @@ export function engineJobScript(toolchain) {
     'bash scripts/build-engine.sh', 'bash scripts/build-engine.sh --fallback', 'mkdir -p ../out', smoke(false), smoke(true),
     // The workspace carries public/presentation.json, which the type check imports: the host generates it first.
     'FROSTSIM_ENGINE=1 npx vitest run src/lib/simc', 'npm run check', 'cp -R public/engine ../out/engine',
-    'cd ..', ...SAVE_CACHE, ''].join('\n');
+    ''].join('\n');
 }
 
 /** The native job: a Linux simc from a pack's own source archive (the same flags as a local build, without ccache). */
 export function nativeJobScript() {
   return [...builderPrelude(), 'mkdir -p vendor/simc out && tar -xzf simc.tar.gz -C vendor/simc',
     `cmake ${NATIVE_CMAKE.join(' ')} -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache >/dev/null`,
-    'cmake --build build/native', 'cp build/native/simc out/simc', ...SAVE_CACHE, ''].join('\n');
+    'cmake --build build/native', 'cp build/native/simc out/simc', ''].join('\n');
 }
 
 /** R2 and the builder providers in fallback order (EC2 Spot, then Hetzner), or null when none is configured: this host builds. */

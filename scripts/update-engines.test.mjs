@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdDecompressSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
-import { buildNative, hcloudCredentials, hetznerBuilders, nativeTargets, r2Credentials, sigV4, sweepBuilders, writeNativeStatus } from './update-engines.mjs';
+import { buildNative, hcloudCredentials, hetznerBuilders, nativeTargets, presentationData, r2Credentials, sigV4, sweepBuilders, writeNativeStatus } from './update-engines.mjs';
 
 const green = { status: 'completed', conclusion: 'success', event: 'push', head_branch: 'midnight', path: '.github/workflows/main.yml',
   repository: { full_name: 'simulationcraft/simc' }, head_repository: { full_name: 'simulationcraft/simc' }, head_sha: 'a'.repeat(40) };
@@ -305,8 +305,11 @@ describe('EC2 builds', async () => {
       'FROSTSIM_ENGINE=1 npx vitest run src/lib/simc', 'src/lib/simc\nnpm run check', 'cp -R public/engine ../out/engine']) expect(script).toContain(step);
     expect(script).toContain('CCACHE_COMPILERCHECK=string:emsdk-6.0.9');
     expect(script.indexOf('ccache restored')).toBeLessThan(script.indexOf('build-engine.sh'));
-    expect(script.indexOf('-T /root/ccache.tar.zst')).toBeGreaterThan(script.indexOf('cp -R public/engine'));
+    // Saved on any exit, so a job that fails after its compile still leaves a warm cache.
+    expect(script.indexOf('trap save_cache EXIT')).toBeGreaterThan(script.indexOf('ccache restored'));
+    expect(script.indexOf('trap save_cache EXIT')).toBeLessThan(script.indexOf('build-engine.sh'));
     expect(nativeJobScript()).toContain('-DCMAKE_CXX_COMPILER_LAUNCHER=ccache');
+    expect(nativeJobScript()).toContain('trap save_cache EXIT');
     expect(nativeJobScript()).toContain('CCACHE_COMPILERCHECK=content');
     expect(nativeJobScript()).toContain('tar -xzf simc.tar.gz -C vendor/simc');
     expect(nativeJobScript()).not.toContain('emsdk');
@@ -449,5 +452,29 @@ describe('EC2 builds', async () => {
     };
     expect(await sweepEc2Builders(ec2, { fetchFn, now: Date.parse('2026-09-25T12:00:00Z') })).toEqual(['i-old']);
     expect(calls).toEqual(['DescribeInstances', 'TerminateInstances']);
+  });
+});
+
+describe('presentationData', () => {
+  const tables = ['SpellMisc', 'ManifestInterfaceData'];
+  const seed = (root, build) => { mkdirSync(join(root, `talent-layout-${build}`), { recursive: true });
+    for (const t of tables) writeFileSync(join(root, `talent-layout-${build}`, `${t}.csv`), `${t} ${build}`); };
+  const down = async () => { throw new Error('timeout'); };
+
+  it('uses this build\'s cache without fetching, fills it from wago.tools, and falls back to the newest other cached build', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'presentation-'));
+    try {
+      seed(root, '12.1.0.69814');
+      expect(await presentationData(root, '12.1.0.69814', down)).toBe(join(root, 'talent-layout-12.1.0.69814'));
+      seed(root, '12.0.9.70000'); seed(root, '12.1.0.9999');
+      // wago.tools down: the newest other build by version, not by name.
+      expect(await presentationData(root, '12.1.0.69933', down)).toBe(join(root, 'talent-layout-12.1.0.69814'));
+      const urls = [];
+      const up = async url => { urls.push(url); return new Response(`fresh ${url}`); };
+      expect(await presentationData(root, '12.1.0.69933', up)).toBe(join(root, 'talent-layout-12.1.0.69933'));
+      expect(urls).toEqual(tables.map(t => `https://wago.tools/db2/${t}/csv?build=12.1.0.69933`));
+      expect(readFileSync(join(root, 'talent-layout-12.1.0.69933/SpellMisc.csv'), 'utf8')).toBe(`fresh ${urls[0]}`);
+      await expect(presentationData(mkdtempSync(join(tmpdir(), 'presentation-')), '12.1.0.1', down)).rejects.toThrow('no client build');
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
