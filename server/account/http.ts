@@ -12,11 +12,14 @@ import type { Log } from './config';
 export class HttpError extends Error {
   readonly status: number;
   readonly code: string;
-  constructor(status: number, code: string, message: string) {
+  /** Extra response headers, e.g. Retry-After on a 429. */
+  readonly headers: HeadersInit;
+  constructor(status: number, code: string, message: string, headers: HeadersInit = {}) {
     super(message);
     this.name = 'HttpError';
     this.status = status;
     this.code = code;
+    this.headers = headers;
   }
 }
 
@@ -27,8 +30,8 @@ export function json(body: unknown, status = 200, headers: HeadersInit = {}): Re
 }
 
 /** The one error shape. `message` is ours, never an upstream body (those can carry tokens). */
-export function error(status: number, code: string, message: string): Response {
-  return json({ error: code, message }, status);
+export function error(status: number, code: string, message: string, headers: HeadersInit = {}): Response {
+  return json({ error: code, message }, status, headers);
 }
 
 /** Error name and message for a log line, with URLs of any scheme cut out: a presigned URL or a postgres:// / redis:// URL with its

@@ -70,7 +70,13 @@ export function cloudRun(request: SimRequest, threads: number): { run: Assembled
 /** DESIGN.md P3. Threads are the entitlement's (capped by the server type), never the request's (C8). */
 export async function enqueueJob(
   app: App,
-  job: { userId: string | null; guildId: string | null; source: Source; packId: string; request: SimRequest },
+  job: {
+    userId: string | null; guildId: string | null; source: Source; packId: string; request: SimRequest;
+    /** The slot the request was built from, for history and integration views. */
+    characterId?: string | null;
+    /** A caller's key for this job; a second insert with it (source, user) fails with 23505, which the caller maps to the first job. */
+    idempotencyKey?: string | null;
+  },
 ): Promise<{ ok: true; id: string } | Refusal> {
   const { userId, guildId, source, packId, request } = job;
   if (!app.config.features.has('compute')) return refuse(503, 'compute-disabled', 'Frostsim Cloud is switched off; runs stay in the browser.');
@@ -112,9 +118,10 @@ export async function enqueueJob(
     const [{ queued }] = await tx`select count(*)::int as queued from compute_jobs
       where status = 'queued' and ${guildId ? tx`guild_id = ${guildId}` : tx`user_id = ${userId} and guild_id is null`}`;
     if (queued >= QUEUED_PER_SCOPE) return null;
-    const [row] = await tx`insert into compute_jobs (user_id, guild_id, source, pack_id, threads, request, payload, status, created_at)
+    const [row] = await tx`insert into compute_jobs (user_id, guild_id, source, pack_id, threads, request, payload, status, created_at,
+        character_id, idempotency_key)
       values (${userId}, ${guildId}, ${source}, ${packId}, ${run.threads}, ${tx.json(request as unknown as postgres.JSONValue)},
-        ${tx.json({ profile: run.profile, args: run.args })}, 'queued', ${now})
+        ${tx.json({ profile: run.profile, args: run.args })}, 'queued', ${now}, ${job.characterId ?? null}, ${job.idempotencyKey ?? null})
       returning id`;
     return row.id as string;
   });

@@ -74,7 +74,7 @@ let world: {
 function fakeSql(): Sql {
   const answer = (q: string, v: unknown[]): unknown[] => {
     if (q.includes("from identities i join users u on u.id = i.user_id")) return world.identities[v[0] as string] ? [{ user_id: world.identities[v[0] as string] }] : [];
-    if (q.includes('select label, raw from cloud_characters')) {
+    if (q.includes('select id, label, raw from cloud_characters')) {
       const [userId, wanted] = v as string[];
       return world.characters.filter((c) => c.user_id === userId && (c.id === wanted || c.label.toLowerCase() === wanted.toLowerCase()));
     }

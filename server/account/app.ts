@@ -147,7 +147,7 @@ export function createApp(deps: AppDeps, routes: readonly Route[] = ROUTES): (re
     try {
       response = await dispatch(request, remote);
     } catch (err) {
-      if (err instanceof HttpError) response = error(err.status, err.code, err.message);
+      if (err instanceof HttpError) response = error(err.status, err.code, err.message, err.headers);
       else {
         deps.log(`account: ${request.method} ${new URL(request.url).pathname} failed (${errorSummary(err)})`);
         response = error(500, 'internal', 'Request failed.');

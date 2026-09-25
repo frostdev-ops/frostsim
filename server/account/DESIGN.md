@@ -163,6 +163,14 @@ this release's compat and a native build.
 **P3 Compute API** (`compute/queue.ts`): `enqueueJob`, `jobView` (lines by cursor; `notices` and `effective`
 once done), `resultBytes`, `cancelJob`. Every source goes through the same checks.
 
+Loothing contract (`integrations.ts`, agreed with the Loothing bot 2026-09-25). POST `jobs` takes an `Idempotency-Key`
+(1-64 of `[A-Za-z0-9_-]`, Loothing sends the Discord interaction id): a repeat for the same user, or a concurrent create
+that loses the unique index (migration 004), answers 200 with the first job. 429 and 503 refusals carry `Retry-After`
+(rate-limited 60 s, too-many-jobs 15 s, capacity and compute-disabled 30 s). A job reads as `{id, status, position?,
+error?, summary?, characterId, characterLabel, fightStyle, createdAt, finishedAt?}`; only Loothing's own jobs for that
+user are visible. DELETE cancels (a queued job is free, a running one is metered to the cancel) and answers 409
+`finished` once terminal. Loothing retries a create only after a network error or a non-JSON 5xx, with the same key.
+
 **P4 Sign-in landing.** The callback redirects to `/?account=<code>#<return>` (`signed-in`, `linked`,
 `error-<reason>`). The UI shows the message only when `/me` agrees with it and strips the parameter. Stripe
 returns with `billing-success` or `billing-cancelled`.
@@ -179,8 +187,8 @@ DELETE); `admin/users` (GET), `admin/users/:id` (GET, PATCH, DELETE);
 `billing`, `billing/checkout`, `billing/portal`, `stripe/webhook`; `characters` (GET, POST, and GET, PUT, DELETE
 by id); `shares` (GET, POST), `shares/:id` (public GET, owner DELETE), `shares/:id/blob` (owner PUT, public GET);
 `compute/jobs` (POST), `compute/jobs/:id` (GET, DELETE), `compute/jobs/:id/result`; `worker/*` (P1);
-`discord/interactions`; `integrations/loothing/resolve`, `integrations/loothing/jobs`, `integrations/loothing/jobs/:id`
-(bearer token, a linked Discord identity and a grant); `health` (always on, 503 while Postgres is down with any
+`discord/interactions`; `integrations/loothing/resolve`, `integrations/loothing/jobs` (POST, GET: the last 24 h),
+`integrations/loothing/jobs/:id` (GET, DELETE) (bearer token, a linked Discord identity and a grant); `health` (always on, 503 while Postgres is down with any
 feature enabled).
 
 ## Risks (R)

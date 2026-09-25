@@ -161,6 +161,50 @@ describe.skipIf(!PG)('discord postgres integration (needs FROSTSIM_TEST_PG; the 
     expect(rows[3].detail).toEqual({ discordId: granted, preset: 'patchwerk', jobId: id, status: 201 });
   });
 
+  it('Loothing: an Idempotency-Key maps repeats and a concurrent race to one job; jobs carry slot and fight; list, cancel and Retry-After', async () => {
+    const discordId = snowflake();
+    const { userId, characterId } = await user(discordId, true);
+    const create = (key?: string) => createApp(app(), loothingRoutes)(new Request(`${ORIGIN}/api/v1/integrations/loothing/jobs`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json', ...(key ? { 'idempotency-key': key } : {}) },
+      body: JSON.stringify({ discordId, characterId, preset: 'cleave-add' }),
+    }), '127.0.0.1');
+
+    const first = await create('1420000000000000011');
+    expect(first.status).toBe(201);
+    const { id } = await first.json();
+    const again = await create('1420000000000000011');
+    expect([again.status, (await again.json()).id]).toEqual([200, id]);
+    // Two creates in flight with one key: the unique index lets one insert in; the other answers with it.
+    const raced = await Promise.all([create('1420000000000000012'), create('1420000000000000012')]);
+    const racedIds = await Promise.all(raced.map((r) => r.json().then((b) => b.id)));
+    expect(raced.map((r) => r.status).sort()).toEqual([200, 201]);
+    expect(racedIds[0]).toBe(racedIds[1]);
+    const [{ n }] = await sql`select count(*)::int as n from compute_jobs where user_id = ${userId} and source = 'loothing'`;
+    expect(n).toBe(2);
+
+    const read = await loothing('GET', `/api/v1/integrations/loothing/jobs/${id}?discordId=${discordId}`);
+    expect(await read.json()).toMatchObject({ id, status: 'queued', characterId, characterLabel: 'Main', fightStyle: 'CleaveAdd' });
+    const list = await (await loothing('GET', `/api/v1/integrations/loothing/jobs?discordId=${discordId}`)).json();
+    expect(list.jobs.map((j: { id: string }) => j.id)).toEqual([racedIds[0], id]);
+
+    // Three waiting is the per-user cap: the third distinct create is refused with a hint.
+    const third = await create('1420000000000000013');
+    expect(third.status).toBe(201);
+    const full = await create('1420000000000000014');
+    expect([full.status, full.headers.get('retry-after'), (await full.json()).error]).toEqual([429, '15', 'too-many-jobs']);
+
+    const cancel = (jobId: string) => loothing('DELETE', `/api/v1/integrations/loothing/jobs/${jobId}?discordId=${discordId}`);
+    expect(await (await cancel(id)).json()).toEqual({ id, status: 'cancelled' });
+    const [cancelled] = await sql`select status, core_seconds from compute_jobs where id = ${id}`;
+    expect(cancelled).toEqual({ status: 'cancelled', core_seconds: 0 });
+    expect((await cancel(id)).status).toBe(409);
+    const [web] = await sql`insert into compute_jobs (user_id, source, pack_id, threads, status) values (${userId}, 'web', ${PACK}, 16, 'queued') returning id`;
+    expect((await cancel(web.id)).status).toBe(404);
+    const [untouched] = await sql`select status from compute_jobs where id = ${web.id}`;
+    expect(untouched.status).toBe('queued');
+  });
+
   it('treats a suspended user, and under ADMIN_ONLY a non-admin, as not linked', async () => {
     const suspended = snowflake();
     const member = snowflake();

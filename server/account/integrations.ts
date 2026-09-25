@@ -1,18 +1,29 @@
 // The Loothing integration under /api/v1/integrations/loothing (CLAUDE.md D15; DESIGN.md P2, P3): Loothing's bot
 // calls with one bearer token (only its sha256 is configured) on behalf of a Discord user, who must have linked Discord to Frostsim
 // AND allowed Loothing in the account dialog. Jobs draw on that user's own allowance through the same enqueueJob as every source, and
-// Loothing can read back only the jobs it created for that Discord user. Every call leaves one audit row (actor 'loothing').
+// Loothing can read back, list and cancel only the jobs it created for that Discord user. Every call leaves one audit row (actor 'loothing').
+//
+// Contract agreed with the Loothing bot (2026-09-25): POST /jobs takes an Idempotency-Key (the Discord interaction id), so a retried
+// create maps to the first job (200) instead of a second paid run; 429 and 503 carry Retry-After; the job object echoes the slot and
+// fight; DELETE cancels; GET /jobs lists the last day's jobs so a restarted bot worker can recover a reply it lost.
 
 import type { RequestCtx, Route, Task } from './app';
 import { audit } from './audit';
 import { HttpError, bearer, errorSummary, json } from './http';
 import { rateLimit } from './ratelimit';
 import { safeEqual, sha256Hex } from './signed';
-import { enqueueJob, jobView } from './compute/queue';
+import { cancelJob, enqueueJob } from './compute/queue';
 import { defaultPack } from './compute/packs';
 import { ACCURACY, SIM_FIGHTS, characterRequest, linkedUser, manageUrl } from './discord';
 
 const SNOWFLAKE = /^\d{17,20}$/;
+const JOB_ID = '(?<id>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
+const IDEMPOTENCY_KEY = /^[A-Za-z0-9_-]{1,64}$/;
+/** Seconds a caller should wait, by refusal code. A hint: capacity can free up sooner. */
+export const RETRY_AFTER: Readonly<Record<string, number>> = { 'rate-limited': 60, 'too-many-jobs': 15, capacity: 30, 'compute-disabled': 30 };
+const retryHeaders = (code: string): HeadersInit => (RETRY_AFTER[code] ? { 'retry-after': String(RETRY_AFTER[code]) } : {});
+const LIST_WINDOW_MS = 24 * 3600_000;
+const LIST_MAX = 20;
 /** Per Discord user: about one status poll a second plus the odd resolve and job. */
 const CALLS_PER_MINUTE = 120;
 
@@ -54,7 +65,7 @@ async function account(ctx: RequestCtx, call: Call, discordId: unknown): Promise
   if (typeof discordId !== 'string' || !SNOWFLAKE.test(discordId)) throw new HttpError(400, 'invalid', 'discordId must be a Discord user id.');
   call.detail.discordId = discordId;
   if (!(await rateLimit(ctx, 'loothing', discordId, CALLS_PER_MINUTE, 60))) {
-    throw new HttpError(429, 'rate-limited', 'Too many requests for this Discord user. Try again in a minute.');
+    throw new HttpError(429, 'rate-limited', 'Too many requests for this Discord user. Try again in a minute.', retryHeaders('rate-limited'));
   }
   const userId = await linkedUser(ctx, discordId);
   if (!userId) return refusal('not-linked', 'This Discord account is not linked to Frostsim.', manageUrl(ctx.config));
@@ -62,6 +73,44 @@ async function account(ctx: RequestCtx, call: Call, discordId: unknown): Promise
   const [grant] = await ctx.sql`select 1 from integration_grants where user_id = ${userId} and integration = 'loothing'`;
   if (!grant) return refusal('not-granted', 'This Frostsim account has not allowed Loothing.', manageUrl(ctx.config));
   return userId;
+}
+
+/** What Loothing sees of a job: its own fields plus the slot and fight, so a reply can be rebuilt from the job alone. */
+export interface LoothingJob {
+  id: string;
+  status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
+  position?: number;
+  error?: string;
+  summary?: { dps?: number; dpsError?: number; iterations?: number };
+  characterId: string | null;
+  characterLabel: string | null;
+  fightStyle: string | null;
+  createdAt: Date;
+  finishedAt?: Date;
+}
+
+/** Loothing's own jobs for one user: by id, or the last day's newest first. Never a web, Discord or guild job. */
+async function loothingJobs(ctx: RequestCtx, userId: string, id?: string): Promise<LoothingJob[]> {
+  const since = new Date(ctx.now().getTime() - LIST_WINDOW_MS);
+  const rows = await ctx.sql`select j.id, j.status, j.error, j.summary, j.character_id, c.label, j.request->'settings'->>'fightStyle' as fight_style,
+      j.created_at, j.finished_at,
+      case when j.status = 'queued' then (select count(*)::int from compute_jobs q where q.status = 'queued' and q.created_at <= j.created_at) end as position
+    from compute_jobs j left join cloud_characters c on c.id = j.character_id and c.user_id = j.user_id
+    where j.source = 'loothing' and j.user_id = ${userId} and j.guild_id is null
+      and ${id ? ctx.sql`j.id = ${id}` : ctx.sql`j.created_at > ${since}`}
+    order by j.created_at desc limit ${LIST_MAX}`;
+  return rows.map((r) => ({
+    id: r.id,
+    status: r.status,
+    ...(r.position != null ? { position: r.position } : {}),
+    ...(r.error ? { error: r.error } : {}),
+    ...(r.summary && Object.keys(r.summary).length ? { summary: r.summary } : {}),
+    characterId: r.character_id ?? null,
+    characterLabel: r.label ?? null,
+    fightStyle: r.fight_style ?? null,
+    createdAt: r.created_at,
+    ...(r.finished_at ? { finishedAt: r.finished_at } : {}),
+  }));
 }
 
 const body = async (ctx: RequestCtx) => {
@@ -83,8 +132,21 @@ export const routes: Route[] = [
     method: 'POST', path: /^\/api\/v1\/integrations\/loothing\/jobs$/, feature: 'discord', auth: 'loothing',
     handler: audited('loothing.job.create', async (ctx, call) => {
       const { discordId, characterId, preset } = await body(ctx);
+      const key = ctx.request.headers.get('idempotency-key');
+      if (key !== null && !IDEMPOTENCY_KEY.test(key)) throw new HttpError(400, 'invalid', 'Idempotency-Key must be 1-64 of A-Z, a-z, 0-9, _ and -.');
       const userId = await account(ctx, call, discordId);
       if (typeof userId !== 'string') return userId;
+      const repeat = async () => {
+        if (key === null) return null;
+        const [row] = await ctx.sql`select id from compute_jobs where source = 'loothing' and user_id = ${userId} and idempotency_key = ${key}`;
+        if (row) call.detail.jobId = row.id;
+        return row ? json({ id: row.id }, 200) : null;
+      };
+      const earlier = await repeat();
+      if (earlier) {
+        call.detail.repeat = 1;
+        return earlier;
+      }
       if (typeof preset !== 'string' || !SIM_FIGHTS.includes(preset)) throw new HttpError(400, 'invalid', `preset must be one of ${SIM_FIGHTS.join(', ')}.`);
       if (typeof characterId !== 'string' || !characterId) throw new HttpError(400, 'invalid', 'characterId must be a cloud character id.');
       call.detail.preset = preset;
@@ -92,24 +154,51 @@ export const routes: Route[] = [
       if (!built) throw new HttpError(404, 'not-found', 'No such cloud character.');
       const packId = await defaultPack(ctx);
       if (!packId) throw new HttpError(409, 'no-native-engine', 'Frostsim Cloud has no engine build ready.');
-      const job = await enqueueJob(ctx, { userId, guildId: null, source: 'loothing', packId, request: built.request });
-      if (!job.ok) return json({ error: job.code, message: job.message }, job.status);
+      let job;
+      try {
+        job = await enqueueJob(ctx, { userId, guildId: null, source: 'loothing', packId, request: built.request, characterId: built.id, idempotencyKey: key });
+      } catch (err) {
+        // Two concurrent creates with one key: the unique index lets one in; this one answers with it.
+        const winner = (err as { code?: string })?.code === '23505' ? await repeat() : null;
+        if (winner) return winner;
+        throw err;
+      }
+      if (!job.ok) return json({ error: job.code, message: job.message }, job.status, retryHeaders(job.code));
       call.detail.jobId = job.id;
       return json({ id: job.id }, 201);
     }),
   },
   {
-    method: 'GET', path: /^\/api\/v1\/integrations\/loothing\/jobs\/(?<id>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/,
-    feature: 'discord', auth: 'loothing',
+    method: 'GET', path: /^\/api\/v1\/integrations\/loothing\/jobs$/, feature: 'discord', auth: 'loothing',
+    handler: audited('loothing.job.list', async (ctx, call) => {
+      const userId = await account(ctx, call, ctx.url.searchParams.get('discordId'));
+      if (typeof userId !== 'string') return userId;
+      return json({ jobs: await loothingJobs(ctx, userId) });
+    }),
+  },
+  {
+    method: 'GET', path: new RegExp(`^/api/v1/integrations/loothing/jobs/${JOB_ID}$`), feature: 'discord', auth: 'loothing',
     handler: audited('loothing.job.read', async (ctx, call) => {
       call.detail.jobId = ctx.params.id;
       const userId = await account(ctx, call, ctx.url.searchParams.get('discordId'));
       if (typeof userId !== 'string') return userId;
-      const view = await jobView(ctx, ctx.params.id);
       // Only what Loothing itself started for this Discord user: never a web or Discord job, nor a guild's.
-      if (!view || view.source !== 'loothing' || view.userId !== userId || view.guildId) throw new HttpError(404, 'not-found', 'No such job.');
-      const { id, status, position, error, summary, createdAt, finishedAt } = view;
-      return json({ id, status, position, error, summary, createdAt, finishedAt });
+      const [job] = await loothingJobs(ctx, userId, ctx.params.id);
+      if (!job) throw new HttpError(404, 'not-found', 'No such job.');
+      return json(job);
+    }),
+  },
+  {
+    method: 'DELETE', path: new RegExp(`^/api/v1/integrations/loothing/jobs/${JOB_ID}$`), feature: 'discord', auth: 'loothing',
+    handler: audited('loothing.job.cancel', async (ctx, call) => {
+      call.detail.jobId = ctx.params.id;
+      const userId = await account(ctx, call, ctx.url.searchParams.get('discordId'));
+      if (typeof userId !== 'string') return userId;
+      const [job] = await loothingJobs(ctx, userId, ctx.params.id);
+      if (!job) throw new HttpError(404, 'not-found', 'No such job.');
+      // A queued job cancels free; a running one is metered to now (queue.ts cancelJob).
+      if (!(await cancelJob(ctx, job.id, { userId }))) throw new HttpError(409, 'finished', 'That run has already finished.');
+      return json({ id: job.id, status: 'cancelled' });
     }),
   },
 ];

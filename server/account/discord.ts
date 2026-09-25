@@ -120,12 +120,12 @@ export async function linkedUser(app: Pick<AppCtx, 'sql' | 'config'>, discordId:
 /** One of the user's cloud characters (by id, or by label when typed instead of picked) as a Quick Sim request; null when none. */
 export async function characterRequest(
   db: Db, userId: string, character: string, presetId: string, accuracy: Accuracy,
-): Promise<{ label: string; request: SimRequest } | null> {
-  const [row] = await db`select label, raw from cloud_characters where user_id = ${userId}
+): Promise<{ id: string; label: string; request: SimRequest } | null> {
+  const [row] = await db`select id, label, raw from cloud_characters where user_id = ${userId}
     and (id::text = ${character} or lower(label) = lower(${character})) order by (id::text = ${character}) desc, updated_at desc limit 1`;
   if (!row) return null;
   // threads is the server's to decide: enqueueJob replaces it with the plan's width (DESIGN.md C8).
-  return { label: row.label, request: quickRequest(parseAddonExport(row.raw), { presetId, threads: 1, accuracy }) };
+  return { id: row.id, label: row.label, request: quickRequest(parseAddonExport(row.raw), { presetId, threads: 1, accuracy }) };
 }
 
 function option(i: Interaction, name: string): string | undefined {
@@ -186,12 +186,12 @@ async function startSim(app: AppCtx, i: Interaction, discordId: string, received
   const packId = await defaultPack(app);
   if (!packId) return edit('Frostsim Cloud has no engine build ready right now. Try again later.');
   let guildId = await activePool(app, i.guild_id);
-  let job = await enqueueJob(app, { userId, guildId, source: 'discord', packId, request: built.request });
+  let job = await enqueueJob(app, { userId, guildId, source: 'discord', packId, request: built.request, characterId: built.id });
   // The server's pool is used up for this period: run it on the member's own plan instead, if they have one.
   const fellBack = !job.ok && guildId !== null && job.code === 'no-allowance';
   if (fellBack) {
     guildId = null;
-    job = await enqueueJob(app, { userId, guildId, source: 'discord', packId, request: built.request });
+    job = await enqueueJob(app, { userId, guildId, source: 'discord', packId, request: built.request, characterId: built.id });
   }
   if (!job.ok) return edit(`${job.message} ${manageUrl(app.config)}`);
   const pool = fellBack ? " This server's pool is used up, so it runs on your own plan." : '';

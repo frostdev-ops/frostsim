@@ -23,7 +23,7 @@ import { usedCoreSeconds } from './usage';
 const PG = process.env.FROSTSIM_TEST_PG;
 const REDIS = process.env.FROSTSIM_TEST_REDIS;
 const MIGRATIONS = new URL('./migrations/', import.meta.url);
-const VERSIONS = ['001_init', '002_indexes', '003_character_history'];
+const VERSIONS = ['001_init', '002_indexes', '003_character_history', '004_job_idempotency'];
 const TABLES = ['audit_log', 'character_sims', 'character_snapshots', 'cloud_characters', 'compute_jobs', 'identities', 'integration_grants', 'schema_migrations',
   'sessions', 'shares', 'stripe_events', 'subscriptions', 'users', 'workers'];
 
@@ -80,7 +80,7 @@ describe.skipIf(!PG)('postgres integration (needs FROSTSIM_TEST_PG)', () => {
       const [u1] = await db`insert into users (display_name) values ('A') returning id`;
       const [u2] = await db`insert into users (display_name) values ('B') returning id`;
       await db`insert into identities (provider, subject, user_id) values ('battlenet', '1', ${u1.id}), ('discord', '2', ${u1.id}), ('discord', '3', ${u2.id})`;
-      expect(await migrate(db, MIGRATIONS)).toEqual(['002_indexes', '003_character_history']);
+      expect(await migrate(db, MIGRATIONS)).toEqual(['002_indexes', '003_character_history', '004_job_idempotency']);
       // 003: a 001 character gains history columns, and jobs accept the patch source beside the old ones.
       const [c] = await db`insert into cloud_characters (user_id, label, raw, bytes) values (${u1.id}, 'Main', 'x', 1) returning id, patch_build, who`;
       expect(c).toMatchObject({ patch_build: null, who: null });

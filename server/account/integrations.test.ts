@@ -1,5 +1,6 @@
 // Loothing integration (CLAUDE.md D15; DESIGN.md P3): bearer auth, link and grant refusals with their fix-it URLs, the per-Discord-user
-// rate limit, job creation through enqueueJob, read-back limited to Loothing's own jobs, and one audit row per call. Compute and packs
+// rate limit, job creation through enqueueJob with an Idempotency-Key, Retry-After hints, read-back, listing and cancel limited to
+// Loothing's own jobs, and one audit row per call. Compute and packs
 // are fakes; SQL and Redis are stand-ins. The same routes run against real Postgres in integrations.integration.test.ts.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -10,11 +11,10 @@ import { createR2 } from './r2';
 import type { Redis } from './redis';
 import { sha256Hex } from './signed';
 import { resolveLoothing, routes } from './integrations';
-import type { JobView } from './compute/queue';
 
-const mocks = vi.hoisted(() => ({ enqueueJob: vi.fn(), jobView: vi.fn(), defaultPack: vi.fn() }));
+const mocks = vi.hoisted(() => ({ enqueueJob: vi.fn(), cancelJob: vi.fn(), defaultPack: vi.fn() }));
 vi.mock('./compute/queue', async (original) => ({
-  ...(await original<typeof import('./compute/queue')>()), enqueueJob: mocks.enqueueJob, jobView: mocks.jobView,
+  ...(await original<typeof import('./compute/queue')>()), enqueueJob: mocks.enqueueJob, cancelJob: mocks.cancelJob,
 }));
 vi.mock('./compute/packs', async (original) => ({ ...(await original<typeof import('./compute/packs')>()), defaultPack: mocks.defaultPack }));
 
@@ -37,13 +37,22 @@ let granted: boolean;
 let audits: { userId: unknown; actor: unknown; action: unknown; detail: Record<string, unknown> }[];
 let auditDown: boolean;
 let logs: string[];
+/** Rows the Loothing job query answers with, and the job an Idempotency-Key already names. */
+let jobRows: Record<string, unknown>[];
+let keyed: string | null;
+let jobQueries: { query: string; values: unknown[] }[];
 
 function fakeSql(): Sql {
   const answer = (q: string, v: unknown[]): unknown[] => {
     if (q.includes("from identities i join users u on u.id = i.user_id")) return linked && v[0] === DISCORD ? [{ user_id: USER }] : [];
     if (q.includes('from integration_grants')) return granted ? [{ '?column?': 1 }] : [];
     if (q.includes('select id, label, updated_at from cloud_characters')) return [{ id: CHAR, label: 'Main', updated_at: new Date('2026-09-20T00:00:00Z') }];
-    if (q.includes('select label, raw from cloud_characters')) return v[1] === CHAR ? [{ label: 'Main', raw: RAW }] : [];
+    if (q.includes('select id, label, raw from cloud_characters')) return v[1] === CHAR ? [{ id: CHAR, label: 'Main', raw: RAW }] : [];
+    if (q.includes('select id from compute_jobs where source = \'loothing\'')) return keyed && v[1] === keyed ? [{ id: JOB }] : [];
+    if (q.includes('from compute_jobs j left join cloud_characters')) {
+      jobQueries.push({ query: q, values: v });
+      return jobRows;
+    }
     if (q.includes('insert into audit_log') && auditDown) throw new Error('connection terminated');
     if (q.includes('insert into audit_log')) audits.push({ userId: v[0], actor: v[1], action: v[2], detail: v[3] as Record<string, unknown> });
     return [];
@@ -57,19 +66,19 @@ const countingRedis = (count: number) => ({
   multi: () => ({ incr: () => ({ expire: () => ({ exec: async () => [[null, count], [null, 1]] }) }) }),
 }) as unknown as Redis;
 
-function send(method: string, path: string, body?: unknown, { token = TOKEN, redis = null as Redis | null } = {}) {
+function send(method: string, path: string, body?: unknown, { token = TOKEN, redis = null as Redis | null, headers = {} as Record<string, string> } = {}) {
   const app = createApp({ config, sql: fakeSql(), redis, r2: createR2(config, fetch), fetch, now: () => new Date(), log: (l: string) => logs.push(l) }, routes);
   return app(new Request(ORIGIN + path, {
     method,
-    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
   }), '127.0.0.1');
 }
 
-const view = (over: Partial<JobView> = {}): JobView => ({
-  id: JOB, userId: USER, guildId: null, source: 'loothing', status: 'done', lines: ['progress'], next: 1,
-  summary: { dps: 1000, dpsError: 10, iterations: 100 }, notices: ['Moderate: x'], effective: { threads: 16, args: ['a'], profile: 'p' },
-  createdAt: new Date('2026-09-24T10:00:00Z'), finishedAt: new Date('2026-09-24T10:01:00Z'), ...over,
+/** One row of the Loothing job query: a done job on the user's Main slot. */
+const row = (over: Record<string, unknown> = {}) => ({
+  id: JOB, status: 'done', error: null, summary: { dps: 1000, dpsError: 10, iterations: 100 }, character_id: CHAR, label: 'Main',
+  fight_style: 'Patchwerk', created_at: new Date('2026-09-24T10:00:00Z'), finished_at: new Date('2026-09-24T10:01:00Z'), position: null, ...over,
 });
 
 beforeEach(() => {
@@ -78,10 +87,13 @@ beforeEach(() => {
   granted = true;
   audits = [];
   auditDown = false;
+  jobRows = [row()];
+  keyed = null;
+  jobQueries = [];
   logs = [];
   mocks.defaultPack.mockResolvedValue('c97e14c7a5ad-dc0508afe741');
   mocks.enqueueJob.mockResolvedValue({ ok: true, id: JOB });
-  mocks.jobView.mockResolvedValue(view());
+  mocks.cancelJob.mockResolvedValue(true);
 });
 
 describe('resolveLoothing', () => {
@@ -118,15 +130,19 @@ describe('link and grant', () => {
       ['POST', '/api/v1/integrations/loothing/resolve', { discordId: DISCORD }],
       ['POST', '/api/v1/integrations/loothing/jobs', { discordId: DISCORD, characterId: CHAR, preset: 'patchwerk' }],
       ['GET', `/api/v1/integrations/loothing/jobs/${JOB}?discordId=${DISCORD}`, undefined],
+      ['GET', `/api/v1/integrations/loothing/jobs?discordId=${DISCORD}`, undefined],
+      ['DELETE', `/api/v1/integrations/loothing/jobs/${JOB}?discordId=${DISCORD}`, undefined],
     ] as const) {
       const res = await send(method, path, body);
       expect(res.status).toBe(403);
       expect(await res.json()).toMatchObject({ error: 'not-granted', url: `${ORIGIN}/#/account` });
     }
     expect(mocks.enqueueJob).not.toHaveBeenCalled();
-    expect(mocks.jobView).not.toHaveBeenCalled();
+    expect(mocks.cancelJob).not.toHaveBeenCalled();
+    expect(jobQueries).toEqual([]);
     expect(audits.map((a) => [a.userId, a.action, a.detail.status])).toEqual([
       [USER, 'loothing.resolve', 403], [USER, 'loothing.job.create', 403], [USER, 'loothing.job.read', 403],
+      [USER, 'loothing.job.list', 403], [USER, 'loothing.job.cancel', 403],
     ]);
   });
 
@@ -179,19 +195,81 @@ describe('resolve and jobs', () => {
     expect(audits.map((a) => a.detail.status)).toEqual([400, 400, 404, 409, 402]);
   });
 
-  it('reads back only a job Loothing created for that Discord user, without lines, notices or the profile', async () => {
+  it('reads back a job with its slot and fight, scoped in SQL to Loothing\'s own jobs for that user', async () => {
     const read = (discordId = DISCORD) => send('GET', `/api/v1/integrations/loothing/jobs/${JOB}?discordId=${discordId}`);
     const res = await read();
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ id: JOB, status: 'done', summary: { dps: 1000, dpsError: 10, iterations: 100 },
-      createdAt: '2026-09-24T10:00:00.000Z', finishedAt: '2026-09-24T10:01:00.000Z' });
-    for (const other of [view({ source: 'web' }), view({ source: 'discord' }), view({ userId: 'someone-else' }), view({ guildId: '444444444444444444' }), null]) {
-      mocks.jobView.mockResolvedValueOnce(other);
-      expect((await read()).status).toBe(404);
-    }
+    expect(await res.json()).toEqual({ id: JOB, status: 'done', summary: { dps: 1000, dpsError: 10, iterations: 100 }, characterId: CHAR,
+      characterLabel: 'Main', fightStyle: 'Patchwerk', createdAt: '2026-09-24T10:00:00.000Z', finishedAt: '2026-09-24T10:01:00.000Z' });
+    // The id or time-window fragment is a nested query here; the Postgres test runs it for real.
+    expect(jobQueries[0].query).toMatch(/j\.source = 'loothing' and j\.user_id = \? and j\.guild_id is null/);
+    expect(jobQueries[0].values[0]).toBe(USER);
+    jobRows = [row({ status: 'queued', summary: null, finished_at: null, position: 2, label: null })];
+    expect(await (await read()).json()).toEqual({ id: JOB, status: 'queued', position: 2, characterId: CHAR, characterLabel: null,
+      fightStyle: 'Patchwerk', createdAt: '2026-09-24T10:00:00.000Z' });
+    jobRows = [];
+    expect((await read()).status).toBe(404);
     expect((await read(STRANGER)).status).toBe(403);
     expect((await send('GET', `/api/v1/integrations/loothing/jobs/${JOB}`)).status).toBe(400);
     expect(audits.map((a) => [a.action, a.detail.status, a.detail.jobId]))
-      .toEqual([200, 404, 404, 404, 404, 404, 403, 400].map((status) => ['loothing.job.read', status, JOB]));
+      .toEqual([200, 200, 404, 403, 400].map((status) => ['loothing.job.read', status, JOB]));
+  });
+
+  it('lists the last day\'s jobs for that user, newest first', async () => {
+    jobRows = [row(), row({ id: '0a000000-0000-4000-8000-000000000002', status: 'failed', error: 'simc refused the input.', summary: null })];
+    const res = await send('GET', `/api/v1/integrations/loothing/jobs?discordId=${DISCORD}`);
+    const body = await res.json();
+    expect(body.jobs.map((j: { id: string; status: string; error?: string }) => [j.status, j.error])).toEqual([['done', undefined], ['failed', 'simc refused the input.']]);
+    expect(jobQueries[0].query).toMatch(/order by j\.created_at desc limit \?$/);
+    expect(jobQueries[0].values.at(-1)).toBe(20);
+  });
+
+  it('cancels its own queued or running job, 404s any other and 409s a finished one', async () => {
+    const cancel = () => send('DELETE', `/api/v1/integrations/loothing/jobs/${JOB}?discordId=${DISCORD}`);
+    jobRows = [row({ status: 'running' })];
+    const ok = await cancel();
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ id: JOB, status: 'cancelled' });
+    expect(mocks.cancelJob).toHaveBeenCalledWith(expect.anything(), JOB, { userId: USER });
+    mocks.cancelJob.mockResolvedValueOnce(false);
+    const late = await cancel();
+    expect(late.status).toBe(409);
+    expect(await late.json()).toMatchObject({ error: 'finished' });
+    jobRows = [];
+    expect((await cancel()).status).toBe(404);
+    expect(mocks.cancelJob).toHaveBeenCalledTimes(2);
+    expect(audits.map((a) => [a.action, a.detail.status])).toEqual([['loothing.job.cancel', 200], ['loothing.job.cancel', 409], ['loothing.job.cancel', 404]]);
+  });
+
+  it('maps a repeated Idempotency-Key to the first job with 200, also when a concurrent create wins the unique index', async () => {
+    const create = (key: string) => send('POST', '/api/v1/integrations/loothing/jobs', { discordId: DISCORD, characterId: CHAR, preset: 'patchwerk' }, { headers: { 'idempotency-key': key } });
+    const first = await create('1420000000000000001');
+    expect(first.status).toBe(201);
+    expect(mocks.enqueueJob.mock.calls[0][1]).toMatchObject({ characterId: CHAR, idempotencyKey: '1420000000000000001' });
+    keyed = '1420000000000000001';
+    const again = await create('1420000000000000001');
+    expect(again.status).toBe(200);
+    expect(await again.json()).toEqual({ id: JOB });
+    expect(mocks.enqueueJob).toHaveBeenCalledTimes(1);
+    // The race: the pre-check saw nothing, the insert hit the unique index.
+    keyed = null;
+    mocks.enqueueJob.mockImplementationOnce(async () => { keyed = '1420000000000000002'; throw Object.assign(new Error('duplicate key'), { code: '23505' }); });
+    const raced = await create('1420000000000000002');
+    expect(raced.status).toBe(200);
+    expect(await raced.json()).toEqual({ id: JOB });
+    expect((await create('not a key!')).status).toBe(400);
+    expect((await create('x'.repeat(65))).status).toBe(400);
+    expect(audits.map((a) => [a.detail.status, a.detail.repeat])).toEqual([[201, undefined], [200, 1], [200, undefined], [400, undefined], [400, undefined]]);
+  });
+
+  it('sends Retry-After on a 429 or 503 refusal', async () => {
+    const create = () => send('POST', '/api/v1/integrations/loothing/jobs', { discordId: DISCORD, characterId: CHAR, preset: 'patchwerk' });
+    for (const [status, code, after] of [[429, 'too-many-jobs', '15'], [503, 'capacity', '30'], [503, 'compute-disabled', '30'], [402, 'no-allowance', null]] as const) {
+      mocks.enqueueJob.mockResolvedValueOnce({ ok: false, status, code, message: 'x' });
+      const res = await create();
+      expect([res.status, res.headers.get('retry-after')]).toEqual([status, after]);
+    }
+    const limited = await send('POST', '/api/v1/integrations/loothing/resolve', { discordId: DISCORD }, { redis: countingRedis(121) });
+    expect([limited.status, limited.headers.get('retry-after')]).toEqual([429, '60']);
   });
 });
