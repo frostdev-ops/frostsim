@@ -21,9 +21,7 @@
   import { INVTYPE } from '../lib/catalog/enums'
   import type { GenerationReport } from '../lib/optimization/candidates'
   import {
-    activeCharacter, activeStored, app, catalogClient, constraintsFor, ensureCatalog,
-    engineIdentityString, isBusy, pollEngineSlot,
-    maxThreads, planOptions, profilesetsSupported, saveReport, toast,
+    activeCharacter, activeStored, app, catalogClient, constraintsFor, DRAFT, engineIdentityString, ensureCatalog, isBusy, maxThreads, openDraft, planOptions, pollEngineSlot, profilesetsSupported, runCharacter, saveReport, toast,
   } from '../lib/app.svelte'
   import { makeRunBatch } from '../lib/runBatch'
   import type { SimOutcome } from '../lib/simc/job'
@@ -93,8 +91,10 @@
   let received = $state<{ name: string; source: string }[]>([])
 
   let restoredFor = $state<string | null>(null)
+  /** Whose search state this is: a stored character, or the unsaved draft (its state is not kept past the page). */
+  const stateKey = $derived(stored?.id ?? (character ? DRAFT : null))
   $effect(() => {
-    const id = stored?.id ?? null
+    const id = stateKey
     if (!id || restoredFor === id) return
     restoredFor = id
     const draft = gearDraftFor(id)
@@ -114,7 +114,7 @@
   let droppedFromStorage = $state(0)
 
   $effect(() => {
-    const id = stored?.id
+    const id = stateKey
     if (!id || restoredFor !== id) return
     rememberGearDraft(id, $state.snapshot({ gems, enchants, consumables, embellishments, requiredSets, selectedLoadouts, added }))
   })
@@ -129,9 +129,8 @@
 
   /** P09.10: Items arrive as exact instances, merge into added/selected; taken after merge so failure keeps item. */
   $effect(() => {
-    const id = stored?.id ?? null
-    if (!id || restoredFor !== id) return
-    const items = takeHandoff('gear', id)
+    if (!stateKey || restoredFor !== stateKey) return
+    const items = takeHandoff('gear', stored?.id ?? null)
     if (!items.length) return
     for (const h of items) {
       const list = added[h.slot] ?? []
@@ -630,6 +629,7 @@
     // killed by a reload. Without this marker that ending is completely silent.
     markStarted({ tool: 'gear', title: `${setup.label} — Top Gear`, startedAt: Date.now() })
     app.job = {
+      character: runCharacter(),
       id: jobId, tool: 'gear', title: `${setup.label} — Top Gear`,
       status: 'validating', startedAt: Date.now(),
     }
@@ -711,6 +711,7 @@
           ? r.candidates.find((s) => s.candidate.id === rec.winner!.id)?.measurement ?? null
           : null
         await saveReport({
+          character: app.job?.character,
           tool: 'gear',
           title: app.job.title,
           completion: r.incomplete ? 'partial' : 'complete',
@@ -832,6 +833,7 @@
     engineLog = []
     markStarted({ tool: 'gear', title: `${stored?.label ?? character.name} — verify finalists`, startedAt: Date.now() })
     app.job = {
+      character: runCharacter(),
       id: jobId, tool: 'gear', title: `${stored?.label ?? character.name} — verify finalists`,
       status: 'validating', startedAt: Date.now(),
     }
@@ -934,8 +936,7 @@
   /** Open setup in Quick Sim for detailed run; pass candidate delta not serialized profile to preserve item options. */
   function openInQuickSim(state: (typeof measured)[number]): void {
     if (!resultCharacter) return
-    app.draft = $state.snapshot(resultCharacter)
-    app.activeCharacterId = null
+    openDraft($state.snapshot(resultCharacter), 'quick')
     sendSetup({
       characterId: null,
       label: state.candidate.id === 'baseline' ? 'your current gear' : changesOf(state),

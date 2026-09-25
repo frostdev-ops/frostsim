@@ -3,7 +3,7 @@
   // Application shell: navigation, character summary, active job indicator, route outlet (P03.1, P03.2, P03.7).
   import {
     activeCharacter, activeStored, app, catalogBaseUrl, checkCapability, exportEverything,
-    isBusy, loadLibrary, pollEngineSlot, prepareForReload, type ReloadReadiness,
+    focusScope, isBusy, loadLibrary, PICK_SCOPES, type PickScope, pollEngineSlot, prepareForReload, type ReloadReadiness,
     saveCharacter, storageMessage, toast,
   } from './lib/app.svelte'
   import {
@@ -169,6 +169,9 @@
     { id: 'reports', label: 'Reports', icon: ChartColumn, routes: ['reports'] },
   ]
   const group = $derived(NAV_GROUPS.find((g) => g.routes.includes(router.name)))
+  // Each screen works on its own character (app.svelte.ts picks); arriving on one focuses its pick.
+  const scope = $derived((PICK_SCOPES as readonly string[]).includes(router.name) && !router.raw.startsWith('r/') ? router.name as PickScope : null)
+  $effect(() => focusScope(scope))
   // A group link returns to the tool last used in that group this session.
   const lastInGroup = $state<Record<string, RouteName>>({})
   $effect(() => { if (group) lastInGroup[group.id] = router.name })
@@ -525,6 +528,8 @@
     so Try again re-renders with the same data and usually reproduces it — which
     is what makes the message worth reading rather than worth hiding.
   -->
+  <!-- Lazy: its popover is not on the path to first paint. -->
+  {#if scope && scope !== 'character'}{#await import('./lib/ui/CharacterBar.svelte') then m}<m.default />{/await}{/if}
   <svelte:boundary onerror={(e) => trace('screen.render-failed', { message: e instanceof Error ? e.message : String(e) })}>
     {#if router.raw.startsWith('r/')}
       <SharedReport />

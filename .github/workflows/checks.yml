@@ -49,9 +49,10 @@ jobs:
           (cd "$RUNNER_TEMP/base" && npm run build)
 
       # Guarded server, API and service-worker files unchanged; no account chunk, quoted "/api/v1 or
-      # "frostsim.account" in dist/assets; entry set within 512 B gzip of the merge base's.
+      # "frostsim.account" in dist/assets; entry set within 512 B gzip of the merge base's, unless the pull request is
+      # labelled entry-growth-ok (a deliberate change to the core app).
       - name: Existing surface unchanged
-        run: node scripts/check-surface.mjs --base "$RUNNER_TEMP/base/dist"
+        run: node scripts/check-surface.mjs --base "$RUNNER_TEMP/base/dist" ${{ contains(github.event.pull_request.labels.*.name, 'entry-growth-ok') && '--allow-entry-growth' || '' }}
 
       # The engine binaries are gitignored, so a CI build has no public/engine/simc.wasm and
       # cannot regenerate the manifest. What CI can do is refuse a manifest that disagrees
