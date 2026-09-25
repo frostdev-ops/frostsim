@@ -53,3 +53,16 @@ it('deduplicates icon loads, backs off on 429, and remembers missing icons', asy
   expect(await loadIcon('/api/wow/spell-icon/999?media=2')).toBeNull()
   expect(fetch).toHaveBeenCalledTimes(3)
 })
+it('paints a decoded icon synchronously and keeps it across same-URL updates', async () => {
+  vi.resetModules()
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(new Uint8Array([1, 2, 3]), { headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=60' } })))
+  const { loadIcon, peekIcon, deferredIcon } = await import('./icon-loader')
+  expect(peekIcon('/api/wow/icon/7')).toBeUndefined()
+  await loadIcon('/api/wow/icon/7')
+  expect(peekIcon('/api/wow/icon/7')).toBe('data:image/png;base64,AQID')
+  const node = { src: '', removeAttribute: vi.fn(), dispatchEvent: vi.fn() } as unknown as HTMLImageElement
+  const action = deferredIcon(node, '/api/wow/icon/7')
+  expect(node.src).toBe('data:image/png;base64,AQID')
+  action.update('/api/wow/icon/7')
+  expect(node.removeAttribute).not.toHaveBeenCalled()
+})

@@ -451,6 +451,14 @@ describe('routing and validation', () => {
     expect((await res.json()).field).toBe('ids');
   });
 
+  it('lets icon bytes live for the full retention limit, whatever the deployment TTL', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Uint8Array([1, 2, 3]), { headers: { 'content-type': 'image/jpeg' } })));
+    const res = await onRequest({ request: req('/api/wow/spell-icon/17'), env: { ...CONFIGURED, BLIZZARD_CACHE_SECONDS: '600' } });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Cache-Control')).toBe(`public, max-age=${MAX_RETENTION_SECONDS}`);
+    vi.unstubAllGlobals();
+  });
+
   it('sets no-store on errors and a bounded max-age on success', async () => {
     const err = await onRequest({ request: req('/api/wow/item/abc'), env: CONFIGURED });
     expect(err.headers.get('Cache-Control')).toBe('no-store');

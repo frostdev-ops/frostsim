@@ -25,6 +25,17 @@ afterEach(() => {
 })
 
 describe('item media', () => {
+  it('serves icon URLs before the health check on a repeat visit, then follows its answer', async () => {
+    const stored = new Map([['frostsim-media-configured', '1']])
+    vi.stubGlobal('localStorage', { getItem: (k: string) => stored.get(k) ?? null, setItem: (k: string, v: string) => stored.set(k, v) })
+    stubFetch(() => ({ configured: false }))
+    const pending = initMedia()
+    expect(iconUrl(19019)).toBe('/api/wow/icon/19019')
+    await pending
+    expect(iconUrl(19019)).toBeNull()
+    expect(stored.get('frostsim-media-configured')).toBe('0')
+  })
+
   it('renders no item art at all when the deployment has no credentials', async () => {
     stubFetch(() => ({ configured: false }))
     await initMedia()

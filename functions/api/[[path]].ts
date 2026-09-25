@@ -6,6 +6,7 @@ import {
   DEFAULT_LOCALE, DEFAULT_REGION, isAllowedLocale, isAllowedRegion, isValidItemId, parseIdList,
   type BaseItem, type CharacterMedia, type ErrorCode, type ErrorResponse, type HealthResponse,
   type ItemMedia, type ItemTooltip, type Locale, type Region,
+  MAX_RETENTION_SECONDS,
 } from '../../src/lib/battlenet/contract';
 import {
   ALLOWED_IMAGE_TYPES, MAX_IMAGE_BYTES, RateLimiter, TtlCache, cacheSeconds, credentialsFrom,
@@ -225,7 +226,7 @@ async function handleIcon(
   if (kind === 'spell') {
     const index = (spellIcons.spells as Record<string, number>)[id];
     if (index !== undefined) {
-      const named = await proxyImage(`https://render.worldofwarcraft.com/${region}/icons/56/${encodeURIComponent(spellIcons.names[index])}.jpg`, env);
+      const named = await proxyImage(`https://render.worldofwarcraft.com/${region}/icons/56/${encodeURIComponent(spellIcons.names[index])}.jpg`, env, MAX_RETENTION_SECONDS);
       if (named.status !== 404) return named;
     }
   }
@@ -240,11 +241,12 @@ async function handleIcon(
     return errorResponse('upstream_unavailable', 502, safeMessage('upstream_unavailable'));
   }
 
-  return await proxyImage(media.iconUrl, env);
+  return await proxyImage(media.iconUrl, env, MAX_RETENTION_SECONDS);
 }
 
 /** Fetch image bytes from resolved URL and serve from own origin; one impl for all image routes (allowlist recheck, no redirects, type/size bounds). */
-async function proxyImage(target: string, env: Env): Promise<Response> {
+// Icon and tile bytes never change under one id, so they take the full retention limit; portraits keep the deployment TTL.
+async function proxyImage(target: string, env: Env, ttl = cacheSeconds(env)): Promise<Response> {
   // Recheck at use point where being wrong costs.
   if (!isAllowedMediaUrl(target)) {
     return errorResponse('upstream_unavailable', 502, safeMessage('upstream_unavailable'));
@@ -277,7 +279,6 @@ async function proxyImage(target: string, env: Env): Promise<Response> {
     return errorResponse('upstream_unavailable', 502, safeMessage('upstream_unavailable'));
   }
 
-  const ttl = cacheSeconds(env);
   return new Response(bytes, {
     status: 200,
     headers: {
@@ -579,7 +580,7 @@ async function handleJournalTile(
   if (!tile || typeof tile.value !== 'string') {
     return errorResponse('not_found', 404, safeMessage('not_found'));
   }
-  return await proxyImage(tile.value, env);
+  return await proxyImage(tile.value, env, MAX_RETENTION_SECONDS);
 }
 
 // --- Helpers -----------------------------------------------------------------
