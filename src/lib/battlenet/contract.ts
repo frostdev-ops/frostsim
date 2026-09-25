@@ -268,6 +268,11 @@ export function characterProfilePath(region: Region, realm: string, name: string
   return `${API_BASE}/character-profile/${region}/${encodeURIComponent(realm)}/${encodeURIComponent(name)}`;
 }
 
+/** `{ realms: { name, slug }[] }`, the region's realms sorted by display name. */
+export function realmsPath(region: Region): string {
+  return `${API_BASE}/realms${query({ region })}`;
+}
+
 /** Instance art for loot source card; image bytes same-origin to <img src>. No JSON form. */
 export function journalTilePath(instanceId: number, opts: { region?: Region } = {}): string {
   return `${API_BASE}/journal-tile/${instanceId}${query(opts)}`;

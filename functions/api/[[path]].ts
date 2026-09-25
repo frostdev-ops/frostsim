@@ -90,6 +90,7 @@ export async function onRequest(context: PagesContext): Promise<Response> {
       case 'raider-profile': return await handleRaiderProfile(segments);
       case 'character-media': return await handleCharacterMedia(segments, region, credentials, env);
       case 'character-profile': return await handleCharacterProfile(segments, region, credentials, env);
+      case 'realms': return await handleRealms(region, credentials, env);
       case 'character-render': return await handleCharacterRender(segments, credentials, env);
       case 'journal-tile': return await handleJournalTile(idSegment, region, credentials, env);
       default: return errorResponse('not_found', 404, 'No such endpoint.');
@@ -313,6 +314,21 @@ async function realmSlugs(
   }
   realmSlugCache.set(region, map);
   return map; // Cached.
+}
+
+/** The region's realms by display name (en_US spelling), for pickers such as the Discord bot's realm autocomplete. */
+async function handleRealms(region: Region, credentials: Credentials, env: Env): Promise<Response> {
+  // The client caches the index for the configured lifetime, so this is one upstream call a day per region.
+  const body = await clientFor(credentials, env).get<unknown>('/data/wow/realm/index', region, null, 'dynamic');
+  const realms: { name: string; slug: string }[] = [];
+  for (const r of (body as { realms?: { name?: unknown; slug?: unknown }[] } | null)?.realms ?? []) {
+    const raw = r?.name;
+    const name = typeof raw === 'string' ? raw
+      : raw && typeof raw === 'object' ? (raw as Record<string, unknown>).en_US ?? Object.values(raw).find((v) => typeof v === 'string') : null;
+    if (typeof r?.slug === 'string' && typeof name === 'string') realms.push({ name, slug: r.slug });
+  }
+  realms.sort((a, b) => a.name.localeCompare(b.name));
+  return json({ ok: true, contractVersion: BATTLENET_CONTRACT_VERSION, region, realms }, 200, cacheSeconds(env));
 }
 
 const compactRealmKey = (raw: string) => raw.toLowerCase().replace(/[\s'’-]/g, '');
