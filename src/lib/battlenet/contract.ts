@@ -263,6 +263,11 @@ export function characterMediaPath(
   return `${API_BASE}/character-media/${region}/${encodeURIComponent(realm)}/${encodeURIComponent(name)}`;
 }
 
+/** Armory lookup: `{ profile }`, simc profile text of the character's equipped gear and active talents. */
+export function characterProfilePath(region: Region, realm: string, name: string): string {
+  return `${API_BASE}/character-profile/${region}/${encodeURIComponent(realm)}/${encodeURIComponent(name)}`;
+}
+
 /** Instance art for loot source card; image bytes same-origin to <img src>. No JSON form. */
 export function journalTilePath(instanceId: number, opts: { region?: Region } = {}): string {
   return `${API_BASE}/journal-tile/${instanceId}${query(opts)}`;

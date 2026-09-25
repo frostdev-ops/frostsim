@@ -106,7 +106,7 @@ export class BlizzardClient {
   }
 
   /** One GET against Game Data API, cached, deduplicated, rate limited; path built by module. */
-  async get<T>(path: string, region: Region, locale: Locale | null, namespace = 'static'): Promise<T> {
+  async get<T>(path: string, region: Region, locale: Locale | null, namespace = 'static', ttlSeconds = this.cacheSeconds): Promise<T> {
     const url = `https://${region}.api.blizzard.com${path}`
       + `?namespace=${namespace}-${region}${locale ? `&locale=${locale}` : ''}`;
     const key = url;
@@ -123,7 +123,7 @@ export class BlizzardClient {
       if (wait !== null) throw new UpstreamError('rate_limited', null, `rate limited, retry in ${wait}s`);
 
       const body = await this.fetchJson(url, await this.accessToken());
-      this.cache.set(key, body, this.cacheSeconds);
+      this.cache.set(key, body, ttlSeconds);
       return body;
     }) as Promise<T>;
   }
