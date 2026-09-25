@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { __resetEngineRuntimeForTests, runJob, setRemoteEngine, WORKER_PROTOCOL, type JobEvent, type SimRequest } from './job'
-import { cloudShare, createHybridEngine, learnSpeed, mergeCharacters, mergeProfilesets, mergeStats, splitOf, splitRequest, type RunPlace } from './hybrid'
+import { cloudShare, cloudWaitOf, createHybridEngine, learnSpeed, mergeCharacters, mergeProfilesets, mergeStats, splitOf, splitRequest, type RunPlace } from './hybrid'
 import { parseReport } from './report'
 import { DEFAULT_SETTINGS } from './options'
 import type { EngineCapability, EngineManifest } from './capability'
@@ -80,8 +80,11 @@ class CloudServer {
   lines: string[] = []
   posted: SimRequest | null = null
   deletes = 0
+  /** GET /api/v1/compute/capacity's answer; null answers 404 (an older server). */
+  capacity: unknown = null
   fetch = (async (input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> => {
     const url = String(input)
+    if (url.endsWith('/capacity')) return this.capacity ? Response.json(this.capacity) : new Response(null, { status: 404 })
     if (init.method === 'POST') {
       this.posted = JSON.parse(String(init.body)).request
       return this.submit === 200 ? Response.json({ id: CLOUD_ID }) : Response.json({ error: 'x' }, { status: this.submit })
@@ -161,6 +164,17 @@ describe('hybrid split and merge', () => {
     const second = learnSpeed(first, 'candidates', { wait: 1, run: 10, pieces: 2 }, { wait: 5, run: 10, pieces: 4 })!
     expect(second.cloudWait).toBe(20)
     expect(learnSpeed(first, 'characters', { wait: 1, run: 1, pieces: 1 }, { wait: 1, run: 10, pieces: 1 })).toBe(first)
+    // With the server's estimate, the rest of the wait is the cloud's own overhead.
+    expect(learnSpeed(null, 'candidates', { wait: 1, run: 10, pieces: 2 }, { wait: 45, run: 10, pieces: 4 }, 38)!.cloudOverhead).toBe(7)
+  })
+
+  it('expects the cloud to start after the server\'s estimate plus its measured overhead', () => {
+    const speed = { rel: 2, localWait: 1, cloudWait: 90, cloudOverhead: 3, perPiece: {} }
+    expect(cloudWaitOf(speed, { state: 'cold', waitS: 45 })).toBe(48)
+    expect(cloudWaitOf(null, { state: 'warm', waitS: 0 })).toBe(5)
+    // Queued: the server cannot tell, so past runs decide.
+    expect(cloudWaitOf(speed, { state: 'queued' })).toBe(90)
+    expect(cloudWaitOf(speed, null)).toBe(90)
   })
 
   it('appends the cloud results, creating the section when the local side had none', () => {
@@ -352,6 +366,40 @@ describe('hybrid runs', () => {
     expect(s.posted).toBeNull()
     expect(spawned[0].ids()).toEqual(['c-0', 'c-1', 'c-2', 'c-3'])
     expect(places).toEqual([expect.objectContaining({ mode: 'browser', note: expect.stringContaining('none of your allowance') })])
+    spawned[0].finish()
+    expect((await run.handle.result).report.profilesets).toHaveLength(4)
+  })
+
+  it('splits when a cloud server is free, and runs here alone when one would have to boot first', async () => {
+    const measured = { 'frostsim.hybrid.speed': { '4/12': { rel: 2, localWait: 1, cloudWait: 20, cloudOverhead: 2, perPiece: { candidates: 5 } } } }
+    const warm = new CloudServer()
+    warm.capacity = { state: 'warm', waitS: 0 }
+    const run = hybridRun(warm, request(4), memoryStore(measured))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(places).toEqual([expect.objectContaining({ mode: 'hybrid', here: 1, there: 3, note: expect.stringContaining('start in about 2 s') })])
+    run.handle.cancel()
+    await expect(run.handle.result).rejects.toMatchObject({ name: 'AbortError' })
+    await vi.advanceTimersByTimeAsync(20_000)
+    __resetEngineRuntimeForTests()
+    spawned.length = 0
+
+    const cold = new CloudServer()
+    cold.capacity = { state: 'cold', waitS: 60 }
+    const alone = hybridRun(cold, request(4), memoryStore(measured))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(cold.posted).toBeNull()
+    expect(places).toEqual([expect.objectContaining({ mode: 'browser', note: expect.stringContaining('start a server') })])
+    spawned[0].finish()
+    expect((await alone.handle.result).report.profilesets).toHaveLength(4)
+  })
+
+  it('runs here without submitting when the cloud says it cannot take the run', async () => {
+    const s = new CloudServer()
+    s.capacity = { state: 'none' }
+    const run = hybridRun(s, request(4))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(s.posted).toBeNull()
+    expect(places).toEqual([expect.objectContaining({ mode: 'browser', note: expect.stringContaining('cannot take runs') })])
     spawned[0].finish()
     expect((await run.handle.result).report.profilesets).toHaveLength(4)
   })

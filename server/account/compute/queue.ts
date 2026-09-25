@@ -99,11 +99,7 @@ export async function enqueueJob(
   const used = await usedCoreSeconds(app.sql, guildId ? { guildId } : { userId: userId! }, pool.periodStart, pool.periodEnd);
   if (used >= pool.coreSeconds) return refuse(402, 'no-allowance', NO_ALLOWANCE);
 
-  // The plan's width, capped by the configured server type (DESIGN.md A7): a Hetzner project's dedicated-core limit can
-  // rule out the 32-core type, and a job wider than its servers could never be claimed. Cold (no cached price), the plan's width.
-  const limits = fleetLimits(app.config);
-  const serverCores = limits ? cachedPrice(limits)?.cores : undefined;
-  const prepared = cloudRun(request, serverCores ? Math.min(pool.maxThreads, serverCores) : pool.maxThreads);
+  const prepared = cloudRun(request, jobThreads(app, pool.maxThreads));
   if ('problem' in prepared) return refuse(400, 'invalid', prepared.problem);
   const { run } = prepared;
 
@@ -127,6 +123,80 @@ export async function enqueueJob(
   });
   if (!id) return refuse(429, 'too-many-jobs', `At most ${QUEUED_PER_SCOPE} cloud runs can wait at once.`);
   return { ok: true, id };
+}
+
+/** The plan's width, capped by the configured server type (DESIGN.md A7): a Hetzner project's dedicated-core limit can rule out the
+ *  32-core type, and a job wider than its servers could never be claimed. Cold (no cached price), the plan's width. */
+function jobThreads(app: App, maxThreads: number): number {
+  const limits = fleetLimits(app.config);
+  const serverCores = limits ? cachedPrice(limits)?.cores : undefined;
+  return serverCores ? Math.min(maxThreads, serverCores) : maxThreads;
+}
+
+/** Seconds from a worker's creation to its first claim before any worker has made one. */
+const DEFAULT_BOOT_S = 60;
+/** Expected wait for the autoscaler's next 15 s tick to order a server. */
+const HALF_TICK_S = 8;
+
+export interface CapacityWorker { status: string; cores: number; busy: number; ageS: number }
+/** Where a new job would start: 'warm' on a free worker now, 'booting' on a server already starting, 'cold' on a server the
+ *  autoscaler would order, 'queued' behind other runs (or the caller's own), 'none' when the cloud would refuse it (503/402).
+ *  `waitS`: seconds until a worker claims it, when the server can tell. */
+export interface Capacity { state: 'warm' | 'booting' | 'cold' | 'queued' | 'none'; waitS?: number; threads: number }
+
+/** capacityView's decision, pure. `aheadThreads`: queued jobs a worker could claim before this one. */
+export function capacityState(o: {
+  threads: number; ownRunning: boolean; workers: CapacityWorker[]; aheadThreads: number; canCreate: boolean; bootS: number;
+}): Omit<Capacity, 'threads'> {
+  // One running job per scope: the caller's next one waits for it, however many servers are free.
+  if (o.ownRunning) return { state: 'queued' };
+  const fits = (free: number) => Math.floor(Math.max(0, free) / o.threads);
+  let ahead = Math.ceil(o.aheadThreads / o.threads);
+  const ready = o.workers.filter((w) => w.status === 'ready').reduce((n, w) => n + fits(w.cores - w.busy), 0);
+  if (ready > ahead) return { state: 'warm', waitS: 0 };
+  ahead -= ready;
+  for (const w of o.workers.filter((w) => w.status === 'booting').sort((a, b) => b.ageS - a.ageS)) {
+    if (fits(w.cores) > ahead) return { state: 'booting', waitS: Math.round(Math.max(0, o.bootS - w.ageS)) };
+    ahead -= fits(w.cores);
+  }
+  // ponytail: a cold job with others ahead waits for servers the autoscaler orders one per tick; that wait is not estimated.
+  if (o.canCreate && ahead === 0) return { state: 'cold', waitS: Math.round(o.bootS + HALF_TICK_S) };
+  return { state: 'queued' };
+}
+
+/** Where a job of the user's own plan would start now (GET /api/v1/compute/capacity), so a hybrid run can size its split first. */
+export async function capacityView(app: App, userId: string): Promise<Capacity> {
+  const now = app.now();
+  const ent = await loadEntitlements(app.sql, { userId }, now);
+  if (ent.maxThreads < 1) return { state: 'none', threads: 0 };
+  const threads = jobThreads(app, ent.maxThreads);
+  if (await capacityProblem(app, threads)) return { state: 'none', threads };
+  const [workers, [{ own }], [{ ahead }], [{ boot }], [{ total }]] = await Promise.all([
+    app.sql`select status, cores, extract(epoch from (${now}::timestamptz - created_at))::float8 as age,
+        coalesce((select sum(j.threads) from compute_jobs j where j.worker_id = w.id and j.status = 'running'), 0)::int as busy
+      from workers w where deleted_at is null and status in ('ready', 'booting') and cores >= ${threads}`,
+    app.sql`select exists (select 1 from compute_jobs where status = 'running' and user_id = ${userId} and guild_id is null) as own`,
+    app.sql`select coalesce(sum(threads), 0)::int as ahead from compute_jobs j where j.status = 'queued' and not exists (
+        select 1 from compute_jobs r where r.status = 'running'
+          and coalesce('g:' || r.guild_id, 'u:' || r.user_id::text) = coalesce('g:' || j.guild_id, 'u:' || j.user_id::text))`,
+    // Real cold starts: the autoscaler creates a worker for queued demand, so its first claim marks when it could take work.
+    app.sql`select percentile_cont(0.5) within group (order by s)::float8 as boot from (
+        select extract(epoch from (min(j.claimed_at) - w.created_at)) as s from workers w join compute_jobs j on j.worker_id = w.id
+        where j.claimed_at is not null group by w.id, w.created_at order by w.created_at desc limit 20) recent`,
+    app.sql`select count(*)::int as total from workers where deleted_at is null`,
+  ]);
+  const limits = fleetLimits(app.config);
+  return {
+    threads,
+    ...capacityState({
+      threads,
+      ownRunning: own,
+      workers: workers.map((w) => ({ status: w.status, cores: w.cores ?? 0, busy: w.busy, ageS: w.age })),
+      aheadThreads: ahead,
+      canCreate: !!limits && total < limits.max,
+      bootS: boot ?? DEFAULT_BOOT_S,
+    }),
+  };
 }
 
 /** Null when a job of `threads` can be served: a live worker exists, or the autoscaler may still create one (DESIGN.md C8: 503 otherwise). */

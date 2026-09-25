@@ -32,8 +32,37 @@ export interface HybridSpeed {
   /** Seconds from the start until each side's engine reported progress: engine load here; queue, worker boot and upload there. */
   localWait: number
   cloudWait: number
+  /** Seconds the cloud took to show progress beyond the server's own capacity estimate: upload, assembly, simc start-up. */
+  cloudOverhead?: number
   /** This browser's seconds per piece, by split kind: sizes the waits against the run. */
   perPiece: Partial<Record<SplitKind, number>>
+}
+
+/** The account server's answer to "where would a job start now" (GET /api/v1/compute/capacity, queue.ts capacityView). */
+export interface Capacity { state: 'warm' | 'booting' | 'cold' | 'queued' | 'none'; waitS?: number }
+
+const CAPACITY = '/api/v1/compute/capacity'
+/** A split waits at most this long for the capacity answer, then decides from past runs alone. */
+const CAPACITY_TIMEOUT_MS = 1500
+/** The cloud's own start-up beyond the server's estimate, until a run has measured it. */
+const DEFAULT_OVERHEAD_S = 5
+
+/** The capacity answer, or null when it is late, refused or malformed. */
+export async function fetchCapacity(f: typeof fetch = fetch): Promise<Capacity | null> {
+  try {
+    const res = await f(CAPACITY, { signal: AbortSignal.timeout(CAPACITY_TIMEOUT_MS) })
+    if (!res.ok) return null
+    const body = (await res.json()) as Capacity
+    return ['warm', 'booting', 'cold', 'queued', 'none'].includes(body?.state) ? body : null
+  } catch {
+    return null
+  }
+}
+
+/** Seconds until the cloud share shows progress: the server's estimate plus the measured overhead, else the measured average. */
+export function cloudWaitOf(speed: HybridSpeed | null | undefined, capacity: Capacity | null): number | undefined {
+  if (capacity?.waitS !== undefined) return capacity.waitS + (speed?.cloudOverhead ?? DEFAULT_OVERHEAD_S)
+  return speed?.cloudWait
 }
 
 /** One side of one finished hybrid run, in seconds: `wait` until its first progress, `run` from there to its report. */
@@ -55,8 +84,9 @@ function readSpeeds(store: HybridOptions['speedStore']): Record<string, HybridSp
   }
 }
 
-/** The speed model after one more run, or `prev` when the run was too short to measure. */
-export function learnSpeed(prev: HybridSpeed | null, kind: SplitKind, local: SideTiming, cloud: SideTiming): HybridSpeed | null {
+/** The speed model after one more run, or `prev` when the run was too short to measure. `serverWait`: the capacity estimate the run
+ *  started with, so the overhead beyond it is learned apart from boot and queue time. */
+export function learnSpeed(prev: HybridSpeed | null, kind: SplitKind, local: SideTiming, cloud: SideTiming, serverWait?: number): HybridSpeed | null {
   if (!(local.run >= MIN_RUN_S && cloud.run >= MIN_RUN_S && local.pieces > 0 && cloud.pieces > 0)) return prev
   const here = local.run / local.pieces
   const rel = Math.min(50, Math.max(0.02, here / (cloud.run / cloud.pieces)))
@@ -65,6 +95,8 @@ export function learnSpeed(prev: HybridSpeed | null, kind: SplitKind, local: Sid
     rel: mix(prev?.rel, rel),
     localWait: mix(prev?.localWait, Math.max(0, local.wait)),
     cloudWait: mix(prev?.cloudWait, Math.max(0, cloud.wait)),
+    ...(serverWait !== undefined ? { cloudOverhead: mix(prev?.cloudOverhead, Math.max(0, cloud.wait - serverWait)) }
+      : prev?.cloudOverhead !== undefined ? { cloudOverhead: prev.cloudOverhead } : {}),
     perPiece: { ...prev?.perPiece, [kind]: mix(prev?.perPiece[kind], here) },
   }
 }
@@ -125,19 +157,19 @@ interface Sides {
 
 /** The two halves of a split request: the browser gets the first `count - share` pieces, the cloud the rest. Either half can be
  *  empty when the measured speeds say one side alone finishes sooner. */
-export function splitRequest(req: SimRequest, cloudThreads: number, speed?: HybridSpeed | null): Sides | null {
+export function splitRequest(req: SimRequest, cloudThreads: number, speed?: HybridSpeed | null, cloudWait = speed?.cloudWait): Sides | null {
   const split = splitOf(req)
   if (!split) return null
   const shared = split.kind === 'candidates' ? 1 : split.kind === 'stats' ? 1 + scaleStats(req.extraOptions ?? [])!.both.length : 0
-  const n = split.pieces - cloudShare(split.pieces, cloudThreads, req.settings.threads, speed, split.kind, shared)
+  const n = split.pieces - cloudShare(split.pieces, cloudThreads, req.settings.threads, speed, split.kind, shared, cloudWait)
   const sides = cut(req, split.kind, n)
-  if (speed?.perPiece[split.kind]) sides.place.note = measuredNote(speed)
+  if (speed?.perPiece[split.kind]) sides.place.note = measuredNote(speed, cloudWait ?? speed.cloudWait)
   return { ...sides, shared }
 }
 
-function measuredNote(speed: HybridSpeed): string {
+function measuredNote(speed: HybridSpeed, cloudWait: number): string {
   const rel = speed.rel >= 1 ? `${speed.rel.toFixed(1)}× as fast as this PC` : `${(1 / speed.rel).toFixed(1)}× slower than this PC`
-  return `Split by measured speed: Frostsim Cloud runs ${rel} and starts in about ${Math.round(speed.cloudWait)} s.`
+  return `Split by measured speed: Frostsim Cloud runs ${rel} and should start in about ${Math.round(cloudWait)} s.`
 }
 
 function cut(req: SimRequest, kind: SplitKind, n: number): Omit<Sides, 'shared'> {
@@ -177,17 +209,18 @@ function cut(req: SimRequest, kind: SplitKind, n: number): Omit<Sides, 'shared'>
 /** How many of `count` pieces go to the cloud. Without measurements: by thread share, at least one each side. With them: the count
  *  with the earliest predicted finish, where `shared` pieces run on both sides; 0 when this browser alone is sooner, `count` when
  *  the cloud alone is. */
-export function cloudShare(count: number, cloudThreads: number, localThreads: number, speed?: HybridSpeed | null, kind?: SplitKind, shared = 0): number {
+export function cloudShare(count: number, cloudThreads: number, localThreads: number, speed?: HybridSpeed | null, kind?: SplitKind, shared = 0,
+  cloudWait = speed?.cloudWait): number {
   const p = kind ? speed?.perPiece[kind] : undefined
   if (!speed || !p) {
     const n = Math.round((count * cloudThreads) / (cloudThreads + Math.max(1, localThreads)))
     return Math.min(count - 1, Math.max(1, n))
   }
-  // ponytail: one seconds-per-piece per kind whatever the run's iterations or fight length, and one averaged cloud wait for warm
-  // and cold workers; a capacity hint from the server before submitting would sharpen both.
+  // ponytail: one seconds-per-piece per kind, whatever the run's iterations or fight length.
+  const wait = cloudWait ?? speed.cloudWait
   const finish = (n: number) => Math.max(
     n < count ? speed.localWait + (count - n + shared) * p : 0,
-    n > 0 ? speed.cloudWait + ((n + shared) * p) / speed.rel : 0,
+    n > 0 ? wait + ((n + shared) * p) / speed.rel : 0,
   )
   let best = 0
   for (let n = 1; n <= count; n++) if (finish(n) < finish(best)) best = n
@@ -254,32 +287,45 @@ export function createHybridEngine(options: HybridOptions): RemoteEngine {
   return (req, engineDir) => {
     const whole = cloud(req, engineDir)
     if (!whole) return whole
+    const split = splitOf(req)
+    // Asked as soon as the run is known, so the answer is usually in before the start message.
+    const capacity = split ? fetchCapacity(options.fetch) : null
     const key = speedKey(req.settings.threads, options.cloudThreads)
-    const sides = splitRequest(req, options.cloudThreads, readSpeeds(store)[key])
-    const learn = (kind: SplitKind, local: SideTiming, cloud: SideTiming) => {
-      const all = readSpeeds(store)
-      const next = learnSpeed(all[key] ?? null, kind, local, cloud)
-      if (!next) return
-      try {
-        store?.setItem(SPEED_KEY, JSON.stringify({ ...all, [key]: next }))
-      } catch { /* Storage blocked: this run teaches nothing. */ }
-    }
     return (variant, dir) => {
       // The fallback build has no profilesets for a local share, and a run with one piece has nothing to split.
-      if (!sides || (variant === 'fallback' && sides.kind === 'candidates')) {
-        place({ mode: 'cloud', note: sides ? 'This browser cannot run profilesets, so the whole run is on Frostsim Cloud.' : WHOLE })
+      if (!split || !capacity || (variant === 'fallback' && split.kind === 'candidates')) {
+        place({ mode: 'cloud', note: split ? 'This browser cannot run profilesets, so the whole run is on Frostsim Cloud.' : WHOLE })
         return whole(variant, dir)
       }
-      if (!sides.place.here) {
-        place({ mode: 'cloud', note: 'Going by past runs, Frostsim Cloud alone finishes this run sooner than splitting it.' })
-        return whole(variant, dir)
+      let answer: Capacity | null = null
+      const decide = (cap: Capacity | null) => {
+        const speed = readSpeeds(store)[key]
+        const learn = (kind: SplitKind, local: SideTiming, cloud: SideTiming) => {
+          const all = readSpeeds(store)
+          const next = learnSpeed(all[key] ?? null, kind, local, cloud, cap?.waitS)
+          if (!next) return
+          try {
+            store?.setItem(SPEED_KEY, JSON.stringify({ ...all, [key]: next }))
+          } catch { /* Storage blocked: this run teaches nothing. */ }
+        }
+        if (cap?.state === 'none') {
+          place({ mode: 'browser', note: 'Frostsim Cloud cannot take runs right now, so this one runs on this PC.' })
+          return new Worker(engineWorkerUrl(variant, dir))
+        }
+        const sides = splitRequest(req, options.cloudThreads, speed, cloudWaitOf(speed, cap))!
+        if (!sides.place.here) {
+          place({ mode: 'cloud', note: 'Going by past runs, Frostsim Cloud alone finishes this run sooner than splitting it.' })
+          return whole(variant, dir)
+        }
+        if (!sides.place.there) {
+          place({ mode: 'browser', note: `Going by past runs, this PC alone finishes this run before Frostsim Cloud would start${cap?.state === 'cold' ? ' a server' : ''}. It uses none of your allowance.` })
+          return new Worker(engineWorkerUrl(variant, dir))
+        }
+        place(sides.place)
+        return new HybridWorker(req, sides, engineDir, variant, dir, options, learn) as unknown as Worker
       }
-      if (!sides.place.there) {
-        place({ mode: 'browser', note: 'Going by past runs, this PC alone finishes this run before Frostsim Cloud would start. It uses none of your allowance.' })
-        return new Worker(engineWorkerUrl(variant, dir))
-      }
-      place(sides.place)
-      return new HybridWorker(req, sides, engineDir, variant, dir, options, learn) as unknown as Worker
+      // The start message waits (at most CAPACITY_TIMEOUT_MS) for the split; a cancel before then ends the run with nothing started.
+      return new Later(() => decide(answer), (go) => void capacity.then((cap) => { answer = cap; go() })) as unknown as Worker
     }
   }
 }

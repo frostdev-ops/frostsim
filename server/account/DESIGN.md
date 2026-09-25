@@ -146,7 +146,12 @@ the character picker on every tool screen keeps an explicit choice. Avalanche (`
 (`src/lib/simc/hybrid.ts`): a run made of two or more independent sims splits them between this browser and one cloud job, both
 running at once, and concatenates the results into one report. The split aims for the soonest finish: each finished run records, on
 this device, both sides' seconds per piece and their start-up waits (engine load here; queue, worker boot and upload there) as moving
-averages, and the next run picks the share with the earliest predicted end. With no measurements it splits by thread share. When one
+averages, and the next run picks the share with the earliest predicted end. Before splitting it asks `GET /api/v1/compute/capacity`
+(`capacityView` in `compute/queue.ts`) where a job of the user's width would start: `warm` on a free worker, `booting` on a server
+already starting (the rest of its boot), `cold` on one the autoscaler would order (the median created-to-first-claim time of the
+last 20 workers, plus half a tick), `queued` behind other runs, or `none` when the cloud would refuse it, which runs the whole run
+here without submitting. The predicted cloud start is that estimate plus the cloud's own overhead measured beyond it; with no
+answer inside 1.5 s, past runs' average wait. With no measurements it splits by thread share. When one
 side alone is predicted to finish sooner, the whole run goes there, and the run panel says why. Three kinds split: profileset candidates (Top Gear,
 Droptimizer, Crest and Compare batches; profileset results appended), the characters of a multi-character Quick Sim (each its own
 sim under `single_actor_batch=1`; the first character stays local and the cloud's players are appended) and Stat Weights by
@@ -236,7 +241,7 @@ The page lists the guild's name and roles through the bot token; managed (bot) r
 DELETE); `admin/users` (GET), `admin/users/:id` (GET, PATCH, DELETE);
 `billing`, `billing/checkout`, `billing/portal`, `stripe/webhook`; `characters` (GET, POST, and GET, PUT, DELETE
 by id), `characters/:id/history` (GET), `characters/:id/sims` (POST); `shares` (GET, POST), `shares/:id` (public GET, owner DELETE), `shares/:id/blob` (owner PUT, public GET);
-`compute/jobs` (POST), `compute/jobs/:id` (GET, DELETE), `compute/jobs/:id/result`; `worker/*` (P1);
+`compute/capacity` (GET), `compute/jobs` (POST), `compute/jobs/:id` (GET, DELETE), `compute/jobs/:id/result`; `worker/*` (P1);
 `discord/interactions`, `discord/install` (302 to Discord's add-to-server page), `discord/guilds` (GET: the guilds the
 user pays for), `discord/guilds/:id` (PUT: role allowances); `integrations/loothing/resolve`, `integrations/loothing/jobs` (POST, GET: up to 30 days),
 `integrations/loothing/jobs/:id` (GET, DELETE), `integrations/loothing/jobs/:id/detail` (GET) (bearer token, a linked Discord identity and a grant); `health` (always on, 503 while Postgres is down with any

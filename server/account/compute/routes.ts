@@ -5,7 +5,7 @@ import type { RequestCtx, Route, Task } from '../app';
 import { HttpError, json } from '../http';
 import { rateLimit } from '../ratelimit';
 import type { SimRequest } from '../../../src/lib/simc/assemble';
-import { cancelJob, enqueueJob, jobView, resultKey, tasks as queueTasks } from './queue';
+import { cancelJob, capacityView, enqueueJob, jobView, resultKey, tasks as queueTasks } from './queue';
 import { tasks as autoscalerTasks } from './autoscaler';
 
 /** One bucket for every source that submits on a user's behalf (web, Discord). */
@@ -56,6 +56,13 @@ async function result(ctx: RequestCtx): Promise<Response> {
   });
 }
 
+/** Where a new job would start and about when (queue.ts capacityView). Asked once per hybrid run, before it splits. */
+async function capacity(ctx: RequestCtx): Promise<Response> {
+  const userId = ctx.session!.userId;
+  if (!(await rateLimit(ctx, 'compute-capacity', userId, 60, 60))) throw new HttpError(429, 'rate-limited', 'Too many capacity checks; wait a minute.');
+  return json(await capacityView(ctx, userId));
+}
+
 /** Idempotent: 204 when cancelled now or already finished, 404 when it is not the caller's. */
 async function cancel(ctx: RequestCtx): Promise<Response> {
   const userId = ctx.session!.userId;
@@ -67,6 +74,7 @@ async function cancel(ctx: RequestCtx): Promise<Response> {
 }
 
 export const routes: Route[] = [
+  { method: 'GET', path: /^\/api\/v1\/compute\/capacity$/, feature: 'compute', auth: 'session', handler: capacity },
   { method: 'POST', path: /^\/api\/v1\/compute\/jobs$/, feature: 'compute', auth: 'session', maxBody: MAX_REQUEST_BYTES, handler: submit },
   { method: 'GET', path: new RegExp(`^/api/v1/compute/jobs/${JOB}$`), feature: 'compute', auth: 'session', handler: status },
   { method: 'GET', path: new RegExp(`^/api/v1/compute/jobs/${JOB}/result$`), feature: 'compute', auth: 'session', handler: result },
