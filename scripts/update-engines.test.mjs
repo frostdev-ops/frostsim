@@ -257,14 +257,14 @@ describe('remote native builds', () => {
     mkdirSync(join(pack, 'source'), { recursive: true });
     writeFileSync(join(pack, 'source/simc.tar.gz'), 'tar');
     const commands = [];
-    const exec = (cwd, command, args) => {
+    const exec = (cwd, command) => {
       commands.push(command);
       if (command.endsWith('build/native/simc')) writeFileSync(join(cwd, 'native-smoke.json'), JSON.stringify({ sim: { players: [{ collected_data: { dps: { mean: 1 } } }] } }));
     };
     const compile = (packDir, dir) => { mkdirSync(join(dir, 'build/native'), { recursive: true }); writeFileSync(join(dir, 'build/native/simc'), 'ELF remote'); };
     const puts = [];
     const native = await buildNative(output, 'p2', { accountId: 'a'.repeat(32), accessKeyId: 'id', secretAccessKey: 's', bucket: 'frostsim-engines' },
-      { exec, compile, fetchFn: async (url, init) => { puts.push(url); return new Response(null, { status: 200 }); } });
+      { exec, compile, fetchFn: async (url) => { puts.push(url); return new Response(null, { status: 200 }); } });
     expect(commands).not.toContain('cmake');
     expect(commands.some((c) => c.endsWith('build/native/simc'))).toBe(true);
     expect(puts).toHaveLength(2);
