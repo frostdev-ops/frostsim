@@ -14,7 +14,9 @@ import type { Config } from './config';
 import type { Db } from './db';
 import { loadEntitlements, type GuildEntitlement } from './entitlements';
 import { memberAllowance, memberRefusal, roleLimits } from './guild-roles';
-import { HttpError, errorSummary, json } from './http';
+import { HttpError, error, errorSummary, json } from './http';
+import { renderFightGif } from './fight-gif';
+import { rateLimit } from './ratelimit';
 import { tryRedis } from './redis';
 import { compareEmbed, plain, progressEmbed, simEmbed, type Embed } from './discord-embeds';
 import { MAX_SHARE_JSON, MAX_UPLOAD, storeShare } from './shares';
@@ -33,7 +35,7 @@ import { compareRequest, quickRequest } from '../../src/lib/simc/quick-request';
 import { latestProgress } from '../../src/lib/simc/progress';
 import { runFraction } from '../../src/lib/simc/cost';
 import { roleGroups, roleNote } from '../../src/lib/simc/role-share';
-import { fightGif } from '../../src/lib/ui/pixel/style';
+import { FIGHT_GIFS, fightGif } from '../../src/lib/ui/pixel/style';
 import { parseEngineNotice, parseReport, type ReportLog, type SimReport } from '../../src/lib/simc/report';
 import { makePortable } from '../../src/lib/store/records';
 import { reportSnapshot } from '../../src/lib/store/report-share';
@@ -398,8 +400,10 @@ async function startRun(app: AppCtx, i: Interaction, discordId: string, received
   const pool = refusal ? ` ${refusal} It runs on your own plan.` : fellBack ? " This server's pool is used up, so it runs on your own plan." : '';
   // Before the token is stored: from then on the task may post the result, and a late "Queued" would overwrite it.
   const share = i.data?.options?.find((o) => o.name === 'share')?.value === true;
-  const look = fightGif(picked[0].character.className, picked[0].character.spec);
-  const gif = look ? `${app.config.publicOrigin}/discord/fight/${look}.gif` : undefined;
+  // One character's look is pre-rendered; a /compare's characters fight together in a GIF rendered for them (partyGif).
+  const looks = picked.map((p) => fightGif(p.character.className, p.character.spec)).filter((l): l is string => !!l);
+  const gif = !looks.length ? undefined
+    : `${app.config.publicOrigin}${looks.length > 1 ? '/api/v1/discord/fight/' : '/discord/fight/'}${looks.join(',')}.gif`;
   await edit({ content: pool.trim(), embeds: [progressEmbed({ label, fight: fight.fight, image: gif })] });
   const pending: Pending = {
     token, label, presetId: fight.presetId, fight: fight.fight, exp: receivedMs + TOKEN_TTL_S * 1000, kind: compare ? 'compare' : 'sim', owner: discordId,
@@ -730,12 +734,34 @@ export function installUrl(config: Pick<Config, 'env'>): string {
   return `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(config.env.DISCORD_APPLICATION_ID ?? '')}`;
 }
 
+const LOOKS = new Map(FIGHT_GIFS.map((g) => [g.name, g]));
+/** Party GIFs rendered so far, oldest first. A party's GIF never changes, so each renders once per process. */
+const partyGifs = new Map<string, Uint8Array>();
+const PARTY_GIFS_KEPT = 64;
+
+/** The pixel battle for a /compare's characters (2 to COMPARE_SLOTS), one hero each, in the order the command named them. */
+async function partyGif(ctx: RequestCtx): Promise<Response> {
+  const key = ctx.params.looks;
+  const names = key.split(',');
+  if (names.length < 2 || names.length > COMPARE_SLOTS.length || !names.every((n) => LOOKS.has(n))) return error(404, 'not-found', 'No such fight.');
+  let gif = partyGifs.get(key);
+  if (!gif) {
+    // A render holds the event loop for about 80 ms: bound them across every caller, since any look combination is a valid URL.
+    if (!(await rateLimit(ctx, 'fight-gif', 'render', 120, 60))) return error(429, 'rate-limited', 'Too many new fights; wait a minute.');
+    gif = renderFightGif(names.map((n) => LOOKS.get(n)!));
+    partyGifs.set(key, gif);
+    if (partyGifs.size > PARTY_GIFS_KEPT) partyGifs.delete(partyGifs.keys().next().value!);
+  }
+  return new Response(Buffer.from(gif), { headers: { 'content-type': 'image/gif', 'cache-control': 'public, max-age=31536000, immutable' } });
+}
+
 export const routes: Route[] = [
   { method: 'POST', path: /^\/api\/v1\/discord\/interactions$/, feature: 'discord', auth: 'public', handler: interactions },
   {
     method: 'GET', path: /^\/api\/v1\/discord\/install$/, feature: 'discord', auth: 'public',
     handler: (ctx) => new Response(null, { status: 302, headers: { location: installUrl(ctx.config) } }),
   },
+  { method: 'GET', path: /^\/api\/v1\/discord\/fight\/(?<looks>[a-z_,-]{1,200})\.gif$/, feature: 'discord', auth: 'public', handler: partyGif },
 ];
 
 export const tasks: Task[] = [{ name: 'discord-replies', feature: 'discord', everyMs: 3000, run: postResults }];

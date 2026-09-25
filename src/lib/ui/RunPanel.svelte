@@ -11,12 +11,15 @@
   import { fmtBytes, fmtInt, fmtPct, fmtSeconds } from '../format'
   import Banner from './Banner.svelte'
   import RunStatus from './RunStatus.svelte'
+  import { partyOf } from './pixel/style'
   import SimLog from './SimLog.svelte'
 
   const job = $derived(app.job)
   // A blocked engine keeps the tab busy, but a job that already ended shows its outcome, not a live run.
   const busy = $derived(isBusy() && !(job && ['complete', 'error', 'cancelled'].includes(job.status)))
   const p = $derived(run.progress)
+  // Every character of a multi-character run fights in the pixel battle.
+  const party = $derived(partyOf(run.request?.profile ?? ''))
   const configuration = $derived(run.request?.mode === 'raw' ? 'Custom SimC input' : run.request?.settings.fightStyle === 'DungeonRoute' ? 'Dungeon Route · runs through the final pull' : run.request ? `${run.request.settings.fightStyle.replace(/([a-z])([A-Z])/g, '$1 $2')} · ${fmtSeconds(run.request.settings.maxTime)} · ${run.request.settings.targets} target${run.request.settings.targets === 1 ? '' : 's'}` : '')
 
   // The whole run, not the current phase: finished characters, candidates or stats plus this one's share, a target error phase
@@ -56,7 +59,7 @@
   })
   const eta = $derived(simulatingSince === undefined ? undefined : remainingSeconds(best, elapsed - simulatingSince))
 </script>
-{#if job && busy && !app.engineStopping}<RunStatus title={job.title} stage={STATUS_LABELS[job.status]} summary={configuration} statusDetail={p?.iterations ? (p.base === 'Hybrid' ? `${p.phase} parts done` : fmtInt(p.iterations) + ' iterations' + (p.phaseTotal > 1 ? ` · ${p.phaseIndex} of ${p.phaseTotal}` : '')) + (eta !== undefined ? ' · ≈ ' + fmtSeconds(Math.ceil(eta)) + ' remaining' : '') : job.stage?.label ?? ''} {fraction} {elapsed} log={run.log} metrics={p} oncancel={cancelRun} />
+{#if job && busy && !app.engineStopping}<RunStatus title={job.title} stage={STATUS_LABELS[job.status]} summary={configuration} statusDetail={p?.iterations ? (p.base === 'Hybrid' ? `${p.phase} parts done` : fmtInt(p.iterations) + ' iterations' + (p.phaseTotal > 1 ? ` · ${p.phaseIndex} of ${p.phaseTotal}` : '')) + (eta !== undefined ? ' · ≈ ' + fmtSeconds(Math.ceil(eta)) + ' remaining' : '') : job.stage?.label ?? ''} {fraction} {elapsed} log={run.log} metrics={p} {party} oncancel={cancelRun} />
 {#if import.meta.env.VITE_FEATURE_ACCOUNTS === true}{#await import('../account/CloudNudge.svelte') then m}<m.default {elapsed} />{/await}{/if}
 {:else if run.error}<Banner kind={job?.status === 'cancelled' ? 'info' : 'bad'} title={run.error.message} live>{#if run.error.detail}<details><summary>Details</summary><pre>{run.error.detail}</pre></details>{/if}</Banner>{/if}
 {#if run.error && !busy && run.log.length}<details class="disclosure"><summary>SimulationCraft log</summary><SimLog lines={run.log} /></details>{/if}

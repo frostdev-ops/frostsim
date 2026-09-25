@@ -853,6 +853,16 @@ describe('/compare', () => {
     expect(job.request.profile.match(/^warlock=/gm)).toHaveLength(3);
     expect(job.characterId).toBeUndefined();
     expect(edits[0].body.embeds![0].title).toBe('Simulating Main_Warlock vs Testlock-area-52 vs Healz · Patchwerk');
+    // The three fight together in one GIF, rendered on request.
+    const gif = (edits[0].body.embeds![0] as { image: { url: string } }).image.url;
+    expect(gif).toMatch(new RegExp(`^${ORIGIN}/api/v1/discord/fight/warlock[a-z_-]*(,warlock[a-z_-]*){2}\\.gif$`));
+    const res = await createApp(deps(redis), routes)(new Request(gif.replace(ORIGIN, 'https://sim.test')), '10.0.0.1');
+    expect([res.status, res.headers.get('content-type')]).toEqual([200, 'image/gif']);
+    expect(new TextDecoder().decode((await res.arrayBuffer()).slice(0, 6))).toBe('GIF89a');
+    const bad = (looks: string) => createApp(deps(redis), routes)(new Request(`https://sim.test/api/v1/discord/fight/${looks}.gif`), '10.0.0.1');
+    expect((await bad('mage,nobody')).status).toBe(404);
+    expect((await bad('mage')).status).toBe(404);
+    expect((await bad('mage,mage,mage,mage,mage')).status).toBe(404);
 
     edits = [];
     world.subscriptions[USER] = [];

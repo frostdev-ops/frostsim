@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { encounterFor, fightGif, FIGHT_GIFS, heroStyle } from './style'
+import { encounterFor, fightGif, FIGHT_GIFS, heroStyle, partyOf } from './style'
+import { Battle, MAX_PARTY } from './battle'
 
 describe('pixel battle style', () => {
   it('picks melee or ranged from class and spec', () => {
@@ -39,5 +40,24 @@ describe('Discord fight GIFs', () => {
   it('has a rendered file for every look (npm run data:fight-gifs)', async () => {
     const { existsSync } = await import('node:fs')
     for (const g of FIGHT_GIFS) expect(existsSync(new URL(`../../../../public/discord/fight/${g.name}.gif`, import.meta.url)), g.name).toBe(true)
+  })
+
+  it('reads a multi-character profile as a party, in order', () => {
+    const profile = 'mage="Ice"\nspec=frost\nlevel=90\n\ndeathknight="Bones"\nspec=unholy\nhead=,id=1\nwarlock="Fel"\nprofileset."x"+=head=,id=2'
+    expect(partyOf(profile)).toEqual([{ className: 'mage', spec: 'frost' }, { className: 'death_knight', spec: 'unholy' }, { className: 'warlock' }])
+    expect(partyOf('')).toEqual([])
+  })
+
+  it('fights as a party, capped at the heroes that fit', () => {
+    const party = ['warrior', 'mage', 'warlock/demonology', 'hunter/beast_mastery', 'paladin/retribution', 'shaman', 'priest']
+      .map((k) => heroStyle(...(k.split('/') as [string, string])))
+    const battle = new Battle(party, encounterFor('Patchwerk', 3, 'quick'), { speed: 2400, dps: 250_000, progress: 0.5, samples: [] })
+    let fills = 0
+    const ctx = {
+      fillStyle: '', globalAlpha: 1, save() {}, restore() {}, translate() {}, clearRect() {}, fillRect() { fills++ },
+    } as unknown as CanvasRenderingContext2D
+    for (let i = 0; i < 400; i++) { battle.step(); battle.draw(ctx) }
+    expect(fills).toBeGreaterThan(0)
+    expect((battle as unknown as { party: unknown[] }).party).toHaveLength(MAX_PARTY)
   })
 })
