@@ -264,6 +264,7 @@ describe('/sim', () => {
     const gif = `${ORIGIN}/discord/fight/warlock-demonology.gif`;
     expect(JSON.parse(store.get(`discord:${JOB}`)!.value)).toEqual({
       token: TOKEN, label: 'Main_Warlock', presetId: 'hectic-add-cleave', fight: 'Hectic Add Cleave', exp: NOW + 900_000, kind: 'sim', owner: ALICE, gif,
+      accuracy: ACCURACY.high,
     });
     expect(edits[0].url).toBe(`https://discord.com/api/v10/webhooks/${APP_ID}/${TOKEN}/messages/@original`);
     expect(edits[0].body).toMatchObject({ content: '', components: [], allowed_mentions: { parse: [] } });
@@ -629,9 +630,10 @@ describe('reply task', () => {
     await task.run(deps(redis, NOW + 3000));
     expect(edits).toHaveLength(1);
     await task.run(deps(redis, NOW + 12_000));
-    expect(edits[1].body.embeds![0].description).toMatch(/^`█+░+` \*\*50%\*\*$/);
+    // 4,500 of 10,000 iterations.
+    expect(edits[1].body.embeds![0].description).toMatch(/^`█+░+` \*\*45%\*\*$/);
     expect(mocks.cancelJob).not.toHaveBeenCalled();
-    expect(JSON.parse(store.get(`discord:${JOB}`)!.value)).toMatchObject({ shown: '50', shownAt: NOW + 12_000 });
+    expect(JSON.parse(store.get(`discord:${JOB}`)!.value)).toMatchObject({ shown: '45', shownAt: NOW + 12_000 });
   });
 
   it('cancels an unfinished job uncharged a minute before the token expires, and says so', async () => {
@@ -938,9 +940,13 @@ describe('Post in channel', () => {
 });
 
 describe('progressPct', () => {
-  it('reads the engine\'s own bar, across one phase per character', () => {
+  it('reads progress across one phase per character', () => {
     expect(progressPct(['Generating Baseline: A 1/1 [====>.....] 50/100 1.0'])).toBe(50);
-    expect(progressPct(['Generating Baseline: B 2/4 [>.........] 1/100 1.0'])).toBeCloseTo(27.5);
+    expect(progressPct(['Generating Baseline: B 2/4 [>.........] 1/100 1.0'])).toBeCloseTo(25.25);
     expect(progressPct(['no progress yet'])).toBeUndefined();
+    // What runs actually print (progressbar_type=1): tab records with no drawn bar. Second of two characters, error at twice the
+    // 0.1% target: a quarter of its iterations, so 62.5% of the run.
+    const record = 'Generating\tB\t2\t2\t2000\t100000\t500\t300000\t0.2\t30';
+    expect(progressPct([record], { mode: 'targetError', targetError: 0.1, maxIterations: 100_000 })).toBeCloseTo(62.5);
   });
 });

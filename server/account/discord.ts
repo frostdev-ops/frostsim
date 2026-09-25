@@ -31,6 +31,7 @@ import { DEFAULT_ACCURACY, type Accuracy } from '../../src/lib/simc/options';
 import { FIGHT_PRESETS, findPreset } from '../../src/lib/simc/presets';
 import { compareRequest, quickRequest } from '../../src/lib/simc/quick-request';
 import { latestProgress } from '../../src/lib/simc/progress';
+import { runFraction } from '../../src/lib/simc/cost';
 import { roleGroups, roleNote } from '../../src/lib/simc/role-share';
 import { fightGif } from '../../src/lib/ui/pixel/style';
 import { parseEngineNotice, parseReport, type ReportLog, type SimReport } from '../../src/lib/simc/report';
@@ -117,6 +118,8 @@ interface Pending {
   shown?: string; shownAt?: number;
   /** The pixel battle shown while it runs: the first character's pre-rendered look (scripts/render-fight-gifs.mjs). */
   gif?: string;
+  /** The run's accuracy, which says how far a target error phase is (cost.ts runFraction). */
+  accuracy?: Accuracy;
 }
 
 const inflate = promisify(gunzip);
@@ -418,7 +421,7 @@ async function startRun(app: AppCtx, i: Interaction, discordId: string, received
   await edit({ content: `${pool.trim()} ${then}`.trim(), embeds: [progressEmbed({ label, fight: fight.fight, image: gif })] });
   const pending: Pending = {
     token, label, presetId: fight.presetId, fight: fight.fight, exp: receivedMs + TOKEN_TTL_S * 1000, kind: compare ? 'compare' : 'sim', owner: discordId,
-    ...(gif ? { gif } : {}),
+    ...(gif ? { gif } : {}), accuracy,
     ...(ids.length > 1 ? { jobs: ids } : {}), ...(groups ? { note: roleNote(groups) } : {}), ...(share ? { share: discordId } : {}),
   };
   const saved = await tryRedis(app.redis, app.log,
@@ -642,20 +645,19 @@ async function post(app: AppCtx, key: string, pending: Pending, message: Message
     (r) => r.set(key, JSON.stringify({ ...pending, message, after, ...(isPublic ? { public: true } : {}) }), 'PX', ttl), null);
 }
 
-/** How far the engine's own progress bar is, 0-100, across the run's phases (one per character under single_actor_batch). */
-export function progressPct(lines: readonly string[]): number | undefined {
-  const p = latestProgress(lines);
-  const bar = [...lines].reverse().map((l) => /\[([=>.]+)\]/.exec(l)?.[1]).find(Boolean);
-  if (!p || !bar) return undefined;
-  const within = p.finished ? 1 : bar.replace(/\./g, '').length / bar.length;
-  return Math.min(100, ((p.phaseIndex - 1 + within) / Math.max(1, p.phaseTotal)) * 100);
+/** How far a run is, 0-100, across its phases (one per character under single_actor_batch), from its latest progress line. Runs
+ *  print progressbar_type=1 records, which have no drawn bar. Without the accuracy (a reply stored before it was kept), the
+ *  engine's own iteration projection. */
+export function progressPct(lines: readonly string[], accuracy: Accuracy = { mode: 'script' }): number | undefined {
+  const f = runFraction(latestProgress(lines), accuracy);
+  return f === undefined ? undefined : f * 100;
 }
 
 /** Edits the reply with the run's queue place or progress bar, when it moved and the last edit is old enough. */
 async function showProgress(app: AppCtx, key: string, pending: Pending, views: JobView[], nowMs: number): Promise<void> {
   if (nowMs - (pending.shownAt ?? 0) < PROGRESS_EVERY_MS) return;
   const queued = views.find((v) => v.status === 'queued');
-  const pcts = views.map((v) => (v.status === 'done' ? 100 : v.status === 'running' ? progressPct(v.lines) ?? 0 : 0));
+  const pcts = views.map((v) => (v.status === 'done' ? 100 : v.status === 'running' ? progressPct(v.lines, pending.accuracy) ?? 0 : 0));
   const pct = pcts.reduce((a, b) => a + b, 0) / pcts.length;
   const running = views.some((v) => v.status === 'running');
   const shown = queued && !running ? `q${queued.position ?? ''}` : String(Math.floor(pct / 5) * 5);
