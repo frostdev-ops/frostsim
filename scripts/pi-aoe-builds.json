@@ -1,0 +1,58 @@
+{
+ "_comment": "AoE talent builds for the Power Infusion chart's second row (scripts/generate_power_infusion.py). Taken verbatim from bloodytools' castingpatchwerk3/5 fallback profiles (talents= and omnium_talents= only; gear and action list stay upstream's). Key '3' is used for 2-4 targets, '5' for 5 and more.",
+ "source": "https://github.com/Bloodmallet/bloodytools/tree/0677879c531b70eb06de9e87115812a6f241f2fb/fallback_profiles",
+ "license": "GPL-3.0",
+ "tier": "MID2",
+ "builds": {
+  "MID2_Warlock_Affliction": {
+   "3": {
+    "talents": "CkQAAAAAAAAAAAAAAAAAAAAAAwMjZGNLmxyMzYWGAAwMzsMLmZ2GDAMWWGYATwMsFYYbAAAYGAAAzMjZGmtxYGzMzMDDzMzMAgBMA",
+    "omnium_talents": "136822:1/136816:1/136817:1/136815:1/136814:1"
+   },
+   "5": {
+    "talents": "CkQAAAAAAAAAAAAAAAAAAAAAAwMjZGNLmxyMzYWGAAwMzsMLmZ2GDAMWWGYATwMsFYYbAAAYGAAAzMjZGmtxYGzMzMDDzMzMAgBMA",
+    "omnium_talents": "136822:1/136816:1/136817:1/136815:1/136814:1"
+   }
+  },
+  "MID2_Warlock_Demonology": {
+   "3": {
+    "talents": "CoQAAAAAAAAAAAAAAAAAAAAAAwMjZGNLmxmZGzyAAAAAAAAGzYYBGYb0CNsYMzYZ2mZmxMAwMjZmZmZAGzMmZDAAMmZmZGwyMGwA",
+    "omnium_talents": "136822:1/136816:1/136817:1/136821:1/136814:1"
+   },
+   "5": {
+    "talents": "CoQAAAAAAAAAAAAAAAAAAAAAAwMjZGNLmxmZGzyAAAAAAAAGzYYBGYb0CNsYMzYZ2mZmxMAwMjZmZmZAGzMmZDAAMmZmZGwyMGwA",
+    "omnium_talents": "136822:1/136816:1/136817:1/136821:1/136814:1"
+   }
+  },
+  "MID2_Warlock_Destruction": {
+   "3": {
+    "talents": "CsQAAAAAAAAAAAAAAAAAAAAAAwMjZGNLmxmZGzysNzYmFzYZZMAAYGjZmZBMmxwCZgthFaswAAAjZYYDAzMAjZGzsBAAYmZmBAwYYA",
+    "omnium_talents": "136822:1/136816:1/136817:1/136815:1/136814:1"
+   },
+   "5": {
+    "talents": "CsQAAAAAAAAAAAAAAAAAAAAAAwMjZGNLmxmZGzysNzYmFzYZZMAAYGjZmZBMmxwCZgthFaswAAAjZYYDAzMAjZGzsBAAYmZmBAwYYA",
+    "omnium_talents": "136822:1/136816:1/136817:1/136815:1/136814:1"
+   }
+  },
+  "MID2_Warrior_Arms": {
+   "3": {
+    "talents": "CcEAAAAAAAAAAAAAAAAAAAAAAAzMzsMzYmZGAAAghphxYmxyMzMzgxMDAAAAgZWmZgJMW2GYBMgZYCZGsBmZsN2GYZmtBYmBAzwA",
+    "omnium_talents": "136822:1/136823:1/136817:1/136821:1/136814:1"
+   },
+   "5": {
+    "talents": "CcEAAAAAAAAAAAAAAAAAAAAAAgZmZmFzYmZGAAAghphxYmZzMzMzYmxMDAAAAgxyMDMhxy2AbgBMDTIzgNwMDDDmlZ2GgZGAMDDA",
+    "omnium_talents": "136822:1/136823:1/136817:1/136821:1/136814:1"
+   }
+  },
+  "MID2_Warrior_Fury": {
+   "3": {
+    "talents": "CgEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgGDjxMzmZmZmZYMzMzMzYmlZMmZMbmZmBAAixy2ALgJYGmAzwGwMzmxGAAMzwYWGGDGD",
+    "omnium_talents": "136822:1/136823:1/136817:1/136818:1/136814:1"
+   },
+   "5": {
+    "talents": "CgEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgGDjxMzmZmZmZmZMzMzMzYmlZMmZMbmZmBAAixy2ALgJYGmAzwGwMzmBAAYmhxsMwgxA",
+    "omnium_talents": "136822:1/136823:1/136817:1/136818:1/136814:1"
+   }
+  }
+ }
+}

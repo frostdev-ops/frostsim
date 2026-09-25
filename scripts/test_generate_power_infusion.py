@@ -8,7 +8,7 @@ import threading  # noqa: E402
 import time  # noqa: E402
 
 from generate_power_infusion import (  # noqa: E402
-    PI_POOL, PI_TIMED, Glyphs, Runner, System, Task, bar, check_engine, extract_variant, paint, pick_profiles, run_args,
+    AOE_BUILDS, PI_POOL, PI_TIMED, Glyphs, Runner, System, Task, bar, check_engine, extract_variant, paint, pick_profiles, run_args,
     trim_stat, variants)
 
 PROFILES = Path(__file__).resolve().parent.parent / 'vendor/simc/profiles/MID2'
@@ -42,6 +42,8 @@ class PickProfiles(unittest.TestCase):
         self.assertEqual([s['name'] for s in specs if s['piTiming'] == 'cooldown'], [
             'Blood Death Knight', 'Brewmaster Monk', 'Havoc Demon Hunter', 'Outlaw Rogue',
             'Protection Paladin', 'Protection Warrior'])
+        self.assertEqual([s['name'] for s in specs if s['aoe']], [
+            'Affliction Warlock', 'Arms Warrior', 'Demonology Warlock', 'Destruction Warlock', 'Fury Warrior'])
 
 
 class RunArgs(unittest.TestCase):
@@ -53,6 +55,20 @@ class RunArgs(unittest.TestCase):
         outlaw = {'name': 'Outlaw Rogue', 'profile': 'x', 'piTiming': 'cooldown', 'funnel': None}
         self.assertEqual(variants(outlaw, 5), ['base', 'pi'])
         self.assertEqual(run_args(outlaw, 5, 'pi', **OPTS), ['p.simc', PI_TIMED, *TAIL])
+
+    def test_aoe_build_rows_swap_talents_by_target_count(self):
+        fury = {'name': 'Fury Warrior', 'profile': 'MID2_Warrior_Fury', 'piTiming': 'apl', 'funnel': None, 'aoe': True}
+        self.assertEqual(variants(fury, 1), ['base', 'pi'])
+        self.assertEqual(variants(fury, 2), ['base', 'pi', 'aoe', 'aoePi'])
+        self.assertEqual(variants(fury, 1, only=('aoe',)), [])
+        self.assertEqual(variants(fury, 2, only=('aoe',)), ['aoe', 'aoePi'])
+        self.assertEqual(run_args(fury, 5, 'base', **OPTS), ['p.simc', *TAIL])
+        three, five = AOE_BUILDS['MID2_Warrior_Fury']['3'], AOE_BUILDS['MID2_Warrior_Fury']['5']
+        self.assertNotEqual(three['talents'], five['talents'])
+        build = lambda b: [f"talents={b['talents']}", f"omnium_talents={b['omnium_talents']}"]
+        self.assertEqual(run_args(fury, 5, 'aoePi', **OPTS), ['p.simc', *build(five), PI_POOL, *TAIL])
+        tail4 = [a.replace('desired_targets=5', 'desired_targets=4') for a in TAIL]
+        self.assertEqual(run_args(fury, 4, 'aoe', **OPTS), ['p.simc', *build(three), *tail4])
 
 
 class ExtractVariant(unittest.TestCase):

@@ -97,6 +97,31 @@ describe('mainTargetGrid', () => {
   })
 })
 
+describe('AoE-build rows', () => {
+  const fury: PiData = {
+    ...data,
+    specs: [{
+      name: 'Fury Warrior', profile: 'MID2_Warrior_Fury', piTiming: 'apl', funnel: null, aoe: true,
+      runs: [
+        { targets: 1, base: v(265_000, 265_000), pi: v(272_000, 272_000) },
+        { targets: 5, base: v(424_000, 200_000), pi: v(434_000, 204_000), aoe: v(775_000, 150_000), aoePi: v(798_000, 154_000) },
+      ],
+    }],
+  }
+
+  it('adds an AoE-build row above one target and names the upstream row the default build', () => {
+    const five = piRows(fury, 5, 'total', 'dps')
+    expect(five.map((r) => [r.id, r.label, r.aoe])).toEqual([
+      ['Fury Warrior/aoe', 'Fury Warrior (AoE build)', true],
+      ['Fury Warrior', 'Fury Warrior (default build)', false],
+    ])
+    expect(five[0].total.gain).toBe(23_000)
+    expect(piRows(fury, 1, 'total', 'dps').map((r) => [r.id, r.label])).toEqual([['Fury Warrior', 'Fury Warrior']])
+    const grid = mainTargetGrid(fury)
+    expect(grid.map((r) => [r.id, r.aoe, r.cells[0].dps])).toEqual([['Fury Warrior', false, 204_000], ['Fury Warrior/aoe', true, 154_000]])
+  })
+})
+
 const stat = (name: string, dps: number, extra = {}) => ({ name, spell_name: name.toUpperCase(), type: 'damage', portion_apse: { mean: dps }, ...extra })
 const player = (dps: [number, number], timeline: number[], up?: number[]): PiReportPlayer => ({
   name: 'MID2_Hunter_Beast_Mastery',
@@ -113,7 +138,7 @@ describe('piDetailView', () => {
       base: player([100, 40], [10, 10, 10, 10]),
       pi: player([120, 44], [10, 13, 14, 10, 9], [0, 0.6, 1, 0.4, 0]),
     }
-    const v = piDetailView(run, false)
+    const v = piDetailView(run, 'base')
     // Shorter of the two timelines; PI up in at least half the runs from second 1 to 3.
     expect(v.timeline.map((s) => s.gain)).toEqual([0, 3, 4, 0])
     expect(v.timeline[2]).toEqual({ t: 2, without: 10, with: 14, gain: 4, piUp: 1 })
@@ -129,6 +154,6 @@ describe('piDetailView', () => {
       ['pet:duck/claw', 'CLAW', 40, 44, false]])
     expect(v.abilities[1].children?.map((a) => [a.label, a.with])).toEqual([['VOLLEY_TICK', 50]])
     expect(v.abilities[0].children).toBeUndefined()
-    expect(() => piDetailView(run, true)).toThrow('No funnel detail')
+    expect(() => piDetailView(run, 'funnel')).toThrow('No funnel detail')
   })
 })

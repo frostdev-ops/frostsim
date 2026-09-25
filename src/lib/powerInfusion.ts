@@ -12,6 +12,9 @@ export interface PiRun {
   /** Funnel toggle on, without and with PI. Only above one target. */
   funnel?: PiVariant
   funnelPi?: PiVariant
+  /** An AoE talent build (scripts/pi-aoe-builds.json), without and with PI. Only above one target. */
+  aoe?: PiVariant
+  aoePi?: PiVariant
 }
 export interface PiSpec {
   name: string
@@ -20,6 +23,8 @@ export interface PiSpec {
   piTiming: 'apl' | 'cooldown'
   /** Actor option that switches the APL to priority-target play, if the spec has one. */
   funnel: string | null
+  /** The spec has AoE-build rows; its upstream profile is a single-target build. */
+  aoe?: boolean
   runs: PiRun[]
   /** Independent runs combined by scripts/merge_power_infusion.py; absent for a single run. */
   sources?: number
@@ -64,6 +69,7 @@ export interface PiRow {
   spread?: Spread
   cooldown: boolean
   funnel: boolean
+  aoe: boolean
 }
 
 /**
@@ -86,14 +92,32 @@ function gainOf(base: Pair, pi: Pair): PiGain {
   return { gain, pct: (gain / base[0]) * 100, margin, marginPct: (margin / base[0]) * 100, noise: Math.abs(gain) < margin }
 }
 
+/** Which variant pair a row shows: the upstream profile as is, its funnel option on, or an AoE talent build. */
+export type PiAlt = 'base' | 'funnel' | 'aoe'
+const ALT = {
+  funnel: { on: 'funnel option on', off: 'funnel option off' },
+  aoe: { on: 'AoE build', off: 'default build' },
+} as const
+
+/** A spec's rows: the upstream profile, then one per alternative it was simmed with. */
+function alts(s: PiSpec): { alt: PiAlt; id: string; label: string }[] {
+  const extra = (['funnel', 'aoe'] as const).filter((a) => s[a])
+  // With an alternative, the baseline row says what it is so it is not read as the only option.
+  const off = extra.map((a) => ALT[a].off).join(', ')
+  return [
+    { alt: 'base', id: s.name, label: off ? `${s.name} (${off})` : s.name },
+    ...extra.map((a) => ({ alt: a, id: `${s.name}/${a}`, label: `${s.name} (${ALT[a].on})` })),
+  ]
+}
+
 function row(
-  id: string, label: string, base: PiVariant, pi: PiVariant, cooldown: boolean, funnel: boolean, single?: number,
+  id: string, label: string, base: PiVariant, pi: PiVariant, cooldown: boolean, alt: PiAlt, single?: number,
 ): PiRow {
   const total = gainOf(base.dps, pi.dps)
   const main = gainOf(base.prio, pi.prio)
   const kept = single === undefined ? undefined : pi.prio[0] / single
   return {
-    id, spec: id.split('/')[0], label, total, main, cooldown, funnel,
+    id, spec: id.split('/')[0], label, total, main, cooldown, funnel: alt === 'funnel', aoe: alt === 'aoe',
     ...(total.noise ? {} : { toMain: main.gain / total.gain }),
     ...(kept === undefined ? {} : { kept, spread: spreadOf(kept) }),
   }
@@ -101,7 +125,7 @@ function row(
 
 /**
  * Every spec at one target count: PI's gain on all targets and on the main target, and the share
- * funneled into the main target. Specs with a funnel option get a second row with it on.
+ * funneled into the main target. Specs with a funnel option or an AoE build get a row for each.
  */
 export type PiRank = 'total' | 'main' | 'toMain'
 
@@ -112,13 +136,13 @@ export function piRows(data: PiData, targets: number, rank: PiRank, units: 'dps'
     // Reference for 'kept': the main target with PI, alone.
     const single = targets > 1 ? s.runs.find((x) => x.targets === 1)?.pi.prio[0] : undefined
     const cooldown = s.piTiming === 'cooldown'
-    const { funnel, funnelPi } = r
-    if (!funnel || !funnelPi) return [row(s.name, s.name, r.base, r.pi, cooldown, false, single)]
-    // The baseline row has the option off, stated so it is not read as the default.
-    return [
-      row(s.name, `${s.name} (funnel option off)`, r.base, r.pi, cooldown, false, single),
-      row(`${s.name}/funnel`, `${s.name} (funnel option on)`, funnel, funnelPi, cooldown, true, single),
-    ]
+    // At one target there is no alternative run, so the spec is a single unlabeled row.
+    return alts(s).flatMap(({ alt, id, label }) => {
+      const [base, pi] = alt === 'base' ? [r.base, r.pi] : [r[alt], r[`${alt}Pi`]]
+      if (!base || !pi) return []
+      const lone = alt === 'base' && !r.funnel && !r.aoe
+      return [row(id, lone ? s.name : label, base, pi, cooldown, alt, single)]
+    })
   })
   const key = units === 'dps' ? 'gain' : 'pct'
   // No share (noise) sorts last.
@@ -126,11 +150,12 @@ export function piRows(data: PiData, targets: number, rank: PiRank, units: 'dps'
   return rows.sort((a, b) => by(b) - by(a))
 }
 
-/** One row of the main-target grid: a spec (and its funnel-on row), main-target DPS with PI by target count. */
+/** One row of the main-target grid: a spec (and its funnel-on or AoE-build row), main-target DPS with PI by target count. */
 export interface MainTargetRow {
   id: string
   label: string
   funnel: boolean
+  aoe: boolean
   /** Main-target DPS with PI at one target. */
   single: number
   /** 2 to 10 targets: main-target DPS with PI, and that as a fraction of single target. */
@@ -146,15 +171,14 @@ export function mainTargetGrid(data: PiData): MainTargetRow[] {
   return data.specs.flatMap((s) => {
     const single = s.runs.find((r) => r.targets === 1)?.pi.prio[0]
     if (!single) return []
-    const grid = (variant: 'pi' | 'funnelPi') => s.runs.flatMap((r) => {
+    const grid = (variant: 'pi' | 'funnelPi' | 'aoePi') => s.runs.flatMap((r) => {
       const v = r[variant]
       return r.targets > 1 && v ? [{ targets: r.targets, dps: v.prio[0], kept: v.prio[0] / single }] : []
     })
-    if (!s.funnel) return [{ id: s.name, label: s.name, funnel: false, single, cells: grid('pi') }]
-    return [
-      { id: s.name, label: `${s.name} (funnel option off)`, funnel: false, single, cells: grid('pi') },
-      { id: `${s.name}/funnel`, label: `${s.name} (funnel option on)`, funnel: true, single, cells: grid('funnelPi') },
-    ]
+    return alts(s).map(({ alt, id, label }) => ({
+      id, label, funnel: alt === 'funnel', aoe: alt === 'aoe', single,
+      cells: grid(alt === 'base' ? 'pi' : `${alt}Pi`),
+    }))
   })
 }
 
@@ -171,6 +195,8 @@ export interface PiDetailRun {
   pi: PiReportPlayer
   funnel?: PiReportPlayer
   funnelPi?: PiReportPlayer
+  aoe?: PiReportPlayer
+  aoePi?: PiReportPlayer
 }
 export interface PiDetailFile { profile: string; runs: PiDetailRun[] }
 
@@ -259,11 +285,11 @@ function pair(before: Map<string, Source>, after: Map<string, Source>, prefix = 
   }).sort((l, r) => r.with - l.with)
 }
 
-/** The drawer's data for one row: the no-PI and PI reports of the same variant (funnel on or off). */
-export function piDetailView(run: PiDetailRun, funnel: boolean): PiDetailView {
-  const base = funnel ? run.funnel : run.base
-  const pi = funnel ? run.funnelPi : run.pi
-  if (!base || !pi) throw new Error(`No ${funnel ? 'funnel ' : ''}detail at ${run.targets} targets`)
+/** The drawer's data for one row: the no-PI and PI reports of the same variant (upstream, funnel on, or AoE build). */
+export function piDetailView(run: PiDetailRun, alt: PiAlt): PiDetailView {
+  const base = alt === 'base' ? run.base : run[alt]
+  const pi = alt === 'base' ? run.pi : run[`${alt}Pi`]
+  if (!base || !pi) throw new Error(`No ${alt === 'base' ? '' : `${alt} `}detail at ${run.targets} targets`)
   const a = base.collected_data.timeline_dmg.data
   const b = pi.collected_data.timeline_dmg.data
   const up = buff(pi, 'power_infusion')
