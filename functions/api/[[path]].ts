@@ -14,6 +14,7 @@ import {
 } from './_lib/security';
 import { BlizzardClient, UpstreamError, buildTooltip, parseItem, parseMedia, parseSet, provenance } from './_lib/upstream';
 import { ArmoryError, armoryProfile } from '../../src/lib/import/armory';
+import { CharacterIndex, fold, matchFromSummary } from './_lib/character-index';
 
 import spellIcons from '../../src/lib/battlenet/generated/spell-icons.json';
 
@@ -24,6 +25,10 @@ const mediaLimiter = new RateLimiter(120, 20);
 const raiderCache = new TtlCache<{ score: number | null; progression: { name: string; summary: string }[] }>(500);
 /** Armory data follows the game within minutes of a logout; a lookup should not show gear from yesterday. */
 const PROFILE_TTL_S = 300;
+/** Every character the Armory confirmed, shared by all searches; server/api-server.mjs persists it. */
+export const characterIndex = new CharacterIndex();
+/** Exact names the Armory said do not exist, so typing past them does not ask again for ten minutes. */
+const missingCharacters = new TtlCache<true>(5000);
 
 function clientFor(credentials: Credentials, env: Env): BlizzardClient {
   // Rebuild only if the credential or cache policy actually changed.
@@ -91,6 +96,7 @@ export async function onRequest(context: PagesContext): Promise<Response> {
       case 'character-media': return await handleCharacterMedia(segments, region, credentials, env);
       case 'character-profile': return await handleCharacterProfile(segments, region, credentials, env);
       case 'realms': return await handleRealms(region, credentials, env);
+      case 'character-search': return await handleCharacterSearch(url, region, credentials, env);
       case 'character-render': return await handleCharacterRender(segments, credentials, env);
       case 'journal-tile': return await handleJournalTile(idSegment, region, credentials, env);
       default: return errorResponse('not_found', 404, 'No such endpoint.');
@@ -331,6 +337,11 @@ async function handleRealms(region: Region, credentials: Credentials, env: Env):
   return json({ ok: true, contractVersion: BATTLENET_CONTRACT_VERSION, region, realms }, 200, cacheSeconds(env));
 }
 
+/** Exact slug or any spelling of a display name, never guessed slugification. */
+function findSlug(slugs: Map<string, string> | null, raw: string): string | null {
+  return slugs?.get(raw.toLowerCase()) ?? slugs?.get(normalizeRealmKey(raw)) ?? slugs?.get(compactRealmKey(raw)) ?? null;
+}
+
 const compactRealmKey = (raw: string) => raw.toLowerCase().replace(/[\s'’-]/g, '');
 
 /** Loose key for matching user-typed realm text against a real realm name. */
@@ -366,7 +377,7 @@ async function resolveCharacter(
   if (!slugs) return { failure: 'unavailable', message: safeMessage('upstream_unavailable') };
 
   // Exact slug or display name, never guessed slugification.
-  const slug = slugs.get(realmRaw.toLowerCase()) ?? slugs.get(normalizeRealmKey(realmRaw)) ?? slugs.get(compactRealmKey(realmRaw)) ?? null;
+  const slug = findSlug(slugs, realmRaw);
   if (!slug) {
     return {
       failure: 'unknown_realm',
@@ -476,6 +487,8 @@ async function handleCharacterProfile(
   try {
     const [summary, equipment, specializations] = await Promise.all([get(''), get('/equipment'), get('/specializations')]);
     const profile = armoryProfile({ region, summary, equipment, specializations }, new Date());
+    const match = matchFromSummary(region, summary, Date.now());
+    if (match) characterIndex.add(match);
     return json({ ok: true, contractVersion: BATTLENET_CONTRACT_VERSION, region, realmSlug, name, profile }, 200, PROFILE_TTL_S);
   } catch (err) {
     if (err instanceof ArmoryError) return errorResponse('not_found', 404, err.message);
@@ -485,6 +498,34 @@ async function handleCharacterProfile(
     }
     throw err;
   }
+}
+
+/** Search as you type: index entries whose name starts with `q`, plus, when the realm is known and nobody indexed that exact name,
+ *  one check of the Armory for it (the result, found or not, is remembered for everyone). */
+async function handleCharacterSearch(url: URL, region: Region, credentials: Credentials, env: Env): Promise<Response> {
+  const q = (url.searchParams.get('q') ?? '').trim();
+  const realmRaw = (url.searchParams.get('realm') ?? '').trim();
+  if (q.length < 2 || q.length > 24 || /[/\\?#&.\s]/.test(q)) return errorResponse('invalid_request', 400, 'Type at least two letters of a name.', 'q');
+  if (realmRaw.length > 100) return errorResponse('invalid_request', 400, 'That is not a realm.', 'realm');
+  // A realm still being typed matches nothing yet: search the whole region until it does.
+  const slug = realmRaw ? findSlug(await realmSlugs(region, credentials, env), realmRaw) : null;
+  const matches = characterIndex.search(region, q, slug);
+  const missKey = `${region}/${slug}/${fold(q)}`;
+  if (slug && !matches.some((m) => fold(m.name) === fold(q)) && !missingCharacters.get(missKey) && mediaLimiter.take() === null) {
+    try {
+      const summary = await clientFor(credentials, env).get<unknown>(
+        `/profile/wow/character/${slug}/${encodeURIComponent(q.toLowerCase())}`, region, 'en_US', 'profile', PROFILE_TTL_S);
+      const match = matchFromSummary(region, summary, Date.now());
+      if (match) {
+        characterIndex.add(match);
+        matches.unshift(match);
+      }
+    } catch (err) {
+      if (err instanceof UpstreamError && err.code === 'not_found') missingCharacters.set(missKey, true, 600);
+      // Anything else: answer with what the index has.
+    }
+  }
+  return json({ ok: true, contractVersion: BATTLENET_CONTRACT_VERSION, matches: matches.slice(0, 8) }, 200, 0);
 }
 
 /** Portrait bytes. Re-resolves and re-checks; a caller never names a URL. */
