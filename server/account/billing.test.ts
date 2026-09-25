@@ -570,6 +570,18 @@ describe('portal and summary', () => {
     expect([none.status, (await none.json()).error]).toEqual([404, 'not-found']);
   });
 
+  it('names the configured portal configuration, since an API-made one is never the default', async () => {
+    const h = harness([{ id: USER, stripe_customer_id: 'cus_1' }]);
+    const env = config.env as Record<string, string | undefined>;
+    env.STRIPE_PORTAL_CONFIGURATION = 'bpc_123';
+    try {
+      await h.send(post('/api/v1/billing/portal'));
+    } finally {
+      delete env.STRIPE_PORTAL_CONFIGURATION;
+    }
+    expect(Object.fromEntries(h.state.calls[0].form)).toEqual({ customer: 'cus_1', return_url: `${ORIGIN}/#/`, configuration: 'bpc_123' });
+  });
+
   it('summarises entitlements, usage over the billing period and subscriptions', async () => {
     const h = harness();
     await h.webhook(event('customer.subscription.created', 100, { id: 'sub_1' }));

@@ -175,9 +175,13 @@ async function portal(ctx: RequestCtx): Promise<Response> {
   await limitStripeCalls(ctx);
   const [user] = await ctx.sql`select stripe_customer_id from users where id = ${ctx.session!.userId}`;
   if (!user?.stripe_customer_id) throw new HttpError(404, 'not-found', 'There is no billing account yet.');
+  // A portal configuration made through the API is never the account's default, so it is named here (bpc_...); without one, Stripe's
+  // default (set in the Dashboard) applies.
+  const configuration = ctx.config.env.STRIPE_PORTAL_CONFIGURATION || undefined;
   const session = await stripe<{ url: string }>(ctx, 'POST', '/billing_portal/sessions', {
     customer: user.stripe_customer_id,
     return_url: `${ctx.config.publicOrigin}/#/`,
+    configuration,
   });
   return json({ url: session.url });
 }
