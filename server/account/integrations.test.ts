@@ -57,6 +57,8 @@ function fakeSql(): Sql {
   const answer = (q: string, v: unknown[]): unknown[] => {
     if (q.includes("from identities i join users u on u.id = i.user_id")) return linked && v[0] === DISCORD ? [{ user_id: USER }] : [];
     if (q.includes('from integration_grants')) return granted ? [{ '?column?': 1 }] : [];
+    // A comped 16-thread user: the droptimizer's candidate cap is 200.
+    if (q.includes('comp_core_seconds::float8')) return [{ core_seconds: 3600, max_threads: 16 }];
     if (q.includes('select c.id, c.label, c.updated_at, c.who, s.item_level from cloud_characters')) return [
       { id: CHAR, label: 'Main', updated_at: new Date('2026-09-20T00:00:00Z'), item_level: 341.5,
         who: { name: 'Testchar', className: 'warlock', spec: 'demonology', server: 'area52', region: 'us' } },
@@ -68,7 +70,7 @@ function fakeSql(): Sql {
     }
     if (q.includes('select id, label, raw from cloud_characters')) return v[1] === CHAR ? [{ id: CHAR, label: 'Main', raw: RAW }] : [];
     if (q.includes('select meta from compute_jobs')) return [{ meta: jobMeta ?? null }];
-    if (q.includes('select id from compute_jobs where source = \'loothing\'')) return keyed && v[1] === keyed ? [{ id: JOB }] : [];
+    if (q.includes('select id, kind from compute_jobs where source = \'loothing\'')) return keyed && v[1] === keyed ? [{ id: JOB, kind: 'quick' }] : [];
     if (q.includes('from compute_jobs j left join cloud_characters')) {
       jobQueries.push({ query: q, values: v });
       return jobRows;
@@ -318,14 +320,14 @@ describe('resolve and jobs', () => {
     keyed = '1420000000000000001';
     const again = await create('1420000000000000001');
     expect(again.status).toBe(200);
-    expect(await again.json()).toEqual({ id: JOB });
+    expect(await again.json()).toEqual({ id: JOB, kind: 'quick' });
     expect(mocks.enqueueJob).toHaveBeenCalledTimes(1);
     // The race: the pre-check saw nothing, the insert hit the unique index.
     keyed = null;
     mocks.enqueueJob.mockImplementationOnce(async () => { keyed = '1420000000000000002'; throw Object.assign(new Error('duplicate key'), { code: '23505' }); });
     const raced = await create('1420000000000000002');
     expect(raced.status).toBe(200);
-    expect(await raced.json()).toEqual({ id: JOB });
+    expect(await raced.json()).toEqual({ id: JOB, kind: 'quick' });
     expect((await create('not a key!')).status).toBe(400);
     expect((await create('x'.repeat(65))).status).toBe(400);
     expect(audits.map((a) => [a.detail.status, a.detail.repeat])).toEqual([[201, undefined], [200, 1], [200, undefined], [400, undefined], [400, undefined]]);
@@ -380,6 +382,15 @@ describe('droptimizer', () => {
     expect(await refused({ kind: 'weekly', instanceIds: [RAID], difficulty: 'heroic' })).toEqual([400, 'invalid']);
     mocks.defaultPack.mockResolvedValueOnce(null);
     expect(await refused({ instanceIds: [RAID], difficulty: 'heroic' })).toEqual([409, 'no-native-engine']);
+    // A pack published without a catalog: 503 with a Retry-After, never a 500 that Loothing retries at once.
+    mocks.defaultPack.mockResolvedValueOnce('000000000000-000000000000');
+    const noCatalog = await create({ instanceIds: [RAID], difficulty: 'heroic' });
+    expect([noCatalog.status, noCatalog.headers.get('retry-after'), (await noCatalog.json()).error]).toEqual([503, '300', 'no-catalog']);
+    // A key already used answers with the first job and its kind, before anything is built.
+    keyed = 'interaction-1';
+    const again = await send('POST', '/api/v1/integrations/loothing/jobs', { discordId: DISCORD, kind: 'droptimizer', characterId: CHAR },
+      { headers: { 'idempotency-key': 'interaction-1' } });
+    expect([again.status, await again.json()]).toEqual([200, { id: JOB, kind: 'quick' }]);
   });
 
   it('returns the baseline and candidate rows in a droptimizer\'s detail, and 410 once its candidate list is gone', async () => {
@@ -393,6 +404,9 @@ describe('droptimizer', () => {
     // The fixture report has no profilesets: every candidate is there, and missing.
     expect(body.candidates.length).toBe((jobMeta as { candidates: unknown[] }).candidates.length);
     expect(body.candidates.every((c: { status: string }) => c.status === 'missing')).toBe(true);
+    const limited = await (await send('GET', `/api/v1/integrations/loothing/jobs/${JOB}/detail?discordId=${DISCORD}&limit=2`)).json();
+    expect(limited.candidates).toEqual(body.candidates.slice(0, 2));
+    expect((await send('GET', `/api/v1/integrations/loothing/jobs/${JOB}/detail?discordId=${DISCORD}&limit=201`)).status).toBe(400);
     jobMeta = null;
     const gone = await detail();
     expect([gone.status, (await gone.json()).error]).toEqual([410, 'expired']);

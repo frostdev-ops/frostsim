@@ -15,6 +15,7 @@ import { seasonBuildOf, withMaxUpgrade, withUpgradeRank } from '../../src/lib/ca
 import type { ImportedCharacter } from '../../src/lib/import/character';
 import { characterConstraints } from '../../src/lib/import/constraints';
 import { buildScenarios, filterSources, sourceAvailability, type DropSource } from '../../src/lib/optimization/droptimizer';
+import { gainOverBaseline } from '../../src/lib/optimization/statistics';
 import type { SimRequest } from '../../src/lib/simc/assemble';
 import type { Accuracy } from '../../src/lib/simc/options';
 import { quickRequest } from '../../src/lib/simc/quick-request';
@@ -22,11 +23,17 @@ import { parseReport } from '../../src/lib/simc/report';
 
 const DEFAULT_INDEX = '/opt/frostsim/engine-updates/engine-versions.json';
 /** Every candidate runs to this error inside one job, which the worker stops at 1800 s (cloud/worker/agent.mjs RuntimeMaxSec). */
-export const DROP_ACCURACY: Accuracy = { mode: 'targetError', targetError: 0.2, maxIterations: 10_000 };
-/** Every Mythic+ dungeon of a season is about 160 for one character. At the 2,700 iterations/s measured on 32 cores, 200 candidates
- *  need about 2 minutes at a typical 1,500 iterations each and 12 at the iteration ceiling; an 8-thread plan takes four times that.
- *  ponytail: fixed cap, not scaled by the plan's threads; derive it from recorded droptimizer job timings once there are some. */
+export const DROP_ACCURACY: Accuracy = { mode: 'targetError', targetError: 0.2, maxIterations: 5_000 };
+/** Candidates per job for a plan of `threads`: 20 a thread, at most 200. At the ~84 iterations/s a thread measured natively (2,700 on 32
+ *  cores), a full job at the iteration ceiling takes about 1,200 s, inside the worker's 1,800 s wall; a typical candidate needs ~1,500.
+ *  Every Mythic+ dungeon of a season is about 160 candidates for one character, a full raid about 70.
+ *  ponytail: derived from one throughput figure; recompute from recorded droptimizer job timings once there are some. */
+export const PER_THREAD = 20;
 export const MAX_CANDIDATES = 200;
+export const candidateCap = (threads: number) => Math.max(PER_THREAD, Math.min(MAX_CANDIDATES, PER_THREAD * Math.floor(threads)));
+export const MAX_ENCOUNTERS = 100;
+/** As the web search's sample floor (engine-adapter.ts sampleFloorOptions): no candidate stops on its error estimate before 200. */
+const SAMPLE_FLOOR = ['analyze_error_interval=200'];
 export const MAX_INSTANCES = 12;
 /** Loothing's names for the raid difficulties, as Raidbots spells them. */
 export const DIFFICULTIES: Readonly<Record<string, RaidDifficulty>> = { 'raid-finder': 'lfr', normal: 'normal', heroic: 'heroic', mythic: 'mythic' };
@@ -51,8 +58,11 @@ export function packCatalog(packId: string, env: Record<string, string | undefin
     // As the catalog worker loads it (protocol.ts 'load'): loot is optional and named by the manifest.
     const [items, bonus, scaling, enchants, gems, sets, embellishments, consumables] = await Promise.all(
       ['items', 'item-bonus', 'scaling', 'enchants', 'gems', 'sets', 'embellishments', 'consumables'].map((f) => read(`${f}.json`)));
+    if (!items?.count || !Array.isArray(items.id)) throw new Error('items.json is missing its columns');
     const catalog = new Catalog({ manifest, items, bonus, scaling, enchants, gems, sets, embellishments, consumables } as CatalogPayloads);
-    if (manifest.loot?.path) catalog.registerLoot(await read(manifest.loot.path));
+    // A promised loot file that is missing leaves the catalog without loot, which lootSources reports, as in the browser.
+    const loot = manifest.loot?.path ? await read(manifest.loot.path).catch(() => null) : null;
+    if (loot) catalog.registerLoot(loot);
     return catalog;
   })();
   cached = { packId, catalog };
@@ -111,10 +121,12 @@ export function parseSelector(body: Record<string, unknown>): DropSelector {
   const ints = (v: unknown) => Array.isArray(v) && v.length > 0 && v.every((n) => Number.isInteger(n) && (n as number) > 0);
   const { instanceIds, encounterIds, difficulty, keyLevel, bonusRoll, maxUpgrade } = body;
   if (!ints(instanceIds) || (instanceIds as number[]).length > MAX_INSTANCES) throw new DropProblem('invalid', `instanceIds must be 1-${MAX_INSTANCES} journal instance ids.`);
-  if (encounterIds !== undefined && !ints(encounterIds)) throw new DropProblem('invalid', 'encounterIds must be journal encounter ids.');
+  if (encounterIds !== undefined && (!ints(encounterIds) || (encounterIds as number[]).length > MAX_ENCOUNTERS)) {
+    throw new DropProblem('invalid', `encounterIds must be 1-${MAX_ENCOUNTERS} journal encounter ids.`);
+  }
   if ((difficulty === undefined) === (keyLevel === undefined)) throw new DropProblem('invalid', 'Give difficulty (raids) or keyLevel (dungeons), not both.');
-  if (difficulty !== undefined && !Object.hasOwn(DIFFICULTIES, difficulty as string)) throw new DropProblem('invalid', `difficulty must be one of ${Object.keys(DIFFICULTIES).join(', ')}.`);
-  if (keyLevel !== undefined && (!Number.isInteger(keyLevel) || (keyLevel as number) < MIN_KEY || (keyLevel as number) > 99)) throw new DropProblem('invalid', `keyLevel must be a whole number from ${MIN_KEY}.`);
+  if (difficulty !== undefined && (typeof difficulty !== 'string' || !Object.hasOwn(DIFFICULTIES, difficulty))) throw new DropProblem('invalid', `difficulty must be one of ${Object.keys(DIFFICULTIES).join(', ')}.`);
+  if (keyLevel !== undefined && (!Number.isInteger(keyLevel) || (keyLevel as number) < MIN_KEY || (keyLevel as number) > 99)) throw new DropProblem('invalid', `keyLevel must be a whole number from ${MIN_KEY} to 99.`);
   for (const [name, v] of [['bonusRoll', bonusRoll], ['maxUpgrade', maxUpgrade]] as const) {
     if (v !== undefined && typeof v !== 'boolean') throw new DropProblem('invalid', `${name} must be true or false.`);
   }
@@ -127,12 +139,14 @@ export function parseSelector(body: Record<string, unknown>): DropSelector {
 }
 
 /** The job's request and meta: the web Droptimizer's candidates for `character`, as profilesets on Quick Sim's scenario for `presetId`. */
-export function droptimizerRequest(catalog: Catalog, character: ImportedCharacter, selector: DropSelector, presetId: string, now = Date.now()):
-  { request: SimRequest; meta: DropMeta } {
+export function droptimizerRequest(catalog: Catalog, character: ImportedCharacter, selector: DropSelector, presetId: string, now = Date.now(),
+  maxCandidates = MAX_CANDIDATES): { request: SimRequest; meta: DropMeta } {
   const loot = catalog.lootSources(now);
   if (loot.unavailableReason) throw new DropProblem('unavailable', loot.unavailableReason);
   const chosen = loot.sources.filter((s) => s.instanceId !== undefined && selector.instanceIds.includes(s.instanceId)
     && (!selector.encounterIds || selector.encounterIds.includes(encounterIdOf(s) ?? -1)));
+  const stray = selector.encounterIds?.filter((id) => !chosen.some((s) => encounterIdOf(s) === id));
+  if (stray?.length) throw new DropProblem('unavailable', `Encounter ${stray.join(', ')} is not a boss of the chosen instances this season.`);
   const missing = selector.instanceIds.filter((id) => !chosen.some((s) => s.instanceId === id));
   if (missing.length) throw new DropProblem('unavailable', `No loot is known for instance ${missing.join(', ')} with those encounters this season.`);
 
@@ -169,15 +183,15 @@ export function droptimizerRequest(catalog: Catalog, character: ImportedCharacte
   const sources = usable.filter((s) => s.items.length).map((s) => evaluate(s, lootById.get(s.id)!));
   const equipped = new Map<GearSlot, ItemInstance | null>(GEAR_SLOTS.map((slot) => [slot, character.equipped.find((i) => i.slot === slot) ?? null]));
   const { scenarios, sourcesFor } = sources.length
-    ? buildScenarios(sources, { catalog, character: constraints, baselineGear: equipped, playerLevel: level, allEligibleSlots: true })
+    ? buildScenarios(sources, { catalog, character: constraints, baselineGear: equipped, playerLevel: level, allEligibleSlots: true, now })
     : { scenarios: [], sourcesFor: new Map<string, string[]>() };
   if (!scenarios.length) throw new DropProblem('no-candidates', 'Nothing from those bosses is an item this character can use.');
-  if (scenarios.length > MAX_CANDIDATES) {
-    throw new DropProblem('too-many-candidates', `${scenarios.length} candidates; at most ${MAX_CANDIDATES} run in one job. Choose fewer encounters.`);
+  if (scenarios.length > maxCandidates) {
+    throw new DropProblem('too-many-candidates', `${scenarios.length} candidates; at most ${maxCandidates} run in one job on this plan. Choose fewer encounters.`);
   }
 
   const base = quickRequest(character, { presetId, threads: 1, accuracy: DROP_ACCURACY });
-  const request: SimRequest = { ...base, profilesets: scenarios.map((s) => ({ id: s.candidate.id, lines: s.candidate.lines })) };
+  const request: SimRequest = { ...base, extraOptions: SAMPLE_FLOOR, profilesets: scenarios.map((s) => ({ id: s.candidate.id, lines: s.candidate.lines })) };
   const meta: DropMeta = {
     kind: 'droptimizer', selector,
     candidates: scenarios.map((s) => {
@@ -204,13 +218,18 @@ export function droptimizerResult(raw: unknown, meta: DropMeta) {
   const sets = new Map(report.profilesets.map((p) => [p.name, p]));
   const { selector } = meta;
   const reward = selector.difficulty !== undefined ? { difficulty: selector.difficulty } : { keyLevel: selector.keyLevel };
+  const base = player && { mean: player.dps.mean, margin: player.dpsConfidence?.margin ?? null, iterations: report.actualIterations ?? player.dps.count };
   const candidates = meta.candidates.map(({ id, ...c }) => {
     const set = sets.get(id);
-    const delta = set && baseline !== undefined ? set.mean - baseline : undefined;
+    // As the web Droptimizer: the gain with the margin of the difference itself, and whether it is outside it.
+    const gain = set && base ? gainOverBaseline({ mean: set.mean, margin: set.meanError ?? null, iterations: set.iterations }, base) : null;
     return {
       ...c, ...reward,
-      ...(set ? { dps: round(set.mean), error95: round(set.meanError) } : {}),
-      ...(delta !== undefined ? { delta: round(delta), deltaPct: round(baseline ? (100 * delta) / baseline : undefined, 2) } : {}),
+      ...(set ? { dps: round(set.mean), error95: round(set.meanError), iterations: set.iterations } : {}),
+      ...(gain ? {
+        delta: round(gain.absolute), deltaPct: round(gain.percent ?? undefined, 2),
+        ...(gain.margin !== null ? { deltaError95: round(gain.margin), significant: gain.significant } : {}),
+      } : {}),
       status: set ? 'measured' as const : 'missing' as const,
     };
   }).sort((a, b) => (b.delta ?? -Infinity) - (a.delta ?? -Infinity));

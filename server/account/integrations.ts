@@ -14,7 +14,7 @@
 //
 // Droptimizer (2026-09-25): POST /jobs with `kind: 'droptimizer'` measures the drops of the chosen raid or dungeon bosses against one
 // slot's gear (loothing-drop.ts); GET /droptimizer/sources lists what can be chosen; every job carries `kind`; a droptimizer's detail
-// adds the baseline and one row per candidate.
+// adds the baseline and one row per candidate (`limit` keeps the best ones). A droptimizer's `summary.dps` is its baseline's DPS.
 
 import { promisify } from 'node:util';
 import { gunzip } from 'node:zlib';
@@ -26,9 +26,10 @@ import { rateLimit } from './ratelimit';
 import { safeEqual, sha256Hex } from './signed';
 import { cancelJob, enqueueJob, resultBytes } from './compute/queue';
 import { defaultPack } from './compute/packs';
+import { loadEntitlements } from './entitlements';
 import { ACCURACY, COMPARE_SLOTS, SIM_FIGHTS, characterRequest, linkedUser, manageUrl } from './discord';
 import { loothingDetail } from './loothing-detail';
-import { DropProblem, droptimizerRequest, droptimizerResult, dropSources, packCatalog, parseSelector, type DropMeta } from './loothing-drop';
+import { DropProblem, MAX_CANDIDATES, candidateCap, droptimizerRequest, droptimizerResult, dropSources, packCatalog, parseSelector, type DropMeta } from './loothing-drop';
 import { MAX_SHARE_JSON } from './shares';
 import { parseAddonExport } from '../../src/lib/import/character';
 import type { SimRequest } from '../../src/lib/simc/assemble';
@@ -158,6 +159,16 @@ async function compareOf(ctx: RequestCtx, userId: string, ids: string[], presetI
   return compareRequest(ids.map((id) => parseAddonExport(byId.get(id)!)), { presetId, threads: 1, accuracy: ACCURACY.standard });
 }
 
+/** The engine pack's catalog, or 503 when the pack carries none or it cannot be read (Retry-After: the next pack may). */
+async function catalogOf(ctx: RequestCtx, packId: string) {
+  try {
+    return await packCatalog(packId);
+  } catch (err) {
+    ctx.log(`loothing: catalog of ${packId} unreadable (${errorSummary(err)})`);
+    throw new HttpError(503, 'no-catalog', 'Frostsim Cloud has no game data for its engine build yet.', { 'retry-after': '300' });
+  }
+}
+
 const body = async (ctx: RequestCtx) => {
   const value = await ctx.json<unknown>();
   return (value && typeof value === 'object' ? value : {}) as Record<string, unknown>;
@@ -188,7 +199,7 @@ export const routes: Route[] = [
       if (typeof userId !== 'string') return userId;
       const packId = await defaultPack(ctx);
       if (!packId) throw new HttpError(409, 'no-native-engine', 'Frostsim Cloud has no engine build ready.');
-      return json({ packId, ...dropSources(await packCatalog(packId), ctx.now().getTime()) });
+      return json({ packId, ...dropSources(await catalogOf(ctx, packId), ctx.now().getTime()) });
     }),
   },
   {
@@ -203,9 +214,10 @@ export const routes: Route[] = [
       if (typeof userId !== 'string') return userId;
       const repeat = async () => {
         if (key === null) return null;
-        const [row] = await ctx.sql`select id from compute_jobs where source = 'loothing' and user_id = ${userId} and idempotency_key = ${key}`;
+        const [row] = await ctx.sql`select id, kind from compute_jobs where source = 'loothing' and user_id = ${userId} and idempotency_key = ${key}`;
         if (row) call.detail.jobId = row.id;
-        return row ? json({ id: row.id }, 200) : null;
+        // The kind lets a caller that reused a key for a different request see that this is not the job it asked for.
+        return row ? json({ id: row.id, kind: row.kind ?? 'quick' }, 200) : null;
       };
       const earlier = await repeat();
       if (earlier) {
@@ -232,11 +244,15 @@ export const routes: Route[] = [
         if (!row) throw new HttpError(404, 'not-found', 'No such cloud character.');
         packId = await defaultPack(ctx);
         if (!packId) throw new HttpError(409, 'no-native-engine', 'Frostsim Cloud has no engine build ready.');
+        const catalog = await catalogOf(ctx, packId);
+        // Not yet entitled: 20 a thread still builds, and enqueueJob answers 402.
+        const { maxThreads } = await loadEntitlements(ctx.sql, { userId }, ctx.now());
         try {
-          built = { id: row.id, ...droptimizerRequest(await packCatalog(packId), parseAddonExport(row.raw), selector, preset, ctx.now().getTime()) };
+          built = { id: row.id, ...droptimizerRequest(catalog, parseAddonExport(row.raw), selector, preset, ctx.now().getTime(), candidateCap(maxThreads)) };
         } catch (err) {
           if (err instanceof DropProblem) throw new HttpError(err.code === 'invalid' ? 400 : 422, err.code, err.message);
-          throw err;
+          // An item the upgrade tables refuse, or an export the parser cannot read: the user's to change, not a retry.
+          throw new HttpError(422, 'unbuildable', err instanceof Error ? err.message.slice(0, 300) : 'That droptimizer could not be built.');
         }
         call.detail.candidates = built.meta!.candidates.length;
       } else if (kind === 'compare') {
@@ -313,7 +329,9 @@ export const routes: Route[] = [
       if (job.kind !== 'droptimizer') return json({ id: job.id, kind: job.kind, ...loothingDetail(raw) });
       const [{ meta }] = await ctx.sql`select meta from compute_jobs where id = ${job.id}`;
       if (!meta) throw new HttpError(410, 'expired', 'The droptimizer\'s candidate list is no longer kept.');
-      return json({ id: job.id, kind: job.kind, ...loothingDetail(raw), ...droptimizerResult(raw, meta as DropMeta) });
+      const limit = bounded(ctx, 'limit', MAX_CANDIDATES, MAX_CANDIDATES);
+      const result = droptimizerResult(raw, meta as DropMeta);
+      return json({ id: job.id, kind: job.kind, ...loothingDetail(raw), ...result, candidates: result.candidates.slice(0, limit) });
     }),
   },
   {
