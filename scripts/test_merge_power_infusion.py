@@ -95,6 +95,14 @@ class Merge(unittest.TestCase):
                          (True, [1500, 10], 1050))
         self.assertEqual(details['MID2_Mage_Frost']['runs'][0]['aoe']['collected_data']['dps']['mean'], 1500)
 
+    def test_a_run_that_only_adds_rows_is_not_counted_as_a_sample(self):
+        old, new = source('old', 1000, 10), source('new', 0, 10)
+        spec = new[1]['specs'][0]
+        spec['aoe'], spec['runs'] = True, [{'targets': 1, 'aoe': {'dps': [1500, 10], 'prio': [900, 10]}}]
+        new[2]['MID2_Mage_Frost']['runs'] = [{'targets': 1, 'aoe': player(1500, [1500], [])}]
+        summary, _, _ = merge([new, old])
+        self.assertEqual((summary['specs'][0]['sources'], summary['specs'][0]['runs'][0]['base']['dps']), (1, [1000, 10]))
+
 
 if __name__ == '__main__':
     unittest.main()

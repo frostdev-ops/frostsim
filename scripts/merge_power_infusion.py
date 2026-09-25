@@ -149,6 +149,7 @@ def merge(sources: list) -> tuple[dict, dict, list]:
                 if spec[k] != head[k]:
                     raise SystemExit(f'{name}: {k} is {spec[k]!r} in {label} but {head[k]!r} in {entries[0][0]}')
         runs, detail_runs = [], []
+        averaged = 1  # most runs combined into any one value; an AoE-only run adds rows, not samples
         with_detail = [e for e in entries if e[2]]
         for i, n in enumerate(r['targets'] for r in head['runs']):
             run, drun = {'targets': n}, {'targets': n}
@@ -157,6 +158,7 @@ def merge(sources: list) -> tuple[dict, dict, list]:
                 if not got:
                     continue
                 run[v] = {m: combine([g[m] for g in got]) for m in ('dps', 'prio')}
+                averaged = max(averaged, len(got))
                 reports = [(e[2]['runs'][i][v], e[1]['runs'][i][v]['dps'][1]) for e in with_detail
                            if v in e[1]['runs'][i] and v in e[2]['runs'][i]]
                 if reports:
@@ -165,7 +167,7 @@ def merge(sources: list) -> tuple[dict, dict, list]:
             detail_runs.append(drun)
         # A run from before AoE builds existed lacks 'aoe'; it still counts for base and pi.
         out_specs.append(dict({k: head[k] for k in ('name', 'profile', 'piTiming', 'funnel')},
-                              aoe=any(e[1].get('aoe') for e in entries), runs=runs, sources=len(entries)))
+                              aoe=any(e[1].get('aoe') for e in entries), runs=runs, sources=averaged))
         if with_detail:
             out_details[head['profile']] = dict(meta, profile=head['profile'], runs=detail_runs,
                                                 sources=len(with_detail))
