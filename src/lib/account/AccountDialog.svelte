@@ -252,6 +252,7 @@
             />
             Allow Loothing's Discord bot to sim my cloud characters
           </label>
+          <p class="small row-tight">Frostsim's own Discord bot: <a href="/api/v1/discord/install">add it to a server</a></p>
           <div class="row">
             <button class="sm" disabled={!!busy} onclick={exportData}>Export my data</button>
             <details class="disclosure grow">

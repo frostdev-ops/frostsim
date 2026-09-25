@@ -415,8 +415,18 @@ async function postResults(app: AppCtx): Promise<void> {
   }
 }
 
+/** Discord's page for adding the bot to a server, with the installation defaults set on the application (guild install,
+ *  applications.commands and bot, Send Messages). The app links here, so the client needs no application id. */
+export function installUrl(config: Pick<Config, 'env'>): string {
+  return `https://discord.com/oauth2/authorize?client_id=${encodeURIComponent(config.env.DISCORD_APPLICATION_ID ?? '')}`;
+}
+
 export const routes: Route[] = [
   { method: 'POST', path: /^\/api\/v1\/discord\/interactions$/, feature: 'discord', auth: 'public', handler: interactions },
+  {
+    method: 'GET', path: /^\/api\/v1\/discord\/install$/, feature: 'discord', auth: 'public',
+    handler: (ctx) => new Response(null, { status: 302, headers: { location: installUrl(ctx.config) } }),
+  },
 ];
 
 export const tasks: Task[] = [{ name: 'discord-replies', feature: 'discord', everyMs: 3000, run: postResults }];

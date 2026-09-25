@@ -143,7 +143,10 @@
       <h2 id="guild-title">For your guild's Discord</h2>
       <p>Add the Frostsim bot and anyone in your server can type <code>/sim</code>. One shared pool of ≈ {sims(GUILD)} sims a month, for {money(GUILD.usd?.monthly)}/month.</p>
     </div>
-    <p class="small muted how">Run <code>/frostsim subscribe</code> in your server to start.</p>
+    <div class="how stack-sm">
+      <a class="button discord" href="/api/v1/discord/install">Add Frostsim to Discord</a>
+      <p class="small muted">Then run <code>/frostsim subscribe</code> in your server to start its pool.</p>
+    </div>
   </section>
 
   <section class="faq" aria-labelledby="faq-title">
@@ -216,7 +219,10 @@
   .guild h2 { margin: 0 0 var(--s1); font-size: 20px; }
   .guild p { margin: 0; }
   .guild .grow { flex: 1 1 18rem; }
-  .how { flex: 0 1 14rem; }
+  .how { flex: 0 1 16rem; }
+  .how p { margin: 0; }
+  .button.discord { justify-content: center; background: #5865f2; color: #fff; }
+  .button.discord:hover { filter: brightness(1.1); }
 
   .faq { display: grid; gap: var(--s2); max-width: 46rem; width: 100%; justify-self: center; }
   .faq h2 { font-size: 22px; margin: 0 0 var(--s2); text-align: center; }

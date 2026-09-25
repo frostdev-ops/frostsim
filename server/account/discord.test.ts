@@ -208,6 +208,14 @@ describe('interactions endpoint', () => {
   });
 });
 
+describe('install link', () => {
+  it('redirects to Discord\'s page for adding the bot to a server', async () => {
+    const res = await createApp(deps(null), routes)(new Request('https://sim.test/api/v1/discord/install'), '10.0.0.1');
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBe(`https://discord.com/oauth2/authorize?client_id=${APP_ID}`);
+  });
+});
+
 describe('/sim', () => {
   const sim = (options: unknown[], where?: object) => command('sim', options, where);
 
