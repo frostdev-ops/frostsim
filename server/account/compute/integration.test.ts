@@ -105,7 +105,9 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
   const handle = (a = app()) => createApp(a, [...clientRoutes, ...workerRoutes]);
 
   async function user(plan: { lookupKey: string; coreHours: number } | null = { lookupKey: 'compute_l_monthly', coreHours: 10 }, guildId: string | null = null) {
-    const [u] = await sql`insert into users (display_name) values ('T') returning id`;
+    // Comped threads stand in for a 32-thread plan (compute_l runs 16 while the Hetzner project cannot create 32 dedicated cores).
+    const wide = plan?.lookupKey === 'compute_l_monthly' ? 32 : null;
+    const [u] = await sql`insert into users (display_name, comp_max_threads) values ('T', ${wide}) returning id`;
     if (plan) {
       await sql`insert into subscriptions (stripe_subscription_id, user_id, status, current_period_start, current_period_end, items, guild_id)
         values (${`sub_${randomUUID()}`}, ${u.id}, 'active', ${PERIOD.start}, ${PERIOD.end},

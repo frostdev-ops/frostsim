@@ -70,14 +70,25 @@ quantity and `core_hours` from the Price metadata), `stripe_events` (idempotency
 ledger), `workers`, `cloud_characters` (the addon export text, not a parsed record), `shares`,
 `integration_grants`, `audit_log`.
 
-**C6 Entitlements.** Lookup keys: `compute_s_monthly`, `compute_m_monthly`, `compute_l_monthly` (8, 16, 32
-threads, hosted shares included), `slots_5_monthly` (5 slots per unit), `shares_plus_monthly`,
-`discord_guild_monthly` (a guild pool, 8 threads). Core-hours come from each Price's `core_hours` metadata, not from
-code. Admins can comp core-hours and threads; comped hours without comped threads run at 8.
-`entitlementsFor` is pure. Active statuses are `active`, `trialing`, `past_due`; a subscription stops granting 3
-days after its stored period ends (a missed renewal webhook), and an hourly task re-reads such rows from Stripe.
-Usage is `SUM(core_seconds)` over the current period; guild jobs count only against the guild. The free tier
-grants no compute, slots or hosted shares.
+**C6 Entitlements.** One plan table, `src/lib/account/plans.ts`, feeds the server catalog, the account dialog and
+`scripts/stripe-catalog.mjs`, which creates the Stripe Prices. Lookup keys are `<plan>_<term>`, with terms `monthly`,
+`semiannual` and `yearly`:
+
+| Plan | Core-hours a month | Threads | Monthly | 6 months | Yearly |
+| --- | --- | --- | --- | --- | --- |
+| `compute_s` | 10 (≈ 3,200 standard sims) | 8 | $3 | $16 | $29 |
+| `compute_m` | 25 (≈ 8,000) | 16 | $5 | $27 | $48 |
+| `compute_l` | 60 (≈ 19,000) | 16 (32 once the Hetzner project allows it) | $10 | $54 | $96 |
+| `discord_guild` (one Discord server's pool) | 40 (≈ 12,800) | 8 | $10 | $54 | $96 |
+| `slots_5` (5 slots per unit), `shares_plus` | - | - | set on Stripe | - | - |
+
+Compute plans include hosted shares. A Price's `core_hours` metadata overrides the table's hours, so a promotion needs no
+deploy. `entitlementsFor` is pure. Active statuses are `active`, `trialing`, `past_due`; a subscription stops granting 3
+days after its stored period ends (a missed renewal webhook), and an hourly task re-reads such rows from Stripe. Usage is
+`SUM(core_seconds)` over the current period, and 6-month and yearly periods are metered in monthly slices from their start
+(the day clamped to short months), so the allowance is monthly on every term. Guild jobs count only against the guild.
+Admins can comp core-hours and threads. The free tier grants no compute, slots or hosted shares. "Standard sim" is 4,000
+iterations of a typical profile, about 11.2 CPU seconds (Phase 0); the dialog shows allowances and remainders in it.
 
 **C7 Auth.** `__Host-fs_sid`: 32 random bytes, only its sha256 stored, `HttpOnly; Secure; SameSite=Lax; Path=/`,
 30 days. `__Host-fs_oauth`: an HMAC-signed state, PKCE verifier, mode and return path, same attributes, 10 minutes,

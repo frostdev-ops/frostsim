@@ -7,7 +7,7 @@ import { CATALOG, product } from './catalog';
 export interface SubscriptionItem {
   lookupKey: string;
   quantity: number;
-  /** From the Stripe Price metadata `core_hours`; absent means the item grants no hours. */
+  /** From the Stripe Price metadata `core_hours`, which overrides the catalog's hours per month; absent means the catalog's. */
   coreHours?: number;
 }
 
@@ -64,13 +64,29 @@ function live(sub: Subscription, now: Date): boolean {
   return ACTIVE_STATUSES.has(sub.status) && (!end || now.getTime() < end.getTime() + RENEWAL_GRACE_MS);
 }
 
+/** `date` plus `n` calendar months (UTC), the day clamped to the target month's last day, like Stripe's billing anchor. */
+function addMonths(date: Date, n: number): Date {
+  const y = date.getUTCFullYear(), m = date.getUTCMonth() + n;
+  const last = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+  return new Date(Date.UTC(y, m, Math.min(date.getUTCDate(), last), date.getUTCHours(), date.getUTCMinutes(), date.getUTCSeconds(), date.getUTCMilliseconds()));
+}
+
+/** Longer than this, a billing period (6 months, a year) is metered in monthly slices from its start, so the monthly allowance
+ *  resets every month instead of a year's hours being spendable at once. */
+const MONTH_MS = 32 * 86_400_000;
+
 /** The metering window: the stored period, or inside the renewal grace the next one of the same length (not the calendar month,
- *  which would hand out a fresh allowance mid-cycle). Null when neither contains now. */
+ *  which would hand out a fresh allowance mid-cycle); for long terms, the month of it that contains now. Null when none does. */
 function periodOf(sub: Subscription, now: Date): Period | null {
   const { currentPeriodStart: start, currentPeriodEnd: end } = sub;
   if (!start || !end) return null;
   const period = now < end ? { periodStart: start, periodEnd: end } : { periodStart: end, periodEnd: new Date(2 * end.getTime() - start.getTime()) };
-  return period.periodStart <= now && now < period.periodEnd ? period : null;
+  if (!(period.periodStart <= now && now < period.periodEnd)) return null;
+  if (period.periodEnd.getTime() - period.periodStart.getTime() <= MONTH_MS) return period;
+  let k = 0;
+  while (addMonths(period.periodStart, k + 1) <= now) k++;
+  const sliceEnd = addMonths(period.periodStart, k + 1);
+  return { periodStart: addMonths(period.periodStart, k), periodEnd: sliceEnd < period.periodEnd ? sliceEnd : period.periodEnd };
 }
 
 /** Comped hours without comped threads run at the smallest compute tier's width instead of 0 threads. */
@@ -92,7 +108,8 @@ export function entitlementsFor(subs: readonly Subscription[], comp: Comp, now: 
     for (const item of sub.items) {
       const p = product(item.lookupKey);
       if (!p) continue;
-      const seconds = (Number(item.coreHours) || 0) * 3600 * units(item.quantity);
+      const hours = Number(item.coreHours) > 0 ? Number(item.coreHours) : (p.coreHoursPerMonth ?? 0);
+      const seconds = hours * 3600 * units(item.quantity);
       if (sub.guildId) {
         if (p.kind !== 'guild') continue;
         const guild = guilds.get(sub.guildId)

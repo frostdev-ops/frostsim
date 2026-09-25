@@ -8,19 +8,16 @@
   import { fmtBytes, fmtDateTime } from '../format'
   import { api, AccountError } from './api'
   import { account, cloudDownload, go, guildOf, refresh, signedOut, startUrl, type Me } from './state.svelte'
+  import { PLANS, TERMS, approxSims, discountPercent, lookupKey, termsOf, type Plan, type Term } from './plans'
 
   interface Provider { id: string; label: string }
   interface CloudCharacter { id: string; label: string; bytes: number; updatedAt: string }
   interface Share { id: string; title: string; bytes: number | null; createdAt: string; expiresAt: string | null }
 
-  // Thread counts are the server catalog's (DESIGN.md C6). Prices and core-hours live on Stripe and show at checkout.
-  const PLANS: [string, string, string][] = [
-    ['compute_s_monthly', 'Compute S', 'Cloud runs on up to 8 threads, hosted links included'],
-    ['compute_m_monthly', 'Compute M', 'Cloud runs on up to 16 threads, hosted links included'],
-    ['compute_l_monthly', 'Compute L', 'Cloud runs on up to 32 threads, hosted links included'],
-    ['slots_5_monthly', 'Character slots', 'Five cloud character slots'],
-    ['shares_plus_monthly', 'Hosted links', 'Full-detail report links without cloud runs'],
-  ]
+  // The shared plan table (plans.ts, DESIGN.md C6) is what the server grants; Stripe checkout shows the price actually charged.
+  const SOLD = PLANS.filter((p) => p.kind !== 'guild')
+  const GUILD = PLANS.find((p) => p.kind === 'guild')!
+  let term = $state<Term>('monthly')
 
   let providers = $state<Provider[]>([])
   let cloud = $state<{ slots: number; characters: CloudCharacter[] } | null>(null)
@@ -38,7 +35,21 @@
   const when = (iso: string | null) => fmtDateTime(iso ? Date.parse(iso) : undefined)
   const providerLabel = (id: string) => providers.find((p) => p.id === id)?.label ?? id
   const guildId = $derived(account.guildToken ? guildOf(account.guildToken) : null)
-  const planName = (key: string) => PLANS.find((p) => p[0] === key)?.[1] ?? (key === 'discord_guild_monthly' ? 'Discord server' : key)
+  const planName = (key: string) => {
+    for (const p of PLANS) for (const t of termsOf(p)) if (lookupKey(p, t) === key) return t === 'monthly' ? p.title : `${p.title} (${TERMS[t].label.toLowerCase()})`
+    return key
+  }
+  /** The chosen term when the plan is sold on it, else monthly (slots and hosted links). */
+  const termFor = (p: Plan): Term => (termsOf(p).includes(term) ? term : 'monthly')
+  const offer = (p: Plan) => {
+    const t = termFor(p)
+    const price = p.usd?.[t]
+    const off = discountPercent(p, t)
+    return price === undefined ? 'Price at checkout' : `$${price} ${t === 'monthly' ? 'a month' : `per ${TERMS[t].months} months`}${off ? ` · save ${off}%` : ''}`
+  }
+  const allowance = (p: Plan) => p.coreHoursPerMonth
+    ? `${p.coreHoursPerMonth} core-hours a month (≈ ${approxSims(p.coreHoursPerMonth * 3600).toLocaleString()} standard sims) · up to ${p.maxThreads} threads`
+    : p.blurb
 
   // Opening the dialog always asks who is signed in: the marker can be missing (blocked or cleared storage) while the session works.
   $effect(() => {
@@ -141,6 +152,17 @@
   })
 </script>
 
+{#snippet terms()}
+  <div class="segmented" role="radiogroup" aria-label="Billing term">
+    {#each Object.entries(TERMS) as [value, spec] (value)}
+      <label>
+        <input type="radio" name="acct-term" {value} checked={term === value} onchange={() => (term = value as Term)} />
+        {spec.label}
+      </label>
+    {/each}
+  </div>
+{/snippet}
+
 <Dialog bind:open={account.open} title={me ? 'Account' : 'Sign in'} width="36rem" onclose={() => (account.open = false)}>
   <div class="stack">
     {#if account.notice}<p class="small err" role="alert">{account.notice}</p>{/if}
@@ -155,8 +177,10 @@
             Subscribes the Discord server with ID {guildId ?? 'unknown'} to its own pool of cloud runs, billed to you. The link works
             only for the Frostsim account linked to the Discord account that ran /frostsim subscribe.
           </p>
+          <p class="small">{allowance(GUILD)} · {offer(GUILD)}</p>
+          {@render terms()}
           <div class="row">
-            <button class="primary" disabled={!!busy} onclick={() => checkout('discord_guild_monthly', account.guildToken ?? undefined)}>Continue to checkout</button>
+            <button class="primary" disabled={!!busy} onclick={() => checkout(lookupKey(GUILD, termFor(GUILD)), account.guildToken ?? undefined)}>Continue to checkout</button>
             <button class="ghost" onclick={() => (account.guildToken = null)}>Not now</button>
           </div>
         {:else}
@@ -213,7 +237,8 @@
           {#if billing.entitlements.maxThreads >= 1}
             <p class="small">
               Cloud runs on up to {billing.entitlements.maxThreads} threads. {hours(billing.usage.usedCoreSeconds)} of
-              {hours(billing.entitlements.coreSeconds)} core-hours used this period, which ends {when(billing.usage.periodEnd)}.
+              {hours(billing.entitlements.coreSeconds)} core-hours used this period, which ends {when(billing.usage.periodEnd)}:
+              ≈ {approxSims(billing.entitlements.coreSeconds - billing.usage.usedCoreSeconds).toLocaleString()} standard sims left.
             </p>
           {:else}
             <p class="small">No cloud runs on this account. Simulations run in this browser.</p>
@@ -228,17 +253,18 @@
               {/each}
             </ul>
           {/if}
+          {@render terms()}
           <ul>
-            {#each PLANS as [key, title, blurb] (key)}
+            {#each SOLD as p (p.id)}
               <li class="spread">
-                <span><strong>{title}</strong> <span class="xs muted">{blurb}</span></span>
-                <button class="sm" disabled={!!busy} onclick={() => checkout(key)} aria-label="Subscribe to {title}">Subscribe</button>
+                <span><strong>{p.title}</strong> <span class="xs muted">{allowance(p)} · {offer(p)}</span></span>
+                <button class="sm" disabled={!!busy} onclick={() => checkout(lookupKey(p, termFor(p)))} aria-label="Subscribe to {p.title}">Subscribe</button>
               </li>
             {/each}
           </ul>
           <div class="row">
             <button class="sm" disabled={!!busy} onclick={portal}>Manage billing</button>
-            <span class="xs muted">Prices and included core-hours show at checkout.</span>
+            <span class="xs muted">A standard sim is 4,000 iterations of a typical profile; heavier specs and fights use more. Checkout shows the price charged.</span>
           </div>
         </section>
       {/if}
