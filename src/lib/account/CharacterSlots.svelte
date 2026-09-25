@@ -21,7 +21,8 @@
 
   const character = $derived(activeCharacter())
   const stored = $derived(activeStored())
-  const current = $derived(character ? ((app.draft ? '' : stored?.label) || character.name || 'Character').slice(0, 100) : '')
+  // The unsaved draft has no stored label (activeStored is null for it), so it saves under its character name.
+  const current = $derived(character ? (stored?.label || character.name || 'Character').slice(0, 100) : '')
   const used = $derived(cloud?.characters.length ?? 0)
   const unlimited = $derived((cloud?.slots ?? 0) >= UNLIMITED_SLOTS)
   const over = $derived(cloud && !unlimited ? Math.max(0, used - cloud.slots) : 0)

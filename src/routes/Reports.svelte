@@ -1,8 +1,7 @@
 <script lang="ts">
   // P11.2: local history; summaries from stored record; raw engine report read on demand only.
   import {
-    app, deleteReport, engineIdentity, exportEverything, loadRaw, restoreReport, toast,
-    updateReport,
+    app, deleteReport, engineIdentity, exportEverything, loadRaw, openDraft, restoreReport, toast, updateReport,
   } from '../lib/app.svelte'
   import { fmtBytes, fmtDateTime, fmtInt, fmtPct, fmtRelative, titleCase } from '../lib/format'
   import { href, navigate, router } from '../lib/router.svelte'
@@ -26,8 +25,7 @@
     if (!savedOutcome) return
     const request = savedOutcome.request
     const character = request.characterSnapshot ?? parseAddonExport(request.profile)
-    app.draft = character
-    app.activeCharacterId = null
+    openDraft(character, 'quick')
     quickSettings.restoreDefaults()
     quickSettings.apply({ ...request.settings, accuracyMode: request.accuracy.mode === 'targetError' ? 'targetError' : request.accuracy.mode === 'iterations' ? 'iterations' : 'script', ...request.accuracy })
     sendSetup({ characterId: null, label: detail?.title ?? 'Saved setup', items: Object.fromEntries(character.equipped.map(item => [item.slot, item])), talents: character.talents, extraProfileLines: request.extraProfileLines, settings: quickSettings.snapshot() })

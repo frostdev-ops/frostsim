@@ -19,7 +19,8 @@
   $effect(() => { if (pct !== undefined) void shownPct.set(pct, { duration: reducedMotion() ? 0 : 600 }) })
 
   // Who is fighting what: from the active character and the tool's own settings.
-  const character = $derived(activeCharacter())
+  // The running job's own character, not whichever one the current screen shows.
+  const character = $derived(app.job?.character ?? activeCharacter())
   const runTool = $derived(tool ?? app.job?.tool ?? 'quick')
   const toolSettings = $derived({ quick: quickSettings, compare: compareSettings, gear: gearSettings, droptimizer: dropSettings, crests: crestSettings, advanced: advancedSettings }[runTool] ?? quickSettings)
 </script>

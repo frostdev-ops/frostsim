@@ -185,9 +185,9 @@
    */
   let received = $state<string[]>([])
   $effect(() => {
-    const id = stored?.id ?? null
-    if (!id || !character) return
-    const items = takeHandoff('compare', id)
+    // A draft's handoffs carry a null id, like the draft itself.
+    if (!character) return
+    const items = takeHandoff('compare', stored?.id ?? null)
     if (!items.length) return
     for (const h of items) {
       addItem(h.slot, h.item, h.source)

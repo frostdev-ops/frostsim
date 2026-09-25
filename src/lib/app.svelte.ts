@@ -29,10 +29,19 @@ export const ACTIVE_STATUSES: JobStatus[] = [
   'validating', 'queued', 'acquiring', 'initializing', 'running', 'analyzing',
 ]
 
+/** Who a run or report is about, fixed when the run starts so switching characters mid-run cannot relabel it. */
+export interface RunCharacter {
+  id?: string
+  label: string
+  className?: string
+  spec?: string
+}
+
 export interface ActiveJob {
   id: string
   tool: ToolId
   title: string
+  character?: RunCharacter
   status: JobStatus
   startedAt: number
   /** Optimizer stage, distinct from iteration progress (P01.1). */
@@ -44,6 +53,23 @@ export interface Toast {
   id: string
   kind: 'info' | 'good' | 'bad'
   text: string
+}
+
+/** The unsaved character (app.draft) as a pick. */
+export const DRAFT = 'draft'
+/** Screens that keep their own character. */
+export const PICK_SCOPES = ['character', 'talents', 'quick', 'compare', 'gear', 'droptimizer', 'crests', 'advanced'] as const
+export type PickScope = (typeof PICK_SCOPES)[number]
+const PICKS_KEY = 'frostsim.picks'
+
+function readPicks(): { picks: Partial<Record<PickScope, string>>; lastPick: string | null } {
+  try {
+    const v = JSON.parse(localStorage.getItem(PICKS_KEY) ?? '{}')
+    const picks = Object.fromEntries(Object.entries(v?.picks ?? {}).filter(([k, id]) => (PICK_SCOPES as readonly string[]).includes(k) && typeof id === 'string' && id !== DRAFT))
+    return { picks, lastPick: typeof v?.lastPick === 'string' ? v.lastPick : null }
+  } catch {
+    return { picks: {}, lastPick: null }
+  }
 }
 
 export const app = $state({
@@ -62,15 +88,22 @@ export const app = $state({
   catalogError: '' as string,
   catalogWarnings: [] as CompatWarning[],
   catalogManifest: null as CatalogManifest | null,
-  /** Resolved gear for the active character, keyed by instanceId. */
+  /** Resolved gear for the focused character, keyed by instanceId (a per-character cache makes switching instant). */
   resolved: new Map<string, ResolvedItem>(),
   /** Instance ids the catalog could not resolve, so the UI can label them. */
   unresolvedItems: [] as string[],
 
   characters: [] as StoredCharacter[],
+  /** The focused character: the current screen's pick (pickFor), a stored id or DRAFT. Change it with pickCharacter. */
   activeCharacterId: null as string | null,
-  /** Set when a character is open but not yet saved (paste in progress). */
+  /** The unsaved character (an edited result, a report's snapshot), picked as DRAFT. */
   draft: null as ImportedCharacter | null,
+  /** `picks`: each screen's own character; a screen without one uses `lastPick`, the last stored character picked anywhere. */
+  ...readPicks(),
+  /** The screen whose pick is focused; null on screens without a character (Reports, Help). */
+  scope: null as PickScope | null,
+  /** Characters Quick Sim runs beside its own pick, in one multi-character sim (stored ids or DRAFT). */
+  quickExtras: [] as string[],
 
   reports: [] as StoredReport[],
   setups: [] as StoredSetup[],
@@ -96,9 +129,58 @@ export const app = $state({
 })
 
 export function activeCharacter(): ImportedCharacter | null {
-  if (app.draft) return app.draft
+  if (app.activeCharacterId === DRAFT) return app.draft
   const stored = app.characters.find((c) => c.id === app.activeCharacterId)
   return stored?.character ?? null
+}
+
+// --- picks: which character each screen works on ------------------------------
+
+function savePicks(): void {
+  // The draft is not saved, so a pick of it is not either.
+  const picks = Object.fromEntries(Object.entries(app.picks).filter(([, id]) => id !== DRAFT))
+  try {
+    localStorage.setItem(PICKS_KEY, JSON.stringify({ picks, lastPick: app.lastPick }))
+  } catch { /* Storage blocked: picks last for this page. */ }
+}
+
+const pickable = (id: string | null | undefined): id is string =>
+  !!id && (id === DRAFT ? !!app.draft : app.characters.some((c) => c.id === id))
+
+/** A screen's character: its own pick, else the last pick anywhere, else the newest character. Stale ids fall through. */
+export function pickFor(scope: PickScope | null): string | null {
+  const own = scope ? app.picks[scope] : undefined
+  if (pickable(own)) return own
+  if (pickable(app.lastPick)) return app.lastPick
+  return app.characters[0]?.id ?? null
+}
+
+/** Navigation: the focused character becomes the new screen's pick. */
+export function focusScope(scope: PickScope | null): void {
+  app.scope = scope
+  const id = pickFor(scope)
+  if (app.activeCharacterId !== id) app.activeCharacterId = id
+}
+
+/** A picker choice on one screen (the focused one by default). A stored character also becomes the default elsewhere. */
+export function pickCharacter(id: string, scope: PickScope | null = app.scope): void {
+  if (scope) app.picks[scope] = id
+  if (id !== DRAFT) app.lastPick = id
+  if (!scope || scope === app.scope) app.activeCharacterId = id
+  savePicks()
+}
+
+/** Opens an unsaved character on a screen: an edited result, or a saved report's own snapshot. */
+export function openDraft(character: ImportedCharacter, scope: PickScope): void {
+  app.draft = character
+  pickCharacter(DRAFT, scope)
+}
+
+/** Who the focused character is, for a run starting now. */
+export function runCharacter(): RunCharacter {
+  const stored = activeStored()
+  const c = activeCharacter()
+  return { id: stored?.id, label: stored?.label ?? c?.name ?? 'Unsaved character', className: c?.className, spec: c?.spec }
 }
 
 export function activeStored(): StoredCharacter | null {
@@ -182,9 +264,7 @@ export async function loadLibrary(): Promise<void> {
   if (setups.ok) app.setups = setups.value.sort((a, b) => b.updatedAt - a.updatedAt)
   else noteFailure(setups.failure)
 
-  if (!app.activeCharacterId && app.characters.length) {
-    app.activeCharacterId = (app.characters.find((c) => c.pinned) ?? app.characters[0]).id
-  }
+  app.activeCharacterId = pickFor(app.scope)
   await refreshUsage()
 }
 
@@ -354,6 +434,11 @@ export async function ensureCatalog(): Promise<SafeCatalog | null> {
   return loading
 }
 
+/** Resolutions of the last few characters, so switching between them is instant. Keyed by level and item instances. */
+const resolvedCache = new Map<string, { items: Map<string, ResolvedItem>; missing: string[] }>()
+const RESOLVED_CACHE_SIZE = 8
+let resolving = ''
+
 // Resolve all owned items once into app.resolved; rendering stays synchronous (one round trip, not per-row).
 export async function resolveCharacter(character: ImportedCharacter): Promise<void> {
   const c = catalogClient()
@@ -361,13 +446,25 @@ export async function resolveCharacter(character: ImportedCharacter): Promise<vo
   const instances: ItemInstance[] = [
     ...character.equipped, ...character.bag, ...(character.vault ?? []),
   ]
+  const key = `${character.level ?? 0}|${instances.map((i) => i.instanceId).join(',')}`
+  resolving = key
+  const hit = resolvedCache.get(key)
+  if (hit) {
+    app.resolved = hit.items
+    app.unresolvedItems = hit.missing
+    return
+  }
   try {
     const { items, missing } = await c.resolve(instances, character.level ?? 0)
+    resolvedCache.set(key, { items, missing })
+    if (resolvedCache.size > RESOLVED_CACHE_SIZE) resolvedCache.delete(resolvedCache.keys().next().value!)
+    // A newer switch wins: a slow resolve of the previous character must not overwrite it.
+    if (resolving !== key) return
     app.resolved = items
     app.unresolvedItems = missing
   } catch {
     // guard already reported it; items fall back to export labels marked "unverified".
-    app.resolved = new Map()
+    if (resolving === key) app.resolved = new Map()
   }
 }
 
@@ -428,8 +525,10 @@ export async function saveCharacter(
   const i = app.characters.findIndex((c) => c.id === id)
   if (i >= 0) app.characters[i] = record
   else app.characters.unshift(record)
-  app.activeCharacterId = id
-  app.draft = null
+  // A saved draft replaces the draft wherever it was picked.
+  if (app.activeCharacterId === DRAFT || !existing) app.draft = null
+  for (const scope of PICK_SCOPES) if (app.picks[scope] === DRAFT) app.picks[scope] = id
+  pickCharacter(id)
   resolveCharacter(character).catch(() => { /* reported in app state */ })
   void refreshUsage()
   return record
@@ -439,7 +538,10 @@ export async function deleteCharacter(id: string): Promise<void> {
   const out = await db.del('characters', id)
   if (!out.ok) noteFailure(out.failure)
   app.characters = app.characters.filter((c) => c.id !== id)
-  if (app.activeCharacterId === id) app.activeCharacterId = app.characters[0]?.id ?? null
+  for (const scope of PICK_SCOPES) if (app.picks[scope] === id) delete app.picks[scope]
+  if (app.lastPick === id) app.lastPick = null
+  savePicks()
+  if (app.activeCharacterId === id) app.activeCharacterId = pickFor(app.scope)
   // Delete selections; else deleted character's gear sits in storage and new char reusing ID inherits it.
   forgetCharacterSelections(id)
   void refreshUsage()
@@ -463,17 +565,19 @@ export interface SaveReportInput {
   requestSnapshot: unknown
   completion: StoredReport['completion']
   rawJson?: string
+  /** Who the run was about, taken when it started (runCharacter). Defaults to the focused character now. */
+  character?: RunCharacter
 }
 
 export async function saveReport(input: SaveReportInput): Promise<StoredReport> {
-  const character = activeStored()
+  const character = input.character ?? runCharacter()
   const id = newId()
   const record: StoredReport = plain({
     id,
     tool: input.tool,
     title: input.title,
-    characterId: character?.id,
-    characterLabel: character?.label ?? activeCharacter()?.name ?? 'Unsaved character',
+    characterId: character.id,
+    characterLabel: character.label,
     requestSnapshot: input.requestSnapshot,
     engine: engineIdentity() ?? {},
     completion: input.completion,
@@ -621,7 +725,7 @@ export async function saveSetup(tool: ToolId, label: string, settings: unknown):
     id: newId(),
     tool,
     label,
-    characterId: app.activeCharacterId ?? undefined,
+    characterId: activeStored()?.id,
     settings,
     createdAt: Date.now(),
     updatedAt: Date.now(),

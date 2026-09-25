@@ -1,5 +1,7 @@
 // Surface guard for the opt-in accounts and cloud compute work (CLAUDE.md D14, D15; PLAN P15): what existed stays as it was.
-// node scripts/check-surface.mjs [--dist <flag-off build>] [--base <merge-base build>]. Exits 1 on any violation.
+// node scripts/check-surface.mjs [--dist <flag-off build>] [--base <merge-base build>] [--allow-entry-growth]. Exits 1 on any violation.
+// --allow-entry-growth reports entry growth past the limit as a note: for a deliberate change to the core app, which CI passes
+// only on a pull request labelled entry-growth-ok. Every other check still fails.
 // Build both trees the same way, without the gitignored public/legal/ (it sets VITE_SITE_LEGAL and adds ~0.8 KB to the entry set).
 
 import { createHash } from 'node:crypto';
@@ -62,7 +64,7 @@ export function entryBytes(dist) {
   return { files, gzip: files.reduce((sum, f) => sum + gzipSync(readFileSync(join(dist, f)), { level: 9 }).length, 0) };
 }
 
-export function checkSurface({ root, dist, base }) {
+export function checkSurface({ root, dist, base, allowEntryGrowth = false }) {
   const failures = [];
   const notes = [];
   // deploy/ lives only in the maintainer's checkout; CI has none, so those checks run locally only.
@@ -115,8 +117,8 @@ export function checkSurface({ root, dist, base }) {
     const was = entryBytes(base);
     const growth = now.gzip - was.gzip;
     const line = `entry set gzip -9: ${now.gzip} B over ${now.files.length} files, base ${was.gzip} B, growth ${growth} B (limit ${ENTRY_GROWTH_LIMIT})`;
-    if (growth > ENTRY_GROWTH_LIMIT) failures.push(line);
-    else notes.push(line);
+    if (growth > ENTRY_GROWTH_LIMIT && !allowEntryGrowth) failures.push(line);
+    else notes.push(growth > ENTRY_GROWTH_LIMIT ? `${line}, allowed by --allow-entry-growth` : line);
   }
   return { failures, notes };
 }
@@ -128,7 +130,10 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   };
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   try {
-    const { failures, notes } = checkSurface({ root, dist: resolve(arg('--dist') ?? join(root, 'dist')), base: arg('--base') && resolve(arg('--base')) });
+    const { failures, notes } = checkSurface({
+      root, dist: resolve(arg('--dist') ?? join(root, 'dist')), base: arg('--base') && resolve(arg('--base')),
+      allowEntryGrowth: process.argv.includes('--allow-entry-growth'),
+    });
     for (const note of notes) console.log(`  ${note}`);
     for (const failure of failures) console.error(`FAIL ${failure}`);
     console.log(failures.length ? `surface check failed: ${failures.length} problem(s)` : 'surface check passed');

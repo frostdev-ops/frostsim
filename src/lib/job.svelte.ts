@@ -5,7 +5,7 @@ import {
   type JobEvent, type RunHandle, type SimOutcome, type SimRequest,
 } from './simc/client'
 import type { SimReport } from './simc/report'
-import { app, pollEngineSlot, saveReport, toast, type JobStatus } from './app.svelte'
+import { app, pollEngineSlot, runCharacter, saveReport, toast, type JobStatus } from './app.svelte'
 import { newId, type ReportSummary, type StoredReport, type ToolId } from './store/records'
 import { ProgressBuffer, type EngineProgress } from './ui/progress'
 
@@ -154,10 +154,13 @@ export async function startRun(opts: StartOptions): Promise<StartResult> {
   const jobId = newId()
   const request: SimRequest = { ...opts.request, jobId }
   run.request = request
+  // Fixed now: the user may switch characters while this runs.
+  const character = runCharacter()
   app.job = {
     id: jobId,
     tool: opts.tool,
     title: opts.title,
+    character,
     status: 'validating',
     startedAt: started,
   }
@@ -217,6 +220,7 @@ export async function startRun(opts: StartOptions): Promise<StartResult> {
       requestSnapshot: outcome.request,
       completion: outcome.profilesetStatus.missing.length ? 'partial' : 'complete',
       rawJson: await outcome.getRawJson().text(),
+      character,
     })
     run.savedReportId = record.id
     return { ok: true, outcome, report: record }
