@@ -302,10 +302,13 @@ async function realmSlugs(
   for (const r of realms) {
     if (typeof r?.slug !== 'string') continue;
     map.set(r.slug.toLowerCase(), r.slug);
-    if (typeof r?.name === 'string') {
-      map.set(normalizeRealmKey(r.name), r.slug);
+    // Without a locale the index sends each name as a map of every locale's spelling; any of them may be typed.
+    const names = typeof r?.name === 'string' ? [r.name] : Object.values(r?.name && typeof r.name === 'object' ? r.name : {});
+    for (const name of names) {
+      if (typeof name !== 'string') continue;
+      map.set(normalizeRealmKey(name), r.slug);
       // Typed without spaces or punctuation, as players often write it: "area52", "kelthuzad".
-      map.set(compactRealmKey(r.name), r.slug);
+      map.set(compactRealmKey(name), r.slug);
     }
   }
   realmSlugCache.set(region, map);

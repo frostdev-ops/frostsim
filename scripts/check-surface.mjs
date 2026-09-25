@@ -14,8 +14,8 @@ import { gzipSync } from 'node:zlib';
 // A deliberate change to one of these files updates its hash here in the same change.
 export const BASELINE = {
   'server/api-server.mjs': '37456479a8a7714a04c581ef3284222641eb1117bd37d17b5950542da4d852b5',
-  'functions/api/[[path]].ts': '299423d0323188032f9bf0da6acbf44e0a2b60659c2615197e123a8bd5cc81d2',
-  'functions/api/_lib/battlenet.test.ts': 'ccf0948c38feee90f2e6778f37fcb3e1e41475baad370db1e7904e90bb9d2abc',
+  'functions/api/[[path]].ts': 'e1990b36e6320c3c38266c000e6f3b7dcb8efedfacdfb95a2d358d4326163ad1',
+  'functions/api/_lib/battlenet.test.ts': '2ae996639b94b8442c5e4c219ecd9a3fb8dc845ea8691b653345a5f38801166a',
   'functions/api/_lib/security.ts': '9c8960a2b4284a09c577decf7fad6607a2ec5907ef95e3f50e6ce84e6da17f18',
   'functions/api/_lib/upstream.ts': 'aabe952a193f843a4d2773dea425393ad6c793a64d4daed34ef76465c6fe32ac',
   'deploy/systemd/frostsim-api.service': 'be69a3a4ea918cc56bd6b3ccf337b27a4d0248b2fa275818dc463926160036fd',

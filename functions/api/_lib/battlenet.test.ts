@@ -472,6 +472,8 @@ describe('character media', () => {
       { name: 'Azjol-Nerub', slug: 'azjolnerub' },
       { name: 'Grizzly Hills', slug: 'grizzly-hills' },
       { name: "Drak'Tharon", slug: 'draktharon' },
+      // What the index sends without a locale.
+      { name: { en_US: 'Area 52', de_DE: 'Area 52', ko_KR: '에어리어 52' }, slug: 'area-52' },
     ],
   };
 
@@ -663,6 +665,9 @@ describe('character media', () => {
     const missing = await call('/api/wow/character-profile/us/Grizzly%20Hills/Nobody');
     expect(missing.status).toBe(404);
     expect((await missing.json()).message).toMatch(/logged in recently/);
+    for (const typed of ['Area%2052', 'area52', '%EC%97%90%EC%96%B4%EB%A6%AC%EC%96%B4%2052']) {
+      expect((await call(`/api/wow/character-profile/us/${typed}/Nobody`)).status, typed).toBe(404);
+    }
     const realm = await call('/api/wow/character-profile/us/NotARealm/Armorytest');
     expect(realm.status).toBe(400);
     expect((await realm.json()).field).toBe('realm');
