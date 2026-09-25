@@ -1,4 +1,5 @@
-// "Run on" preference and the cloud engine registration (CLAUDE.md D14, DESIGN.md C9, C10). This browser is the default and the fallback.
+// "Run on" preference and the cloud engine registration (CLAUDE.md D14, DESIGN.md C9, C10). Someone with cloud runs uses them by
+// default; an explicit choice (either way) is kept. Without cloud runs, and whenever the cloud refuses, runs stay in this browser.
 
 import { setRemoteEngine } from '../simc/job'
 import { createRemoteEngine } from '../simc/remote'
@@ -6,24 +7,31 @@ import { createRemoteEngine } from '../simc/remote'
 const KEY = 'frostsim.placement'
 export type Placement = 'browser' | 'cloud'
 
-function read(): Placement {
+/** The user's own choice, or null when they never made one. */
+function read(): Placement | null {
   try {
-    return localStorage.getItem(KEY) === 'cloud' ? 'cloud' : 'browser'
+    const v = localStorage.getItem(KEY)
+    return v === 'cloud' || v === 'browser' ? v : null
   } catch {
-    return 'browser'
+    return null
   }
 }
 
-/** `entitled`: signed in and /billing grants compute. The Settings choice is shown only then. */
-export const placement = $state<{ value: Placement; entitled: boolean }>({ value: read(), entitled: false })
+let chosen = read()
 
-/** Registers the cloud engine only while the user chose it and is entitled; every other state runs in this browser. */
+/** `value`: the choice, or the default (cloud while entitled). `entitled`: signed in and /billing grants compute; the Run on
+ *  switch shows only then. */
+export const placement = $state<{ value: Placement; entitled: boolean }>({ value: chosen ?? 'browser', entitled: false })
+
+/** Registers the cloud engine only for cloud AND entitled; every other state runs in this browser. */
 export function applyPlacement(entitled = placement.entitled): void {
   placement.entitled = entitled
+  if (chosen === null) placement.value = entitled ? 'cloud' : 'browser'
   setRemoteEngine(placement.value === 'cloud' && entitled ? createRemoteEngine() : null)
 }
 
 export function setPlacement(value: Placement): void {
+  chosen = value
   placement.value = value
   try {
     localStorage.setItem(KEY, value)

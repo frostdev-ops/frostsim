@@ -9,6 +9,8 @@
   {#if app.characters.length || app.draft}
     <span class="xs muted label">Simulating</span>
     <CharacterPicker value={app.activeCharacterId} onpick={(id) => pickCharacter(id)} label="Character for this screen" />
+    <!-- Account builds: where runs go (Frostsim Cloud by default with a plan); compiled out otherwise. -->
+    {#if import.meta.env.VITE_FEATURE_ACCOUNTS === true}{#await import('../account/RunOn.svelte') then m}<m.default />{/await}{/if}
   {:else}
     <span class="small muted">No character yet.</span>
     <a class="small" href={href('character')}>Import one</a>

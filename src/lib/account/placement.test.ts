@@ -32,10 +32,27 @@ beforeEach(() => vi.clearAllMocks())
 afterEach(() => vi.unstubAllGlobals())
 
 describe('placement', () => {
-  it('defaults to this browser and reads a saved cloud choice', async () => {
+  it('defaults to this browser and reads a saved choice', async () => {
     expect((await load()).placement.value).toBe('browser')
     expect((await load({ 'frostsim.placement': 'cloud' })).placement.value).toBe('cloud')
     expect((await load({ 'frostsim.placement': 'server' })).placement.value).toBe('browser')
+  })
+
+  it('uses the cloud by default while entitled, until the user picks this browser', async () => {
+    const p = await load()
+    p.applyPlacement(true)
+    expect([p.placement.value, last()]).toEqual(['cloud', 'cloud-engine'])
+    p.applyPlacement(false)
+    expect([p.placement.value, last()]).toEqual(['browser', null])
+    p.applyPlacement(true)
+    p.setPlacement('browser')
+    expect(stored.get('frostsim.placement')).toBe('browser')
+    p.applyPlacement(true)
+    expect([p.placement.value, last()]).toEqual(['browser', null])
+    // A saved browser choice outlives a reload too.
+    const again = await load({ 'frostsim.placement': 'browser' })
+    again.applyPlacement(true)
+    expect([again.placement.value, last()]).toEqual(['browser', null])
   })
 
   it('survives blocked storage', async () => {
@@ -48,7 +65,7 @@ describe('placement', () => {
   })
 
   it('registers the cloud engine only for cloud AND entitled, and persists the choice', async () => {
-    const p = await load()
+    const p = await load({ 'frostsim.placement': 'browser' })
     p.applyPlacement(true)
     expect(last()).toBeNull()
     p.setPlacement('cloud')
