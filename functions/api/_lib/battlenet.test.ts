@@ -672,4 +672,57 @@ describe('character media', () => {
     expect(realm.status).toBe(400);
     expect((await realm.json()).field).toBe('realm');
   });
+
+  it('lists realms by display name, reading a locale map by its en_US spelling', async () => {
+    spyFetch();
+    const res = await call('/api/wow/realms?region=us');
+    expect(res.status).toBe(200);
+    expect((await res.json()).realms).toEqual([
+      { name: 'Area 52', slug: 'area-52' }, { name: 'Azjol-Nerub', slug: 'azjolnerub' },
+      { name: "Drak'Tharon", slug: 'draktharon' }, { name: 'Grizzly Hills', slug: 'grizzly-hills' },
+    ]);
+  });
+
+  it('searches the shared index as a name is typed, checks an exact name once the realm is known, and remembers a miss', async () => {
+    const seen: string[] = [];
+    const summary = (name: string) => ({ name, level: 90, equipped_item_level: 712, character_class: { id: 4 },
+      active_spec: { name: 'Subtlety' }, realm: { name: 'Grizzly Hills', slug: 'grizzly-hills' } });
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      seen.push(url);
+      if (url.includes('oauth.battle.net')) return new Response(JSON.stringify({ access_token: 't', expires_in: 3600 }));
+      if (url.includes('/data/wow/realm/index')) return new Response(JSON.stringify(REALMS));
+      const path = new URL(url).pathname;
+      if (path.endsWith('/grizzly-hills/searchme')) return new Response(JSON.stringify(summary('Searchme')));
+      if (path.endsWith('/grizzly-hills/lookedup')) return new Response(JSON.stringify(summary('Lookedup')));
+      if (path.endsWith('/lookedup/equipment')) return new Response(JSON.stringify({ equipped_items: [{ slot: { type: 'HEAD' }, item: { id: 5 } }] }));
+      if (path.endsWith('/lookedup/specializations')) return new Response('{}');
+      return new Response('{}', { status: 404 });
+    }));
+    const search = async (query: string) => {
+      const res = await call(`/api/wow/character-search?region=us&${query}`);
+      return { status: res.status, body: await res.json() };
+    };
+    const profiles = () => seen.filter((u) => u.includes('/profile/wow/character/')).length;
+
+    const exact = await search('q=Searchme&realm=Grizzly%20Hills');
+    expect(exact.body.matches).toEqual([expect.objectContaining({ name: 'Searchme', realm: 'Grizzly Hills', className: 'rogue', itemLevel: 712 })]);
+    expect(profiles()).toBe(1);
+
+    // Anyone typing a prefix now finds it, in any realm of the region, without asking Blizzard.
+    expect((await search('q=sea')).body.matches.map((m: { name: string }) => m.name)).toEqual(['Searchme']);
+    expect(profiles()).toBe(1);
+
+    // A lookup indexes the character too.
+    expect((await call('/api/wow/character-profile/us/grizzlyhills/Lookedup')).status).toBe(200);
+    expect((await search('q=looked')).body.matches.map((m: { name: string }) => m.name)).toEqual(['Lookedup']);
+
+    const before = profiles();
+    expect((await search('q=Nobodyhere&realm=grizzly-hills')).body.matches).toEqual([]);
+    expect((await search('q=Nobodyhere&realm=grizzly-hills')).body.matches).toEqual([]);
+    expect(profiles()).toBe(before + 1);
+
+    expect((await search('q=a')).status).toBe(400);
+    expect((await search('q=two%20words')).status).toBe(400);
+  });
 });

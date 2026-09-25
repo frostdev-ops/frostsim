@@ -10,15 +10,17 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 
-// sha256 at e384736; the three functions/api files since the Armory lookup (character-profile). deploy/ is excluded from git (.git/info/exclude), so `git diff` cannot guard it and a hash must.
+// sha256 at e384736; functions/api, api-server.mjs and the api unit since the Armory lookup and character search. deploy/ is excluded from git (.git/info/exclude), so `git diff` cannot guard it and a hash must.
 // A deliberate change to one of these files updates its hash here in the same change.
 export const BASELINE = {
-  'server/api-server.mjs': '37456479a8a7714a04c581ef3284222641eb1117bd37d17b5950542da4d852b5',
-  'functions/api/[[path]].ts': 'e1990b36e6320c3c38266c000e6f3b7dcb8efedfacdfb95a2d358d4326163ad1',
-  'functions/api/_lib/battlenet.test.ts': '2ae996639b94b8442c5e4c219ecd9a3fb8dc845ea8691b653345a5f38801166a',
+  'server/api-server.mjs': 'd777c0cead6ca4e4eb8fe48ed87c16b78ec0d784373d20346fb9f79eae6d79c8',
+  'functions/api/[[path]].ts': '659bd19a819c60bf4238769a7401c690fe533d93e083cf96718dd8c8a9d62e0e',
+  'functions/api/_lib/battlenet.test.ts': 'b760372451dd1c74f069e18996c73afe584f780e36a20ed0780bab9abd7ebaae',
+  'functions/api/_lib/character-index.test.ts': 'e47c7e0bb06ef5f31b257217e91ea27cd2266fcf1fe4ab3f8820ca9c23c9e497',
+  'functions/api/_lib/character-index.ts': '934b37d825c58cd171fc7366261b16d6474dc17473886918ea030ba6675774ce',
   'functions/api/_lib/security.ts': '9c8960a2b4284a09c577decf7fad6607a2ec5907ef95e3f50e6ce84e6da17f18',
   'functions/api/_lib/upstream.ts': 'aabe952a193f843a4d2773dea425393ad6c793a64d4daed34ef76465c6fe32ac',
-  'deploy/systemd/frostsim-api.service': 'be69a3a4ea918cc56bd6b3ccf337b27a4d0248b2fa275818dc463926160036fd',
+  'deploy/systemd/frostsim-api.service': 'cc8e21197aefe829be407090611f0916e64c9edafaa7ff0f4f8b8ed53802eb01',
   'public/sw.js': 'c061965cf053074ade63e8b8469a1d96e3a237e246658fb5513b4ea1502cfedd',
   // Hashed with the account-server block stripped: that block is the only change the vhost may gain.
   'deploy/nginx/sim.frostdev.io.conf': 'c153d21582238dd64c4806d1489991b441345d72bb7835c3920eab38981c36f0',
