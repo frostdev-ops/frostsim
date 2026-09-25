@@ -59,14 +59,15 @@ export async function refresh(): Promise<void> {
   setMarker(true)
   // Billing may be switched off on the server (404 feature-off); the account works without it.
   account.billing = await api<Billing>('/billing').catch(() => null)
-  applyPlacement(computeEntitled())
+  // Hybrid runs are Avalanche's; their cloud side runs at the plan's width.
+  applyPlacement(computeEntitled(), currentPlans(account.billing).has('compute_l') ? account.billing!.entitlements.maxThreads : 0)
 }
 
 export function signedOut(): void {
   setMarker(false)
   account.me = null
   account.billing = null
-  applyPlacement(false)
+  applyPlacement(false, 0)
 }
 
 /** Plan ids of live personal subscriptions. A subscriber changes plan in the billing portal, not with a second checkout. */

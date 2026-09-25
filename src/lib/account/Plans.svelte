@@ -122,6 +122,7 @@
             <li><Check size={16} />{p.maxThreads}-core cloud runs</li>
             <li><Check size={16} />{(p.extraSlots ?? 0) >= UNLIMITED_SLOTS ? 'Unlimited' : FREE_SLOTS + (p.extraSlots ?? 0)} character slots with history</li>
             <li><Check size={16} />Patch re-sims of every slot</li>
+            {#if p.id === 'compute_l'}<li><Check size={16} />Hybrid runs: your PC and the cloud on one sim</li>{/if}
             <li><Check size={16} />Report links</li>
             <li><Check size={16} />Browser sims stay unlimited</li>
           </ul>
@@ -154,6 +155,7 @@
     <details><summary>Do I need a plan to use Frostsim?</summary><p>No. Every tool is free and runs in your browser. A plan adds cloud runs, more character slots and report links.</p></details>
     <details><summary>What happens when I run out of cloud sims?</summary><p>Your sims run in your browser again, like on the free plan, until your allowance resets next month.</p></details>
     <details><summary>What are patch re-sims?</summary><p>When a new game build reaches Frostsim, we sim each of your slotted characters once on a Patchwerk dummy and add the result to its DPS history. Each re-sim uses a little of your cloud allowance.</p></details>
+    <details><summary>What are hybrid runs?</summary><p>With Avalanche, a run with many candidates (Top Gear, Droptimizer, compares) splits between your PC and a cloud server at once, then comes back as one report. Only the cloud share uses your allowance.</p></details>
     <details><summary>What if I switch to a smaller plan?</summary><p>Your saved characters stay. You can load, overwrite or clear them, and save new ones once you are back within your slots.</p></details>
     <details><summary>Can I cancel?</summary><p>Yes, any time, from Manage billing in your account.</p></details>
     <details><summary>Is it open source?</summary><p>Yes. Frostsim, the cloud server and the cloud workers are GPL-3.0. <a href={SOURCE_URL} target="_blank" rel="noopener noreferrer">Read the code</a>.</p></details>

@@ -35,6 +35,8 @@ export interface RemoteOptions {
   pollMs?: number
   /** Longest wait for a cloud server to claim the job, first time or after a requeue, before running here instead. */
   queueGiveUpMs?: number
+  /** The browser engine a declined run replays on; hybrid.ts passes one that waits for its own local share to finish. */
+  replayWorker?: (variant: EngineVariant, engineDir?: string) => Worker
 }
 
 interface JobView {
@@ -55,6 +57,7 @@ export function createRemoteEngine(options: RemoteOptions = {}): RemoteEngine {
     fetch: options.fetch ?? fetch,
     pollMs: options.pollMs ?? 1000,
     queueGiveUpMs: options.queueGiveUpMs ?? 150_000,
+    replayWorker: options.replayWorker ?? ((variant: EngineVariant, dir?: string) => new Worker(engineWorkerUrl(variant, dir))),
   }
   return (req, engineDir) => {
     const packId = PACK_DIR.exec(engineDir)?.[1]
@@ -275,7 +278,7 @@ class CloudWorker {
     this.post({ type: 'replaying' })
     let local: Worker | undefined
     try {
-      local = new Worker(engineWorkerUrl(this.variant, this.engineDir))
+      local = this.opts.replayWorker(this.variant, this.engineDir)
       // Handlers are read at dispatch time: the controller swaps onmessage while it reaps.
       local.onmessage = (e) => this.onmessage?.(e)
       local.onerror = (e) => this.onerror?.(e)
