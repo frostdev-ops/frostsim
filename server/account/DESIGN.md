@@ -202,7 +202,7 @@ row only. GET `jobs` takes `days` (1-30, default 1) and `limit` (1-100, default 
 talents, gear, buffed stats, top 15 abilities and buffs, resource overflow and measured stat weights), read from the stored
 result: 409 `not-done` until the job is done, 410 `expired` once R2's one-day lifecycle has removed it. `/resolve` adds each
 slot's `name`, `class`, `spec`, `realm`, `region` (from `who`) and `itemLevel` (latest snapshot) where recorded. Loothing
-stores only job ids and summaries; storing detail is undecided.
+may store its own copy of the summaries and detail of jobs it started (allowed by the operator 2026-09-25).
 
 **P4 Sign-in landing.** The callback redirects to `/?account=<code>#<return>` (`signed-in`, `linked`,
 `error-<reason>`). The UI shows the message only when `/me` agrees with it and strips the parameter. Stripe
