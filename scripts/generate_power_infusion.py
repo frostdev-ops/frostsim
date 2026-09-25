@@ -70,8 +70,6 @@ PI_TIMED = 'external_buffs.power_infusion=0/120/240/360'
 # sc_hunter.cpp:9011 (default on), sc_rogue.cpp:11308 (default off). No generic equivalent
 # exists: simc cannot make an arbitrary APL ignore extra targets.
 FUNNEL_TOGGLES = ['max_prio_damage', 'priority_rotation']
-# Second-row AoE talent builds for specs whose upstream profile is a single-target build.
-AOE_BUILDS = json.loads((ROOT / 'scripts/pi-aoe-builds.json').read_text())['builds']
 # Buffs the drawer draws as bands over the damage timeline.
 BANDS = ('power_infusion', 'bloodlust')
 
@@ -105,20 +103,13 @@ def pick_profiles(files: list[tuple[str, str]]) -> list[dict]:
             'profile': s['profile'],
             'piTiming': 'apl' if 'invoke_external_buff,name=power_infusion' in text else 'cooldown',
             'funnel': next((t for t in FUNNEL_TOGGLES if re.search(rf'\b{t}\b', text)), None),
-            'aoe': s['profile'] in AOE_BUILDS,
         })
     return out
 
 
-PAIRS = {'base': ('base', 'pi'), 'funnel': ('funnel', 'funnelPi'), 'aoe': ('aoe', 'aoePi')}
-
-
-def variants(spec: dict, targets: int, only: tuple = tuple(PAIRS)) -> list[str]:
-    """base and pi always; above one target, funnel specs add their funnel-on pair and AoE-build specs their AoE pair.
-    only: the pairs to run (--variants), for a partial run merged into earlier ones."""
-    multi = targets > 1
-    have = ['base'] + (['funnel'] if spec['funnel'] and multi else []) + (['aoe'] if spec.get('aoe') and multi else [])
-    return [v for pair in have if pair in only for v in PAIRS[pair]]
+def variants(spec: dict, targets: int) -> list[str]:
+    """base and pi always; funnel specs add their funnel-on pair above one target."""
+    return ['base', 'pi'] + (['funnel', 'funnelPi'] if spec['funnel'] and targets > 1 else [])
 
 
 def run_args(spec: dict, targets: int, variant: str, *, target_error: float, threads: int,
@@ -129,10 +120,7 @@ def run_args(spec: dict, targets: int, variant: str, *, target_error: float, thr
     # Explicit off, so a default-on toggle (hunters) still gets a spread baseline.
     if toggle:
         args.append(f"{toggle}={1 if variant in ('funnel', 'funnelPi') else 0}")
-    if variant in ('aoe', 'aoePi'):
-        build = AOE_BUILDS[spec['profile']]['3' if targets < 5 else '5']
-        args += [f'{k}={v}' for k, v in build.items()]  # after the profile, so they replace its lines
-    if variant in ('pi', 'funnelPi', 'aoePi'):
+    if variant in ('pi', 'funnelPi'):
         args.append(PI_POOL if spec['piTiming'] == 'apl' else PI_TIMED)
     return args + [
         f'fight_style={FIGHT_STYLE}',
@@ -502,8 +490,7 @@ class System:
 
 COLOR = 'NO_COLOR' not in os.environ
 TRACK = '38;5;237'  # empty bar cells
-VARIANT_LABEL = {'base': 'no PI', 'pi': 'PI', 'funnel': 'funnel', 'funnelPi': 'funnel + PI',
-                 'aoe': 'AoE build', 'aoePi': 'AoE build + PI'}
+VARIANT_LABEL = {'base': 'no PI', 'pi': 'PI', 'funnel': 'funnel', 'funnelPi': 'funnel + PI'}
 
 
 def clock(secs: float) -> str:
@@ -787,16 +774,9 @@ def main() -> None:
     ap.add_argument('--tier', default='MID2', help='profiles/<tier> directory in vendor/simc')
     ap.add_argument('--specs', default='', help='comma-separated display names, for partial runs')
     ap.add_argument('--out', type=Path, default=OUT, help='output JSON (default: the file the app bundles)')
-    ap.add_argument('--variants', default=','.join(PAIRS),
-                    help=f'comma-separated pairs to run ({", ".join(PAIRS)}); a partial run needs --out and a merge')
     ap.add_argument('--plain', action='store_true', help='one line per sim instead of the live dashboard')
     opts = ap.parse_args()
     out = opts.out.resolve()
-    only = tuple(v.strip() for v in opts.variants.split(',') if v.strip())
-    if not only or set(only) - set(PAIRS):
-        sys.exit(f'--variants takes {", ".join(PAIRS)}')
-    if set(only) != set(PAIRS) and out == OUT.resolve():
-        sys.exit('a --variants run is partial: write it with --out pi-runs/<name>/power-infusion.json and merge it in')
     if hasattr(sys.stdout, 'reconfigure'):
         try:
             sys.stdout.reconfigure(encoding='utf-8')
@@ -897,7 +877,7 @@ def main() -> None:
         runs, details = [], []
         for n in TARGETS:
             run, detail = {'targets': n}, {'targets': n}
-            for v in variants(spec, n, only):
+            for v in variants(spec, n):
                 run[v], detail[v] = results[(n, v)]
             runs.append(run)
             details.append(detail)
@@ -906,7 +886,7 @@ def main() -> None:
             done[spec['name']] = dict(spec, runs=runs)
         save()
 
-    tasks = [Task(s, n, v) for s in queue for n in TARGETS for v in variants(s, n, only)]
+    tasks = [Task(s, n, v) for s in queue for n in TARGETS for v in variants(s, n)]
     runner = Runner(tasks, run_one, on_spec, opts.jobs, max_jobs=pool).start()
     system = System()
     plain = opts.plain or not sys.stdout.isatty() or os.environ.get('TERM') == 'dumb'
