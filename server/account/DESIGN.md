@@ -28,7 +28,7 @@ Code comments cite this file as `DESIGN.md <id>`: `A` architecture, `C` contract
 | A4 | Dependencies: `postgres`, `aws4fetch`, `ioredis`. Stripe, Hetzner, OAuth and Discord use `fetch`; HMAC and Ed25519 use `node:crypto`. |
 | A5 | Redis is a cache, never the record: sessions (5 min), rate-limit windows, single-use OAuth states (10 min), job progress lines (the last 500, 1 h), native-build lookups (10 min, 1 min for a miss) and Discord reply tokens (15 min). Every key has a TTL and the `frostsim:` prefix. Without Redis, sessions read Postgres, rate limits fail open, progress lines are dropped and a Discord `/sim` is cancelled because its result could not be posted. |
 | A6 | Job progress reaches the browser by polling about once a second. No SSE. |
-| A7 | One job runs on one worker, at the plan's width capped by the configured server type's cores (`HCLOUD_SERVER_TYPE`; CCX53 for 32 threads, CCX43 for 16). Jobs are not split across servers. A Hetzner project's dedicated-core limit bounds both the type and `WORKER_MAX`: set `WORKER_MAX` to at most limit ÷ cores. |
+| A7 | One job runs on one worker, at the plan's width capped by the configured server type's cores (`HCLOUD_SERVER_TYPE`, default CPX62: 16 shared AMD vCPU at €0.245/h, which measured faster than dedicated CCX33 and CCX43 per run; CCX53 once the project may create 32 dedicated cores). Jobs are not split across servers. A Hetzner project's dedicated-core limit bounds both the type and `WORKER_MAX`: set `WORKER_MAX` to at most limit ÷ cores. |
 | A8 | The Discord bot is an HTTP interactions endpoint inside the account server. No gateway process. |
 | A9 | OAuth provider tokens are never stored, only `(provider, subject, display_name)`. |
 
@@ -94,8 +94,10 @@ no allowance, 403 suspended (or not an admin under `ADMIN_ONLY`), 409 no native 
 submits a minute or 3 jobs already queued per user or guild, 503 disabled, unconfigured or no capacity. One job per
 user or guild runs at a time; claims skip a scope with a running job. The allowance is checked again at claim. A queued job
 fails after 15 minutes without a claim while nothing else of its user or guild runs. A job whose worker stops renewing its lease is requeued once, unmetered.
-Metering is threads × the worker's wall seconds, clamped to the coordinator's claim-to-complete time; a cancel or
-failure while running is metered claim-to-then, capped at 1800 s. The request and assembled run are kept 7 days,
+Metering is the CPU seconds systemd accounted to the job (the worker reports them from `systemd-run --wait`), capped at
+threads × the worker's wall seconds clamped to the coordinator's claim-to-complete time; on shared vCPUs a busy neighbour
+lengthens the wall time, not the CPU time. An agent that reports no CPU time is metered at the cap. A cancel or failure
+while running is metered threads × claim-to-then, capped at 1800 s. The request and assembled run are kept 7 days,
 then only the ledger columns remain. Native simc is built per engine pack by `scripts/update-engines.mjs`
 from the pack's own source, so native and wasm are the same revision.
 
@@ -125,7 +127,7 @@ resubscribe first.
 - `POST /api/v1/worker/claim { freeCores, agentVersion }` long-polls up to 25 s. It returns `{ jobId, threads, profile, args, engine: { url, sha256 }, resultPut: { url }, leaseSeconds }` or 204.
   Presigned URLs last 4200 s. Nothing in a claim identifies the user.
 - `POST /api/v1/worker/jobs/:id/progress { lines }` (at most 200) extends the 60 s lease and answers `{ cancel }`.
-- `POST .../complete { wallSeconds, summary, notices? }` and `POST .../fail { error, notices? }`. `notices` is at
+- `POST .../complete { wallSeconds, cpuSeconds?, summary, notices? }` and `POST .../fail { error, notices? }`. `notices` is at
   most 200 lines of simc's stderr, 500 characters each. A worker that no longer holds the job gets 409.
 - Servers boot from a snapshot with `frostsim-worker.service` disabled; cloud-init writes
   `/etc/frostsim/worker.env` (coordinator URL and token) and enables it. simc runs under `systemd-run` as a

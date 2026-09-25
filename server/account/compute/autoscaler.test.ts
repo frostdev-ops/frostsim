@@ -113,8 +113,8 @@ describe('userData', () => {
 
 describe('fleetLimits', () => {
   const env = { HCLOUD_TOKEN: 't', HCLOUD_LOCATION: 'fsn1', HCLOUD_SNAPSHOT_ID: '42', WORKER_MAX: '2', WORKER_MONTHLY_EUR_CAP: '50' };
-  it('needs every HCLOUD value and both caps; the server type defaults to ccx53', () => {
-    expect(fleetLimits(loadConfig(env))).toEqual({ token: 't', location: 'fsn1', snapshot: '42', serverType: 'ccx53', max: 2, capEur: 50 });
+  it('needs every HCLOUD value and both caps; the server type defaults to cpx62', () => {
+    expect(fleetLimits(loadConfig(env))).toEqual({ token: 't', location: 'fsn1', snapshot: '42', serverType: 'cpx62', max: 2, capEur: 50 });
     expect(fleetLimits(loadConfig({ ...env, WORKER_MAX: '' }))).toBeNull();
     expect(fleetLimits(loadConfig({ ...env, WORKER_MONTHLY_EUR_CAP: '0' }))).toBeNull();
     expect(fleetLimits(loadConfig({ ...env, HCLOUD_SNAPSHOT_ID: '' }))).toBeNull();

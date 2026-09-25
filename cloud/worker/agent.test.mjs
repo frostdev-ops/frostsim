@@ -7,7 +7,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gunzipSync, zstdCompressSync } from 'node:zlib';
-import { JOB_DIR, backoff, mapArgs, parseEnv, pushLines, readReport, sandboxArgv, serve, summarize, takeBatch } from './agent.mjs';
+import { JOB_DIR, backoff, cpuSeconds, mapArgs, parseEnv, pushLines, readReport, sandboxArgv, serve, simcNotices, summarize, takeBatch } from './agent.mjs';
 
 const ARGS = ['/profile.simc', 'fight_style=Patchwerk', 'max_time=300', 'iterations=1000', 'threads=2', 'progressbar_type=1', 'json=/out.json,version=2'];
 
@@ -72,11 +72,35 @@ describe('backoff and env', () => {
   });
 });
 
+describe('cpuSeconds and simcNotices', () => {
+  // The summary systemd-run --wait printed on a CPX62 (Ubuntu 24.04, systemd 255), 2026-09-25.
+  const SUMMARY = ['Running as unit: frostsim-job-j1.service; invocation ID: 0f1e', 'Warning: a simc notice',
+    'Finished with result: success', 'Main processes terminated with: code=exited/status=0', 'Service runtime: 798ms',
+    'CPU time consumed: 11.249s', 'Memory peak: 15.8M', 'Memory swap peak: 0B'];
+
+  it('reads the CPU time systemd accounted, in any timespan form, and nothing else', () => {
+    expect(cpuSeconds(SUMMARY)).toBeCloseTo(11.249, 6);
+    expect(cpuSeconds(['CPU time consumed: 1min 3.5s'])).toBeCloseTo(63.5, 6);
+    expect(cpuSeconds(['CPU time consumed: 1h 2min 750ms'])).toBeCloseTo(3720.75, 6);
+    expect(cpuSeconds(['CPU time consumed: 850us'])).toBeCloseTo(0.00085, 9);
+    expect(cpuSeconds(['Warning: a simc notice'])).toBeNull();
+    expect(cpuSeconds(['CPU time consumed: n/a'])).toBeNull();
+  });
+
+  it('takes the last summary line, so a line simc echoed from profile text cannot lower the bill', () => {
+    expect(cpuSeconds(['CPU time consumed: 0.001s', ...SUMMARY])).toBeCloseTo(11.249, 6);
+  });
+
+  it('forwards simc stderr only', () => {
+    expect(simcNotices(SUMMARY)).toEqual(['Warning: a simc notice']);
+  });
+});
+
 describe('sandboxArgv', () => {
   it('runs simc in the empty root with the contract properties, sized to the job', () => {
     const argv = sandboxArgv({ unit: 'frostsim-job-j1', binary: '/var/cache/frostsim/engines/abc/simc', hostDir: '/var/lib/frostsim-worker/jobs/j1',
       args: ['/job/profile.simc', 'threads=4'], threads: 4, memoryMax: 8_000_000_000 });
-    expect(argv.slice(0, 5)).toEqual(['--quiet', '--wait', '--collect', '--pipe', '--unit=frostsim-job-j1']);
+    expect(argv.slice(0, 6)).toEqual(['--wait', '--collect', '--pipe', '--unit=frostsim-job-j1', '-p', 'CPUAccounting=yes']);
     const props = argv.filter((_, i) => argv[i - 1] === '-p');
     for (const prop of ['DynamicUser=yes', 'PrivateNetwork=yes', 'ProtectSystem=strict', 'ProtectHome=yes', 'PrivateTmp=yes',
       'NoNewPrivileges=yes', 'MemoryMax=8000000000', 'RuntimeMaxSec=1800', 'CPUQuota=400%', 'RootDirectory=/var/lib/frostsim-worker/root',
@@ -126,6 +150,7 @@ else {
     fs.writeFileSync(out, JSON.stringify({ sim: { options: { iterations: 1000, confidence_estimator: 1.96 },
       players: [{ collected_data: { dps: { mean: 1234.5, mean_std_dev: 10 } } }] } }));
     console.log('done');
+    if (text.includes('MODE=cpu')) process.stderr.write('Service runtime: 20ms\\nCPU time consumed: 1.5s\\nMemory peak: 1M\\n');
   }, text.includes('MODE=slow') ? 300 : 0);
 }
 `;
@@ -235,6 +260,14 @@ describe('serve against a fake coordinator', { timeout: SERVE_TIMEOUT_MS }, () =
     expect(record.engineGets).toBe(1);
     expect(existsSync(join(tmp, 'engines', engineSha, 'simc'))).toBe(true);
     expect(record.unauthorized).toBe(0);
+  });
+
+  it('reports the CPU time systemd accounted and keeps systemd lines out of the notices', async () => {
+    push(job('cpu-1', 'MODE=cpu\n'));
+    await withAgent(() => until(() => logged('cpu-1', 'done')));
+    const { cpuSeconds: cpu, notices } = record.complete.get('cpu-1');
+    expect(cpu).toBeCloseTo(1.5, 6);
+    expect(notices).toEqual(['Warning: fake notice']);
   });
 
   it('forwards only the last 200 stderr lines, each cut to 500 characters', async () => {

@@ -313,9 +313,11 @@ export interface Summary { dps?: number; dpsError?: number; iterations?: number 
  *  and the account export reports only its size, while the summary is kept in the ledger for good and exported whole. */
 const noticesJson = (app: App, notices: readonly string[]) => app.sql.json({ notices: [...notices] });
 
-/** Marks done and meters threads x min(worker wall, coordinator claim->complete) (DESIGN.md C8). 'missing' fails the job: no result object. */
+/** Marks done and meters the job's CPU seconds, capped at threads x min(worker wall, coordinator claim->complete) (DESIGN.md C8):
+ *  on shared vCPUs a busy neighbour lengthens the wall time, not the CPU time. Without cpuSeconds (older agents), the cap itself.
+ *  'missing' fails the job: no result object. */
 export async function completeJob(
-  app: App, workerId: string, id: string, wallSeconds: number, summary: Summary, notices: readonly string[] = [],
+  app: App, workerId: string, id: string, wallSeconds: number, summary: Summary, notices: readonly string[] = [], cpuSeconds?: number,
 ): Promise<'ok' | 'lost' | 'missing'> {
   const [job] = await app.sql`select threads, claimed_at from compute_jobs where id = ${id} and worker_id = ${workerId} and status = 'running'`;
   if (!job) return 'lost';
@@ -329,8 +331,10 @@ export async function completeJob(
     return 'missing';
   }
   const wall = Math.max(0, Math.min(wallSeconds, (now.getTime() - job.claimed_at.getTime()) / 1000));
+  const allocated = job.threads * wall;
+  const core = cpuSeconds === undefined ? allocated : Math.min(Math.max(0, cpuSeconds), allocated);
   const done = await app.sql`update compute_jobs set status = 'done', finished_at = ${now}, lease_until = null,
-      wall_seconds = ${wall}, core_seconds = ${job.threads * wall}, summary = ${app.sql.json(summary as postgres.JSONValue)},
+      wall_seconds = ${wall}, core_seconds = ${core}, summary = ${app.sql.json(summary as postgres.JSONValue)},
       payload = payload || ${noticesJson(app, notices)}
     where id = ${id} and worker_id = ${workerId} and status = 'running' returning id`;
   return done.length ? 'ok' : 'lost';

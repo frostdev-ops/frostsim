@@ -112,7 +112,8 @@ export function sandboxArgv({ unit, binary, hostDir, args, threads, memoryMax })
     // (PrivateTmp=disconnected, systemd 257+) closes it if a disk-filling job ever matters on these short-lived workers.
     'LimitFSIZE=1G',
   ];
-  return ['--quiet', '--wait', '--collect', '--pipe', `--unit=${unit}`, ...props.flatMap((prop) => ['-p', prop]), binary, ...args];
+  // Not --quiet: after the unit exits, systemd-run --wait prints its summary, including the CPU time a job is billed by.
+  return ['--wait', '--collect', '--pipe', `--unit=${unit}`, '-p', 'CPUAccounting=yes', ...props.flatMap((prop) => ['-p', prop]), binary, ...args];
 }
 
 function systemdSandbox(spec) {
@@ -123,6 +124,26 @@ function systemdSandbox(spec) {
 }
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
+
+/** systemd-run's own stderr lines around the job (unit name, then the --wait summary); not simc's, so never forwarded as notices. */
+const SYSTEMD_LINE = /^(Running as unit|Finished with result|Main processes terminated|Service runtime|CPU time consumed|Memory( swap)? peak|IP traffic|IO bytes)\b/;
+const SPAN_UNITS = { us: 1e-6, ms: 1e-3, s: 1, min: 60, h: 3600, d: 86400 };
+
+/** CPU seconds from systemd-run's summary. The LAST such line: it is printed after the unit exits, so a line simc echoed from
+ *  profile text can never come after it. Null when absent (an older systemd), so the coordinator falls back to wall time. */
+export function cpuSeconds(lines) {
+  const line = lines.findLast((l) => l.startsWith('CPU time consumed:'));
+  if (!line) return null;
+  let total = 0, parts = 0;
+  for (const [, n, unit] of line.slice('CPU time consumed:'.length).matchAll(/(\d+(?:\.\d+)?)(us|ms|min|s|h|d)\b/g)) {
+    total += Number(n) * SPAN_UNITS[unit];
+    parts++;
+  }
+  return parts ? total : null;
+}
+
+/** simc's stderr only: systemd-run's framing lines are dropped. */
+export const simcNotices = (lines) => lines.filter((l) => !SYSTEMD_LINE.test(l));
 /** DESIGN.md P1 complete/fail `notices`: simc's stderr (warnings the browser engine would have logged), bounded for the coordinator. */
 const NOTICES = 200, NOTICE_CHARS = 500;
 
@@ -252,6 +273,8 @@ export async function serve(options) {
       const started = Date.now();
       const code = await runSim({ unit: `frostsim-job-${id}`, binary, hostDir, args, threads, memoryMax: o.memoryMax(threads) }, state);
       const wallSeconds = (Date.now() - started) / 1000;
+      const cpu = cpuSeconds(state.notices);
+      state.notices = simcNotices(state.notices);
       if (state.cancelled) { o.log(`job ${id}: cancelled`); return; }
       if (code !== 0) throw new Error(`simc exited with status ${code}${state.notices.length ? `: ${state.notices.join('\n')}` : ''}`);
       const raw = await readReport(join(hostDir, 'out.json'));
@@ -264,7 +287,7 @@ export async function serve(options) {
       if (!put.ok) throw new Error(`Result upload failed with status ${put.status}`);
       await flush();
       if (state.cancelled) { o.log(`job ${id}: cancelled during upload`); return; }
-      const res = await retry(() => call(`${jobPath}/complete`, { wallSeconds, summary, notices: state.notices }));
+      const res = await retry(() => call(`${jobPath}/complete`, { wallSeconds, ...(cpu === null ? {} : { cpuSeconds: cpu }), summary, notices: state.notices }));
       await discard(res);
       o.log(`job ${id}: done in ${wallSeconds.toFixed(1)} s (complete ${res.status})`);
     } catch (err) {

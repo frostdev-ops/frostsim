@@ -119,6 +119,8 @@ function notices(value: unknown): string[] {
 async function complete(ctx: RequestCtx): Promise<Response> {
   const body = record(await ctx.json());
   if (!finite(body.wallSeconds) || (body.wallSeconds as number) < 0) throw invalid('wallSeconds must be a number of seconds.');
+  // Optional (older agents send none): the CPU time systemd accounted to the job, which is what shared vCPUs are billed by.
+  if (body.cpuSeconds !== undefined && (!finite(body.cpuSeconds) || (body.cpuSeconds as number) < 0)) throw invalid('cpuSeconds must be a number of seconds.');
   const raw = record(body.summary);
   const summary: Summary = {};
   for (const key of ['dps', 'dpsError', 'iterations'] as const) {
@@ -126,7 +128,7 @@ async function complete(ctx: RequestCtx): Promise<Response> {
     if (!finite(raw[key])) throw invalid(`summary.${key} must be a number.`);
     summary[key] = raw[key] as number;
   }
-  const state = await completeJob(ctx, ctx.workerId!, ctx.params.id, body.wallSeconds as number, summary, notices(body.notices));
+  const state = await completeJob(ctx, ctx.workerId!, ctx.params.id, body.wallSeconds as number, summary, notices(body.notices), body.cpuSeconds as number | undefined);
   if (state === 'lost') throw new HttpError(409, 'conflict', 'This worker no longer holds the job.');
   if (state === 'missing') throw new HttpError(409, 'conflict', 'No result was uploaded; the job has failed.');
   return noContent();

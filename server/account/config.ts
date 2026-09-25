@@ -21,7 +21,7 @@ const DEFAULTS: Partial<Record<EnvName, string>> = {
   PUBLIC_ORIGIN: 'https://sim.frostdev.io',
   R2_ENGINES_BUCKET: 'frostsim-engines',
   R2_DATA_BUCKET: 'frostsim-data',
-  HCLOUD_SERVER_TYPE: 'ccx53',
+  HCLOUD_SERVER_TYPE: 'cpx62',
 };
 
 const R2_KEYS: EnvName[] = ['R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY'];

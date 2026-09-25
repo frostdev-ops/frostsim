@@ -96,7 +96,7 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
   const env = {
     FEATURES: 'compute', PUBLIC_ORIGIN: ORIGIN, DATABASE_URL: 'postgres://unused', SESSION_SECRET: 's'.repeat(32),
     R2_ACCOUNT_ID: 'acct', R2_ACCESS_KEY_ID: 'id', R2_SECRET_ACCESS_KEY: 'secret',
-    HCLOUD_TOKEN: 'hc', HCLOUD_LOCATION: 'fsn1', HCLOUD_SNAPSHOT_ID: '42', WORKER_MAX: '2', WORKER_MONTHLY_EUR_CAP: '50',
+    HCLOUD_TOKEN: 'hc', HCLOUD_LOCATION: 'fsn1', HCLOUD_SNAPSHOT_ID: '42', HCLOUD_SERVER_TYPE: 'ccx53', WORKER_MAX: '2', WORKER_MONTHLY_EUR_CAP: '50',
   };
   const app = (over: Record<string, string> = {}): AppCtx => {
     const config = loadConfig({ ...env, ...over });
@@ -363,6 +363,18 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
     expect(await completeJob(app(), w.id, ids[1], 5, {})).toBe('ok');
     expect(await jobRow(ids[1])).toMatchObject({ core_seconds: 160, wall_seconds: 5 });
     expect(await resultBytes(app(), ids[1])).toEqual(RESULT);
+    // Shared vCPUs: billed by the CPU time systemd accounted, never above threads x wall.
+    const [{ id: cpuJob }] = await sql`insert into compute_jobs (user_id, source, pack_id, threads, status, worker_id, claimed_at, created_at)
+      values (${u}, 'web', ${PACK}, 16, 'running', ${w.id}, ${now()}, ${now()}) returning id`;
+    const [{ id: capJob }] = await sql`insert into compute_jobs (user_id, source, pack_id, threads, status, worker_id, claimed_at, created_at)
+      values (${u}, 'web', ${PACK}, 16, 'running', ${w.id}, ${now()}, ${now()}) returning id`;
+    clock += 2_000;
+    uploaded.add(cpuJob);
+    uploaded.add(capJob);
+    expect(await completeJob(app(), w.id, cpuJob, 2, {}, [], 11.25)).toBe('ok');
+    expect(await jobRow(cpuJob)).toMatchObject({ wall_seconds: 2, core_seconds: 11.25 });
+    expect(await completeJob(app(), w.id, capJob, 2, {}, [], 999)).toBe('ok');
+    expect(await jobRow(capJob)).toMatchObject({ core_seconds: 32 });
     // Replaced through the still-valid presigned PUT: refused before it is buffered (the Discord bot reads results server-side).
     oversized.add(ids[1]);
     expect(await resultBytes(app(), ids[1]).catch((e: unknown) => e)).toMatchObject({ status: 413, code: 'too-large' });
