@@ -132,7 +132,7 @@ export function randomSuffixType(itemClass: number, itemSubclass: number, invent
 }
 
 /** Eligible slots per inventory type (util::translate_invtype + finger/trinket + off-hand for one-handers). */
-export function eligibleSlots(inventoryType: number, itemSubclass: number, itemClass: number): GearSlot[] {
+export function eligibleSlots(inventoryType: number, _itemSubclass: number, itemClass: number): GearSlot[] {
   switch (inventoryType) {
     case INVTYPE.HEAD: return ['head'];
     case INVTYPE.NECK: return ['neck'];
