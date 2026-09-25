@@ -2,14 +2,19 @@
 // the rows it needs. Free tier: no compute, no slots, no hosted shares (a business decision to revisit, not an invented one).
 
 import type { Db } from './db';
-import { CATALOG, product } from './catalog';
-import { FREE_SLOTS, UNLIMITED_SLOTS } from '../../src/lib/account/plans';
+import { CATALOG, product, type Product } from './catalog';
+import { FREE_SLOTS, TERMS, UNLIMITED_SLOTS } from '../../src/lib/account/plans';
 
 export interface SubscriptionItem {
   lookupKey: string;
   quantity: number;
   /** From the Stripe Price metadata `core_hours`, which overrides the catalog's hours per month; absent means the catalog's. */
   coreHours?: number;
+  /** The Stripe Price's amount in minor units, its currency and its term in months. Absent on rows stored before they were kept:
+   *  the catalog's USD price for the term is used instead. */
+  unitAmount?: number;
+  currency?: string;
+  months?: number;
 }
 
 export interface Subscription {
@@ -36,6 +41,8 @@ export interface GuildEntitlement extends Period {
   guildId: string;
   coreSeconds: number;
   maxThreads: number;
+  /** What the pool's payer pays us per month, after Stripe's fee: the most its runs may cost (queue.ts costProblem). */
+  paidUsd: number;
 }
 
 export interface Entitlements extends Period {
@@ -44,6 +51,10 @@ export interface Entitlements extends Period {
   slots: number;
   hostedShares: boolean;
   guilds: GuildEntitlement[];
+  /** What the user's compute plans pay us per month, after Stripe's fee: the most their runs may cost (queue.ts costProblem). */
+  paidUsd: number;
+  /** An admin comped hours: runs are exempt from the cost cap, which only protects what paid plans bring in. */
+  comped: boolean;
 }
 
 /** past_due still counts: Stripe is retrying the payment. */
@@ -95,11 +106,25 @@ const SMALLEST_COMPUTE_THREADS = Math.min(...Object.values(CATALOG).filter((p) =
 
 const units = (quantity: number) => (Number.isFinite(quantity) && quantity > 0 ? Math.floor(quantity) : 0);
 
+/** Stripe's card pricing, taken from every charge before it reaches us. */
+export const STRIPE_FEE_RATE = 0.029;
+export const STRIPE_FEE_USD = 0.3;
+
+/** USD per month an item brings in after Stripe's fee, spread over its term. 0 when its price is unknown or not in dollars, which
+ *  lets no run through the cost cap: better a run in the browser than one we pay for. */
+export function netMonthlyUsd(item: SubscriptionItem, p: Product): number {
+  const gross = item.unitAmount !== undefined ? (item.currency === 'usd' && item.unitAmount >= 0 ? item.unitAmount / 100 : NaN) : (p.usd ?? NaN);
+  const months = item.months && item.months > 0 ? item.months : TERMS[p.term].months;
+  const charge = gross * units(item.quantity);
+  return charge > 0 ? Math.max(0, charge * (1 - STRIPE_FEE_RATE) - STRIPE_FEE_USD) / months : 0;
+}
+
 export function entitlementsFor(subs: readonly Subscription[], comp: Comp, now: Date): Entitlements {
   let coreSeconds = comp.coreSeconds;
   let maxThreads = comp.maxThreads ?? 0;
   let extraSlots = 0;
   let hostedShares = false;
+  let paidUsd = 0;
   // ponytail: with two compute subscriptions the first one's period meters both; add per-subscription windows if that case appears.
   let computePeriod: Period | null = null;
   const guilds = new Map<string, GuildEntitlement>();
@@ -115,14 +140,16 @@ export function entitlementsFor(subs: readonly Subscription[], comp: Comp, now: 
       if (sub.guildId) {
         if (p.kind !== 'guild') continue;
         const guild = guilds.get(sub.guildId)
-          ?? { guildId: sub.guildId, coreSeconds: 0, maxThreads: 0, ...(periodOf(sub, now) ?? calendarMonth(now)) };
+          ?? { guildId: sub.guildId, coreSeconds: 0, maxThreads: 0, paidUsd: 0, ...(periodOf(sub, now) ?? calendarMonth(now)) };
         guild.coreSeconds += seconds;
+        guild.paidUsd += netMonthlyUsd(item, p);
         guild.maxThreads = Math.max(guild.maxThreads, p.maxThreads ?? 0);
         guilds.set(sub.guildId, guild);
         continue;
       }
       if (p.kind === 'compute') {
         coreSeconds += seconds;
+        paidUsd += netMonthlyUsd(item, p);
         maxThreads = Math.max(maxThreads, p.maxThreads ?? 0);
         computePeriod ??= periodOf(sub, now);
       }
@@ -133,7 +160,8 @@ export function entitlementsFor(subs: readonly Subscription[], comp: Comp, now: 
   if (coreSeconds > 0 && maxThreads < 1) maxThreads = SMALLEST_COMPUTE_THREADS;
   // Every account has FREE_SLOTS; the best plan adds its extra, up to the unlimited ceiling (plans do not stack).
   const slots = Math.min(UNLIMITED_SLOTS, FREE_SLOTS + extraSlots);
-  return { coreSeconds, maxThreads, slots, hostedShares, ...(computePeriod ?? calendarMonth(now)), guilds: [...guilds.values()] };
+  return { coreSeconds, maxThreads, slots, hostedShares, ...(computePeriod ?? calendarMonth(now)), guilds: [...guilds.values()], paidUsd,
+    comped: comp.coreSeconds > 0 };
 }
 
 /** Rows -> entitlementsFor. For a guild, only subscriptions carrying that guild_id count and the result's `guilds[0]` is it. */

@@ -354,7 +354,15 @@ describe('stripe webhook', () => {
       items: [{ lookupKey: 'discord_guild_monthly', quantity: 1, coreHours: 5 }, { lookupKey: 'compute_s_monthly', quantity: 1 }],
     }]);
     expect(entitlementsOf([...h.subs.values()]).guilds).toEqual([{ guildId: GUILD, coreSeconds: 18_000, maxThreads: 8,
-      periodStart: new Date(START_S * 1000), periodEnd: new Date(END_S * 1000) }]);
+      periodStart: new Date(START_S * 1000), periodEnd: new Date(END_S * 1000), paidUsd: 10 * (1 - 0.029) - 0.3 }]);
+  });
+
+  it('keeps what each item charges and its term, for the cost cap', async () => {
+    const h = harness([{ id: USER, stripe_customer_id: 'cus_1' }]);
+    h.state.truth = stripeSub('active', { items: [{ quantity: 1, current_period_start: START_S, current_period_end: END_S,
+      price: { lookup_key: 'compute_l_semiannual', metadata: {}, unit_amount: 5400, currency: 'usd', recurring: { interval: 'month', interval_count: 6 } } }] });
+    await h.webhook(event('customer.subscription.created', 100, { id: 'sub_1' }));
+    expect([...h.subs.values()][0].items).toEqual([{ lookupKey: 'compute_l_semiannual', quantity: 1, unitAmount: 5400, currency: 'usd', months: 6 }]);
   });
 
   it('stores nothing for a subscription that maps to no user, and cancels one Stripe no longer has', async () => {

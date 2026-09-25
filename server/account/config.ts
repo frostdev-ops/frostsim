@@ -11,6 +11,9 @@ export const ENV_NAMES = [
   'STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'STRIPE_PORTAL_CONFIGURATION',
   'R2_ACCOUNT_ID', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_ENGINES_BUCKET', 'R2_DATA_BUCKET', 'R2_ENDPOINT',
   'HCLOUD_TOKEN', 'HCLOUD_LOCATION', 'HCLOUD_SNAPSHOT_ID', 'HCLOUD_SERVER_TYPE', 'WORKER_MAX', 'WORKER_MONTHLY_EUR_CAP',
+  'WORKER_MONTHLY_USD_CAP', 'USD_PER_EUR',
+  'AWS_REGION', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_AMI_ID', 'AWS_SUBNETS', 'AWS_SECURITY_GROUP_ID', 'AWS_INSTANCE_TYPES',
+  'AWS_MAX_VCPU',
   'LOOTHING_TOKEN_SHA256', 'ENGINE_INDEX_PATH', 'ENGINE_COMPAT', 'WOW_API_ORIGIN',
 ] as const;
 export type EnvName = (typeof ENV_NAMES)[number];
@@ -22,6 +25,8 @@ const DEFAULTS: Partial<Record<EnvName, string>> = {
   R2_ENGINES_BUCKET: 'frostsim-engines',
   R2_DATA_BUCKET: 'frostsim-data',
   HCLOUD_SERVER_TYPE: 'cpx62',
+  // x86, so the native build runs unchanged; vCPU is a full core on c7a and c8a (compute/ec2.ts).
+  AWS_INSTANCE_TYPES: 'c7a.4xlarge,c7a.8xlarge,c7a.16xlarge,c8a.4xlarge,c8a.8xlarge,c8a.16xlarge',
   // The Battle.net proxy (server/api-server.mjs), which alone holds the Blizzard credential; /sim's Armory lookups go through it.
   WOW_API_ORIGIN: 'http://127.0.0.1:3011',
 };

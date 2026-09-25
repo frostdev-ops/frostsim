@@ -52,12 +52,11 @@ export function slotStatus(used: number, slots: number): { canAdd: boolean; note
 }
 
 export const PLANS: readonly Plan[] = [
-  // ponytail: L runs 16 threads while the Hetzner project cannot create 32 dedicated cores; raise it with HCLOUD_SERVER_TYPE.
   { id: 'compute_s', title: 'Frostbite', blurb: 'For your main', kind: 'compute', maxThreads: 8, coreHoursPerMonth: 20, extraSlots: 1, hostedShares: true,
     usd: { monthly: 3, semiannual: 16, yearly: 29 } },
   { id: 'compute_m', title: 'Glacier', blurb: 'For your main and alts', kind: 'compute', maxThreads: 16, coreHoursPerMonth: 50, extraSlots: 2, hostedShares: true,
     usd: { monthly: 5, semiannual: 27, yearly: 48 } },
-  { id: 'compute_l', title: 'Avalanche', blurb: 'For the whole roster', kind: 'compute', maxThreads: 16, coreHoursPerMonth: 120, extraSlots: UNLIMITED_SLOTS, hostedShares: true,
+  { id: 'compute_l', title: 'Avalanche', blurb: 'For the whole roster', kind: 'compute', maxThreads: 64, coreHoursPerMonth: 120, extraSlots: UNLIMITED_SLOTS, hostedShares: true,
     usd: { monthly: 10, semiannual: 54, yearly: 96 } },
   { id: 'discord_guild', title: 'Guild Cloud', blurb: '/sim for everyone in your Discord server', kind: 'guild', maxThreads: 8, coreHoursPerMonth: 80,
     usd: { monthly: 10, semiannual: 54, yearly: 96 } },

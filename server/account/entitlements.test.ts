@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { CATALOG, product } from './catalog';
-import { calendarMonth, entitlementsFor, RENEWAL_GRACE_MS, type Subscription } from './entitlements';
+import { calendarMonth, entitlementsFor, netMonthlyUsd, RENEWAL_GRACE_MS, type Subscription } from './entitlements';
 
 const NOW = new Date('2026-09-23T12:00:00Z');
 const START = new Date('2026-09-10T00:00:00Z');
@@ -15,10 +15,10 @@ function sub(over: Partial<Subscription>): Subscription {
 
 describe('catalog', () => {
   it('maps every plan and term to its lookup key, and grants nothing for unknown or prototype keys', () => {
-    expect(product('compute_l_monthly')).toEqual({ kind: 'compute', term: 'monthly', maxThreads: 16, coreHoursPerMonth: 120, extraSlots: 100, hostedShares: true });
+    expect(product('compute_l_monthly')).toEqual({ kind: 'compute', term: 'monthly', maxThreads: 64, coreHoursPerMonth: 120, extraSlots: 100, hostedShares: true, usd: 10 });
     expect(product('compute_s_yearly')).toMatchObject({ kind: 'compute', term: 'yearly', coreHoursPerMonth: 20, extraSlots: 1, hostedShares: true });
     expect(product('compute_m_semiannual')).toMatchObject({ kind: 'compute', term: 'semiannual', coreHoursPerMonth: 50, extraSlots: 2, hostedShares: true });
-    expect(product('discord_guild_semiannual')).toEqual({ kind: 'guild', term: 'semiannual', coreHoursPerMonth: 80, maxThreads: 8 });
+    expect(product('discord_guild_semiannual')).toEqual({ kind: 'guild', term: 'semiannual', coreHoursPerMonth: 80, maxThreads: 8, usd: 54 });
     // The separately sold slot packs and hosted-shares add-on are gone.
     expect(product('slots_5_monthly')).toBeNull();
     expect(product('shares_plus_monthly')).toBeNull();
@@ -54,14 +54,14 @@ describe('plan hours and long terms', () => {
     const pool = sub({ guildId: '123456789012345678', items: [{ lookupKey: 'discord_guild_semiannual', quantity: 1 }],
       currentPeriodStart: new Date('2026-07-10T00:00:00Z'), currentPeriodEnd: new Date('2027-01-10T00:00:00Z') });
     expect(entitlementsFor([pool], NONE, NOW).guilds).toEqual([{ guildId: '123456789012345678', coreSeconds: 80 * 3600, maxThreads: 8,
-      periodStart: new Date('2026-09-10T00:00:00Z'), periodEnd: new Date('2026-10-10T00:00:00Z') }]);
+      paidUsd: (54 * (1 - 0.029) - 0.3) / 6, periodStart: new Date('2026-09-10T00:00:00Z'), periodEnd: new Date('2026-10-10T00:00:00Z') }]);
   });
 });
 
 describe('entitlementsFor', () => {
   it('free tier: one character slot and nothing else, metered over the UTC calendar month', () => {
     expect(entitlementsFor([], NONE, NOW)).toEqual({
-      coreSeconds: 0, maxThreads: 0, slots: 1, hostedShares: false, guilds: [],
+      coreSeconds: 0, maxThreads: 0, slots: 1, hostedShares: false, guilds: [], paidUsd: 0, comped: false,
       periodStart: new Date('2026-09-01T00:00:00Z'), periodEnd: new Date('2026-10-01T00:00:00Z'),
     });
   });
@@ -121,7 +121,8 @@ describe('entitlementsFor', () => {
       sub({ guildId: 'g2', status: 'canceled', items: [{ lookupKey: 'discord_guild_monthly', quantity: 1, coreHours: 5 }] }),
     ], NONE, NOW);
     expect(ent).toMatchObject({ coreSeconds: 0, maxThreads: 0, slots: 1, hostedShares: false });
-    expect(ent.guilds).toEqual([{ guildId: 'g1', coreSeconds: 43_200, maxThreads: 8, periodStart: START, periodEnd: END }]);
+    expect(ent.guilds).toEqual([{ guildId: 'g1', coreSeconds: 43_200, maxThreads: 8, periodStart: START, periodEnd: END,
+      paidUsd: (10 * (1 - 0.029) - 0.3) + (20 * (1 - 0.029) - 0.3) }]);
   });
 
   it('meters over the calendar month when the stored period is incomplete, and never lapses without an end', () => {
@@ -164,7 +165,7 @@ describe('a missed renewal webhook (stored current_period_end has passed)', () =
   it('lapses at period end + 3 days to the free tier: no hours, threads, extra slots, hosted shares or guild pool; calendar month', () => {
     const now = at(RENEWAL_GRACE_MS);
     expect(entitlementsFor([paid, guild], NONE, now)).toEqual({
-      coreSeconds: 0, maxThreads: 0, slots: 1, hostedShares: false, guilds: [], ...calendarMonth(now),
+      coreSeconds: 0, maxThreads: 0, slots: 1, hostedShares: false, guilds: [], paidUsd: 0, comped: false, ...calendarMonth(now),
     });
     expect(entitlementsFor([shares], NONE, now)).toMatchObject({ slots: 1, hostedShares: false });
     // Comped hours are not a subscription and do not lapse.
@@ -174,5 +175,33 @@ describe('a missed renewal webhook (stored current_period_end has passed)', () =
   it('meters a zero-length stored period in its grace over the calendar month', () => {
     const now = at(DAY);
     expect(entitlementsFor([sub({ currentPeriodStart: END, items: paid.items })], NONE, now)).toMatchObject({ coreSeconds: 36_000, ...calendarMonth(now) });
+  });
+});
+
+describe('what a plan pays (the cost cap)', () => {
+  const net = (gross: number, months: number) => (gross * (1 - 0.029) - 0.3) / months;
+
+  it('nets Stripe\'s fee from the Stripe amount, spread over the term, else from the catalog price', () => {
+    const l = product('compute_l_yearly')!;
+    expect(netMonthlyUsd({ lookupKey: 'compute_l_yearly', quantity: 1, unitAmount: 9600, currency: 'usd', months: 12 }, l)).toBe(net(96, 12));
+    expect(netMonthlyUsd({ lookupKey: 'compute_l_yearly', quantity: 1 }, l)).toBe(net(96, 12));
+    expect(netMonthlyUsd({ lookupKey: 'compute_s_monthly', quantity: 2, unitAmount: 300, currency: 'usd' }, product('compute_s_monthly')!)).toBe(net(6, 1));
+  });
+
+  it('counts nothing it cannot price in dollars, so the cap refuses rather than guesses', () => {
+    const s = product('compute_s_monthly')!;
+    expect(netMonthlyUsd({ lookupKey: 'compute_s_monthly', quantity: 1, unitAmount: 300, currency: 'eur' }, s)).toBe(0);
+    expect(netMonthlyUsd({ lookupKey: 'compute_s_monthly', quantity: 0, unitAmount: 300, currency: 'usd' }, s)).toBe(0);
+    expect(netMonthlyUsd({ lookupKey: 'compute_s_monthly', quantity: 1, unitAmount: 20, currency: 'usd' }, s)).toBe(0);
+  });
+
+  it('sums compute plans for the user, keeps guild pools apart, and marks comped hours exempt', () => {
+    const ent = entitlementsFor([
+      sub({ items: [{ lookupKey: 'compute_m_monthly', quantity: 1 }] }),
+      sub({ guildId: 'g1', items: [{ lookupKey: 'discord_guild_monthly', quantity: 1 }] }),
+    ], NONE, NOW);
+    expect(ent).toMatchObject({ paidUsd: net(5, 1), comped: false });
+    expect(ent.guilds[0].paidUsd).toBe(net(10, 1));
+    expect(entitlementsFor([], { coreSeconds: 3600, maxThreads: null }, NOW)).toMatchObject({ paidUsd: 0, comped: true });
   });
 });

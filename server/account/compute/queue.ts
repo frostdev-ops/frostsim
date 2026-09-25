@@ -6,8 +6,8 @@ import type postgres from 'postgres';
 import type { AppCtx, Task } from '../app';
 import type { Db } from '../db';
 import { HttpError } from '../http';
-import { loadEntitlements } from '../entitlements';
-import { usedCoreSeconds } from '../usage';
+import { loadEntitlements, type Period } from '../entitlements';
+import { usedCoreSeconds, usedCostUsd } from '../usage';
 import { tryRedis } from '../redis';
 import { configured } from '../config';
 import { assembleRun, validateRequest, type AssembledRun, type SimRequest } from '../../../src/lib/simc/assemble';
@@ -15,7 +15,7 @@ import { cvOf, fitSpeed, iterationsFor, remainingSeconds, runFraction, secondsFo
 import { latestProgress } from '../../../src/lib/simc/progress';
 import { CLASS_LABELS } from '../../../src/lib/import/character';
 import { PACK_ID, nativeEngine, nativeInputProblem } from './native';
-import { cachedPrice, fleetLimits, monthSpend, spendRows } from './hetzner';
+import { cachedOffers, coreRate, fleetConfig, hourlyUsdSql, loadIdleFactors, monthSpend, roomFor, spendRows, worstCaseUsd, type IdleFactors } from './fleet';
 
 export const LEASE_S = 60;
 const MAX_ATTEMPTS = 2;
@@ -33,6 +33,7 @@ const RESULT_READ_MAX_BYTES = 32 << 20;
 const RUN_MAX_S = 1800;
 const NO_ALLOWANCE = 'The cloud allowance for this period is used up.';
 const NOT_ENTITLED = 'No Frostsim Cloud plan covers this run.';
+const COST_CAP = "This period's cloud runs have reached what the plan pays for.";
 const RESTARTED = 'Frostsim Cloud: the server running this job stopped; restarting it on another server.';
 /** Advisory-lock class for per-scope locks (two-int keyspace, apart from migrate.ts's bigint lock). */
 export const SCOPE_LOCK = 0x636d7075;
@@ -109,6 +110,10 @@ export async function enqueueJob(
   if (!(await nativeEngine(app, packId))) return refuse(409, 'no-native-engine', 'This engine version has no cloud build yet.');
   const capacity = await capacityProblem(app, run.threads);
   if (capacity) return refuse(503, 'capacity', capacity);
+  // A first look against the dearest server the job could land on; claimJob holds the line with the worker's own price.
+  const reserve = await enqueueReserve(app, run.threads);
+  const costly = reserve === null ? null : await costProblem(app.sql, guildId ? { guildId } : { userId: userId! }, pool, reserve);
+  if (costly) return refuse(402, 'cost-cap', costly);
 
   const scope = scopeOf(userId, guildId);
   const id = await app.sql.begin(async (tx) => {
@@ -128,13 +133,43 @@ export async function enqueueJob(
   return { ok: true, id };
 }
 
-/** The plan's width, capped by the configured server type (DESIGN.md A7): a Hetzner project's dedicated-core limit can rule out the
- *  32-core type, and a job wider than its servers could never be claimed. Cold (no cached price), the plan's width. */
+/** The plan's width, capped by the widest server any configured provider offers (DESIGN.md A7): a job wider than every server could
+ *  never be claimed. Cold (no offers seen yet), the plan's width. */
 function jobThreads(app: App, maxThreads: number): number {
-  const limits = fleetLimits(app.config);
-  const serverCores = limits ? cachedPrice(limits)?.cores : undefined;
-  return serverCores ? Math.min(maxThreads, serverCores) : maxThreads;
+  const fleet = fleetConfig(app.config);
+  const widest = fleet ? Math.max(0, ...cachedOffers(fleet).map((o) => o.cores)) : 0;
+  return widest ? Math.min(maxThreads, widest) : maxThreads;
 }
+
+/** Why `who` may not start a job whose worst case is `reserve` (DESIGN.md C6), or null: what the period's runs cost us (finished jobs
+ *  at cost, a running one at its reserve) plus this reserve must stay within what the plan paid. Comped hours are exempt. */
+export async function costProblem(db: Db, who: { userId: string } | { guildId: string },
+  pool: Period & { paidUsd: number; comped?: boolean }, reserve: number): Promise<string | null> {
+  if (pool.comped) return null;
+  const spent = await usedCostUsd(db, who, pool.periodStart, pool.periodEnd);
+  return spent + reserve > pool.paidUsd ? COST_CAP : null;
+}
+
+/** The worst case of a job of `threads` on the dearest server it could land on: any offer or live worker, at the larger measured
+ *  idle. Null before any price is known (the claim still checks). */
+async function enqueueReserve(app: App, threads: number): Promise<number | null> {
+  const fleet = fleetConfig(app.config);
+  const [row] = await app.sql`select max(${hourlyUsdSql(app.sql, fleet?.usdPerEur ?? null)} / cores)::float8 as per_core
+    from workers where deleted_at is null and cores > 0`;
+  const perCore = Math.max(row?.per_core ?? 0, ...(fleet ? cachedOffers(fleet) : []).map((o) => o.maxHourlyUsd / o.cores));
+  if (!(perCore > 0)) return null;
+  const idle = await loadIdleFactors(app.sql, app.now());
+  return worstCaseUsd(threads, RUN_MAX_S, coreRate(perCore, 1), Math.max(idle.hetzner, idle.ec2));
+}
+
+/** cost_usd for a job metered `coreSeconds` (a SQL expression over compute_jobs): its worker's rate plus that provider's measured
+ *  idle, never more than the reserve held for it at claim. */
+const costSql = (app: App, idle: IdleFactors, coreSeconds: postgres.PendingQuery<postgres.Row[]>) => {
+  const usdPerEur = fleetConfig(app.config)?.usdPerEur ?? null;
+  return app.sql`least(coalesce(reserve_usd, 'Infinity'::numeric), ${coreSeconds} * coalesce((select
+      ${hourlyUsdSql(app.sql, usdPerEur)} / nullif(w.cores, 0) / 3600 * (1 + case w.provider when 'ec2' then ${idle.ec2}::float8 else ${idle.hetzner}::float8 end)
+    from workers w where w.id = worker_id), 0))`;
+};
 
 /** Seconds from a worker's creation to its first claim before any worker has made one. */
 const DEFAULT_BOOT_S = 60;
@@ -209,13 +244,13 @@ export function capacityState(o: {
 }
 
 /** The columns of a stored request that its work depends on, without its (possibly large) text. */
-const liteColumns = (sql: App['sql']) => sql`request->'settings' as settings, request->'accuracy' as accuracy,
+export const liteColumns = (sql: App['sql']) => sql`request->'settings' as settings, request->'accuracy' as accuracy,
   request->'extraOptions' as extra, request->>'mode' as mode,
   jsonb_array_length(coalesce(request->'profilesets', '[]'::jsonb))::int as sets,
   regexp_count(coalesce(request->>'profile', ''), ${CLASS_LINE_SQL}, 1, 'in')::int as characters`;
 
 /** A request's work from its lite columns: a stand-in profile with as many characters and candidates keeps the same shape. */
-function liteWork(row: postgres.Row): Work {
+export function liteWork(row: postgres.Row): Work {
   return workOf({
     schemaVersion: 1,
     mode: row.mode ?? undefined,
@@ -258,7 +293,7 @@ export async function cloudModel(app: App): Promise<CloudModel> {
 }
 
 /** Expected run seconds of a queued job, from the cloud model; null when its iterations or speed are unknown. */
-function expectedRunS(model: CloudModel, work: Work, threads: number): number | null {
+export function expectedRunS(model: CloudModel, work: Work, threads: number): number | null {
   const speed = model.speed[work.fightStyle] ?? model.speed['*'];
   const iterations = iterationsFor(work.accuracy, model.cv[work.fightStyle]);
   return speed && iterations ? secondsFor(speed, unitsOf(work, iterations), threads) : null;
@@ -273,7 +308,7 @@ export async function capacityView(app: App, userId: string): Promise<Capacity> 
   if (await capacityProblem(app, threads)) return { state: 'none', threads };
   const [model, workers, running, ahead, [{ boot }], [{ total }]] = await Promise.all([
     cloudModel(app),
-    app.sql`select id, status, cores, extract(epoch from (${now}::timestamptz - created_at))::float8 as age
+    app.sql`select id, provider, status, cores, extract(epoch from (${now}::timestamptz - created_at))::float8 as age
       from workers where deleted_at is null and status in ('ready', 'booting') and cores >= ${threads}`,
     app.sql`select id, worker_id, threads, user_id, guild_id, extract(epoch from (${now}::timestamptz - claimed_at))::float8 as elapsed,
         ${liteColumns(app.sql)}
@@ -301,8 +336,11 @@ export async function capacityView(app: App, userId: string): Promise<Capacity> 
     return expected === null ? null : Math.max(0, expected - job.elapsed);
   });
   const own = running.findIndex((j) => j.user_id === userId && j.guild_id === null);
-  const limits = fleetLimits(app.config);
-  const serverCores = (limits && cachedPrice(limits)?.cores) || threads;
+  const fleet = fleetConfig(app.config);
+  // The servers the autoscaler could still add for this width: the widest one, and how many fit their providers' limits.
+  const live = workers.map((w) => ({ provider: w.provider, cores: w.cores ?? 0 }));
+  const addable = fleet ? cachedOffers(fleet).filter((o) => o.cores >= threads && roomFor(fleet, live, o)) : [];
+  const serverCores = Math.max(threads, ...addable.map((o) => o.cores));
   return {
     threads,
     model,
@@ -316,7 +354,7 @@ export async function capacityView(app: App, userId: string): Promise<Capacity> 
         running: running.flatMap((j, i) => (j.worker_id === w.id ? [{ threads: j.threads, leftS: left[i] }] : [])),
       })),
       ahead: ahead.map((j) => expectedRunS(model, liteWork(j), j.threads)),
-      canAdd: limits ? Math.max(0, limits.max - total) : 0,
+      canAdd: addable.length ? Math.max(1, fleet?.hetzner ? fleet.hetzner.max - total : 1) : 0,
       serverCores,
       bootS: boot ?? DEFAULT_BOOT_S,
     }),
@@ -325,18 +363,21 @@ export async function capacityView(app: App, userId: string): Promise<Capacity> 
 
 /** Null when a job of `threads` can be served: a live worker exists, or the autoscaler may still create one (DESIGN.md C8: 503 otherwise). */
 export async function capacityProblem(app: App, threads: number): Promise<string | null> {
-  const [{ live, total }] = await app.sql`select
-      count(*) filter (where status <> 'draining' and cores >= ${threads})::int as live, count(*)::int as total
+  const [{ live }] = await app.sql`select count(*) filter (where status <> 'draining' and cores >= ${threads})::int as live
     from workers where deleted_at is null`;
   if (live > 0) return null;
-  const limits = fleetLimits(app.config);
-  if (!limits) return 'Frostsim Cloud has no workers available.';
-  if (total >= limits.max) return 'Every cloud worker is busy.';
-  // A job wider than the configured server type could never be claimed. The autoscaler keeps the price warm; cold, it is let through.
-  const price = cachedPrice(limits);
-  if (price && threads > price.cores) return 'Frostsim Cloud servers are too small for this run.';
+  const fleet = fleetConfig(app.config);
+  if (!fleet) return 'Frostsim Cloud has no workers available.';
+  // A job wider than every server on offer could never be claimed. The autoscaler keeps offers warm; cold, it is let through.
+  const offers = cachedOffers(fleet);
+  if (offers.length) {
+    const wide = offers.filter((o) => o.cores >= threads);
+    if (!wide.length) return 'Frostsim Cloud servers are too small for this run.';
+    const rows = await app.sql`select provider, cores from workers where deleted_at is null`;
+    if (!wide.some((o) => roomFor(fleet, rows.map((r) => ({ provider: r.provider, cores: r.cores ?? 0 })), o))) return 'Every cloud worker is busy.';
+  }
   const now = app.now();
-  if (monthSpend(await spendRows(app.sql, now), now) >= limits.capEur) return 'The cloud spending limit for this month is reached.';
+  if (monthSpend(await spendRows(app.sql, now, fleet.usdPerEur), now) >= fleet.capUsd) return 'The cloud spending limit for this month is reached.';
   return null;
 }
 
@@ -412,10 +453,11 @@ export async function resultBytes(app: App, id: string): Promise<Uint8Array | nu
   return new Uint8Array(await obj.arrayBuffer());
 }
 
-/** wall_seconds and core_seconds for a run stopped at `now`: threads x claim-to-now, at most RUN_MAX_S. 0 for a job never claimed. */
-const meterToNow = (app: App, now: Date) => {
+/** wall_seconds, core_seconds and cost_usd for a run stopped at `now`: threads x claim-to-now, at most RUN_MAX_S. 0 for a job never
+ *  claimed. */
+const meterToNow = (app: App, now: Date, idle: IdleFactors) => {
   const wall = app.sql`least(greatest(coalesce(extract(epoch from ${now}::timestamptz - claimed_at), 0), 0), ${RUN_MAX_S})`;
-  return app.sql`wall_seconds = ${wall}, core_seconds = threads * ${wall}`;
+  return app.sql`wall_seconds = ${wall}, core_seconds = threads * ${wall}, cost_usd = ${costSql(app, idle, app.sql`threads * ${wall}`)}`;
 };
 
 /** DESIGN.md P3. True when this call cancelled a queued or running job owned by `by`. A running job's worker learns it at its next progress.
@@ -423,7 +465,8 @@ const meterToNow = (app: App, now: Date) => {
 export async function cancelJob(app: App, id: string, by: { userId: string } | { guildId: string }): Promise<boolean> {
   const owner = 'userId' in by ? app.sql`user_id = ${by.userId}` : app.sql`guild_id = ${by.guildId}`;
   const now = app.now();
-  const rows = await app.sql`update compute_jobs set status = 'cancelled', finished_at = ${now}, lease_until = null, ${meterToNow(app, now)}
+  const idle = await loadIdleFactors(app.sql, now);
+  const rows = await app.sql`update compute_jobs set status = 'cancelled', finished_at = ${now}, lease_until = null, ${meterToNow(app, now, idle)}
     where id = ${id} and status in ('queued', 'running') and ${owner} returning id`;
   return rows.length > 0;
 }
@@ -437,14 +480,22 @@ export interface Claimed { id: string; threads: number; packId: string; profile:
  *  The allowance is checked again here, so jobs queued before the scope's previous run was metered cannot run past it. */
 export async function claimJob(app: App, workerId: string, freeCores: number): Promise<Claimed | 'draining' | null> {
   const now = app.now();
+  const fleet = fleetConfig(app.config);
+  const idle = await loadIdleFactors(app.sql, now);
   let retried = false;
   const claimed = await app.sql.begin(async (tx) => {
-    const [worker] = await tx`select status from workers where id = ${workerId} and deleted_at is null`;
+    const [worker] = await tx`select status, provider, cores, ${hourlyUsdSql(tx, fleet?.usdPerEur ?? null)}::float8 as hourly_usd
+      from workers where id = ${workerId} and deleted_at is null`;
     if (!worker || worker.status === 'draining') return 'draining';
+    // Cheapest first (fleet.ts): an EC2 worker is billed per second and drains when idle, while a live Hetzner server's hour is paid
+    // either way, so an EC2 worker leaves a job to a Hetzner server that has room for it and polled in the last 30 s.
+    const paidFor = worker.provider !== 'ec2' ? tx`true` : tx`not exists (select 1 from workers h where h.provider = 'hetzner'
+      and h.status = 'ready' and h.deleted_at is null and h.last_seen_at > ${new Date(now.getTime() - 30_000)}
+      and h.cores - coalesce((select sum(r.threads) from compute_jobs r where r.worker_id = h.id and r.status = 'running'), 0) >= j.threads)`;
     const candidates = await tx`select j.id, j.threads, j.pack_id, j.payload, j.user_id, j.guild_id,
         coalesce('g:' || j.guild_id, 'u:' || j.user_id::text) as scope
       from compute_jobs j
-      where j.status = 'queued' and j.threads <= ${freeCores} and not exists (select 1 from compute_jobs r where r.status = 'running'
+      where j.status = 'queued' and j.threads <= ${freeCores} and ${paidFor} and not exists (select 1 from compute_jobs r where r.status = 'running'
         and coalesce('g:' || r.guild_id, 'u:' || r.user_id::text) = coalesce('g:' || j.guild_id, 'u:' || j.user_id::text))
       order by j.created_at
       limit 5
@@ -459,14 +510,17 @@ export async function claimJob(app: App, workerId: string, freeCores: number): P
       const who = job.guild_id ? { guildId: job.guild_id as string } : { userId: job.user_id as string };
       const ent = await loadEntitlements(tx, who, now);
       const pool = job.guild_id ? ent.guilds[0] : ent;
+      // The worst case on this worker, held as the job's reserve while it runs.
+      const reserve = worstCaseUsd(job.threads, RUN_MAX_S, coreRate(worker.hourly_usd, worker.cores || 1), idle[worker.provider as keyof IdleFactors] ?? idle.hetzner);
       const refusal = !pool || pool.maxThreads < 1 ? NOT_ENTITLED
-        : (await usedCoreSeconds(tx, who, pool.periodStart, pool.periodEnd)) >= pool.coreSeconds ? NO_ALLOWANCE : null;
+        : (await usedCoreSeconds(tx, who, pool.periodStart, pool.periodEnd)) >= pool.coreSeconds ? NO_ALLOWANCE
+        : await costProblem(tx, who, pool, reserve);
       if (refusal) {
         await tx`update compute_jobs set status = 'failed', error = ${refusal}, finished_at = ${now} where id = ${job.id}`;
         continue;
       }
       const [{ attempts }] = await tx`update compute_jobs set status = 'running', worker_id = ${workerId}, claimed_at = ${now},
-        lease_until = ${new Date(now.getTime() + LEASE_S * 1000)}, attempts = attempts + 1 where id = ${job.id} returning attempts`;
+        reserve_usd = ${reserve}, lease_until = ${new Date(now.getTime() + LEASE_S * 1000)}, attempts = attempts + 1 where id = ${job.id} returning attempts`;
       retried = attempts > 1;
       return { id: job.id, threads: job.threads, packId: job.pack_id, profile: job.payload.profile, args: job.payload.args };
     }
@@ -534,8 +588,9 @@ export async function completeJob(
   const wall = Math.max(0, Math.min(wallSeconds, (now.getTime() - job.claimed_at.getTime()) / 1000));
   const allocated = job.threads * wall;
   const core = cpuSeconds === undefined ? allocated : Math.min(Math.max(0, cpuSeconds), allocated);
+  const idle = await loadIdleFactors(app.sql, now);
   const done = await app.sql`update compute_jobs set status = 'done', finished_at = ${now}, lease_until = null,
-      wall_seconds = ${wall}, core_seconds = ${core}, summary = ${app.sql.json(summary as postgres.JSONValue)},
+      wall_seconds = ${wall}, core_seconds = ${core}, cost_usd = ${costSql(app, idle, app.sql`${core}::float8`)}, summary = ${app.sql.json(summary as postgres.JSONValue)},
       payload = payload || ${noticesJson(app, notices)}
     where id = ${id} and worker_id = ${workerId} and status = 'running' returning id`;
   return done.length ? 'ok' : 'lost';
@@ -545,8 +600,9 @@ export async function completeJob(
  *  RUN_MAX_S: the cores were used, and an unmetered failure would be a free way to run for 30 minutes. */
 export async function failJob(app: App, workerId: string, id: string, error: string, notices: readonly string[] = []): Promise<boolean> {
   const now = app.now();
+  const idle = await loadIdleFactors(app.sql, now);
   const rows = await app.sql`update compute_jobs set status = 'failed', error = ${error.slice(0, 2000)}, finished_at = ${now},
-    lease_until = null, payload = payload || ${noticesJson(app, notices)}, ${meterToNow(app, now)}
+    lease_until = null, payload = payload || ${noticesJson(app, notices)}, ${meterToNow(app, now, idle)}
     where id = ${id} and worker_id = ${workerId} and status = 'running' returning id`;
   return rows.length > 0;
 }

@@ -11,11 +11,14 @@ export interface Product {
   coreHoursPerMonth?: number;
   extraSlots?: number;
   hostedShares?: boolean;
+  /** US dollars per term from plans.ts; what a subscription pays when its stored item carries no Stripe amount. */
+  usd?: number;
 }
 
 export const CATALOG: Readonly<Record<string, Product>> = Object.fromEntries(PLANS.flatMap((plan) => termsOf(plan).map((term) => [
   lookupKey(plan, term),
-  { kind: plan.kind, term, maxThreads: plan.maxThreads, coreHoursPerMonth: plan.coreHoursPerMonth, extraSlots: plan.extraSlots, hostedShares: plan.hostedShares },
+  { kind: plan.kind, term, maxThreads: plan.maxThreads, coreHoursPerMonth: plan.coreHoursPerMonth, extraSlots: plan.extraSlots, hostedShares: plan.hostedShares,
+    usd: plan.usd?.[term] },
 ])));
 
 /** Unknown keys (and prototype names like "toString") grant nothing. */

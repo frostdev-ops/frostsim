@@ -1,27 +1,27 @@
-// Hetzner Cloud for compute workers (CLAUDE.md D14; DESIGN.md C8): the few API calls the autoscaler makes, its caps, and this month's
-// spend. Prices come from the server_types API, never from code. Plain fetch; error bodies are never read (they can echo the request).
+// Hetzner Cloud for compute workers (CLAUDE.md D14; DESIGN.md C8): the few API calls the autoscaler makes, as a fleet provider
+// (fleet.ts). Prices come from the server_types API, never from code. Plain fetch; error bodies are never read (they can echo the request).
 // API shapes checked 2026-09-23 via ctx7 (/smrezvani/hetzner-cloud-api-document, /websites/hetzner_cloud): POST /servers with
 // public_net.enable_ipv4/enable_ipv6, labels, user_data (<= 32 KiB); GET /servers?label_selector=&page=&per_page= with
 // meta.pagination.next_page; GET /server_types?name= with cores and prices[].{location, price_hourly.gross}.
 
 import type { Config } from '../config';
-import type { Db } from '../db';
-import { calendarMonth } from '../entitlements';
+import type { Offer, Provider } from './fleet';
 
 const API = 'https://api.hetzner.cloud/v1';
 const TIMEOUT_MS = 15_000;
+const HOUR_MS = 3600_000;
 export const WORKER_LABEL = 'frostsim=worker';
-export const HOUR_MS = 3600_000;
+/** Seconds from create to a worker's first claim: 32-42 s to SSH in Phase 0, then the agent's start. */
+const BOOT_S = 45;
 
-export interface FleetLimits { token: string; location: string; snapshot: string; serverType: string; max: number; capEur: number }
+export interface HetznerLimits { token: string; location: string; snapshot: string; serverType: string; max: number }
 
-/** Null unless every value the autoscaler needs is set. A missing or zero cap means no servers are ever created (DESIGN.md R1). */
-export function fleetLimits(config: Config): FleetLimits | null {
+/** Null unless every value Hetzner needs is set (fleet.ts fleetConfig holds the spend cap). */
+export function hetznerLimits(config: Config): HetznerLimits | null {
   const { HCLOUD_TOKEN: token, HCLOUD_LOCATION: location, HCLOUD_SNAPSHOT_ID: snapshot, HCLOUD_SERVER_TYPE: serverType } = config.env;
   const max = Math.floor(Number(config.env.WORKER_MAX));
-  const capEur = Number(config.env.WORKER_MONTHLY_EUR_CAP);
-  if (!token || !location || !snapshot || !serverType || !(max >= 1) || !(capEur > 0)) return null;
-  return { token, location, snapshot, serverType, max, capEur };
+  if (!token || !location || !snapshot || !serverType || !(max >= 1)) return null;
+  return { token, location, snapshot, serverType, max };
 }
 
 export interface ServerSpec { name: string; serverType: string; location: string; image: string; userData: string }
@@ -90,7 +90,7 @@ export interface Price { hourlyEur: number; cores: number }
 let priceCache: { key: string; until: number; value: Price } | null = null;
 
 /** Gross hourly price (VAT included: the cap must hold whatever the invoice says) and cores of the configured type, cached 1 h. */
-export async function serverPrice(api: Hcloud, limits: FleetLimits, now: Date): Promise<Price> {
+export async function serverPrice(api: Hcloud, limits: HetznerLimits, now: Date): Promise<Price> {
   const key = `${limits.serverType}@${limits.location}`;
   if (priceCache?.key === key && priceCache.until > now.getTime()) return priceCache.value;
   const type = await api.serverType(limits.serverType);
@@ -102,29 +102,22 @@ export async function serverPrice(api: Hcloud, limits: FleetLimits, now: Date): 
   return priceCache.value;
 }
 
-/** The last price serverPrice fetched for this type and location, even if stale (cores do not change), without an API call. */
-export const cachedPrice = (limits: FleetLimits): Price | null =>
-  priceCache?.key === `${limits.serverType}@${limits.location}` ? priceCache.value : null;
-
-export interface SpendRow { hourlyEur: number; createdAt: Date; deletedAt: Date | null }
-
-/** EUR billed this calendar month (UTC) for these servers: every started hour counts, as Hetzner bills per started hour.
- *  ponytail: ignores Hetzner's monthly price cap per server, so it can only overestimate. */
-export function monthSpend(rows: readonly SpendRow[], now: Date): number {
-  const { periodStart, periodEnd } = calendarMonth(now);
-  let total = 0;
-  for (const row of rows) {
-    const start = Math.max(row.createdAt.getTime(), periodStart.getTime());
-    const end = Math.min(row.deletedAt?.getTime() ?? now.getTime(), now.getTime(), periodEnd.getTime());
-    if (end < start) continue;
-    total += Math.max(1, Math.ceil((end - start) / HOUR_MS)) * row.hourlyEur;
-  }
-  return total;
-}
-
-export async function spendRows(db: Db, now: Date): Promise<SpendRow[]> {
-  const { periodStart, periodEnd } = calendarMonth(now);
-  const rows = await db`select hourly_eur::float8 as hourly_eur, created_at, deleted_at from workers
-    where hourly_eur is not null and created_at < ${periodEnd} and (deleted_at is null or deleted_at >= ${periodStart})`;
-  return rows.map((r) => ({ hourlyEur: r.hourly_eur, createdAt: r.created_at, deletedAt: r.deleted_at }));
+/** The configured server type as a fleet provider. Its offer is priced in USD at `usdPerEur`, gross, as the invoice bills it. */
+export function hetznerProvider(limits: HetznerLimits, usdPerEur: number, fetchFn: typeof fetch): Provider {
+  const api = hcloud(limits.token, fetchFn);
+  return {
+    name: 'hetzner',
+    list: async () => (await api.workerServers()).map(String),
+    async offers(now) {
+      const price = await serverPrice(api, limits, now);
+      const hourlyUsd = price.hourlyEur * usdPerEur;
+      const offer: Offer = { provider: 'hetzner', size: limits.serverType, cores: price.cores, hourlyUsd, maxHourlyUsd: hourlyUsd, billing: 'hour', bootS: BOOT_S };
+      return [offer];
+    },
+    async create([offer], spec) {
+      const id = await api.createServer({ ...spec, serverType: limits.serverType, location: limits.location, image: limits.snapshot });
+      return { id: String(id), offer };
+    },
+    remove: (id) => api.deleteServer(Number(id)),
+  };
 }

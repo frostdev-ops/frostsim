@@ -17,6 +17,7 @@ import type { SimRequest } from '../../../src/lib/simc/assemble';
 import { DEFAULT_SETTINGS } from '../../../src/lib/simc/options';
 import { SCOPE_LOCK, cancelJob, claimJob, completeJob, enqueueJob, expireJobs, failJob, jobView, progressJob, resultBytes, tasks as queueTasks } from './queue';
 import { HEARTBEAT_LOSS_MS, tick } from './autoscaler';
+import { rememberOffers } from './fleet';
 import { routes as clientRoutes } from './routes';
 import { routes as workerRoutes } from './worker-routes';
 
@@ -96,7 +97,7 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
   const env = {
     FEATURES: 'compute', PUBLIC_ORIGIN: ORIGIN, DATABASE_URL: 'postgres://unused', SESSION_SECRET: 's'.repeat(32),
     R2_ACCOUNT_ID: 'acct', R2_ACCESS_KEY_ID: 'id', R2_SECRET_ACCESS_KEY: 'secret',
-    HCLOUD_TOKEN: 'hc', HCLOUD_LOCATION: 'fsn1', HCLOUD_SNAPSHOT_ID: '42', HCLOUD_SERVER_TYPE: 'ccx53', WORKER_MAX: '2', WORKER_MONTHLY_EUR_CAP: '50',
+    HCLOUD_TOKEN: 'hc', HCLOUD_LOCATION: 'fsn1', HCLOUD_SNAPSHOT_ID: '42', HCLOUD_SERVER_TYPE: 'ccx53', WORKER_MAX: '2', WORKER_MONTHLY_EUR_CAP: '50', USD_PER_EUR: '1',
   };
   const app = (over: Record<string, string> = {}): AppCtx => {
     const config = loadConfig({ ...env, ...over });
@@ -105,9 +106,8 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
   const handle = (a = app()) => createApp(a, [...clientRoutes, ...workerRoutes]);
 
   async function user(plan: { lookupKey: string; coreHours: number } | null = { lookupKey: 'compute_l_monthly', coreHours: 10 }, guildId: string | null = null) {
-    // Comped threads stand in for a 32-thread plan (compute_l runs 16 while the Hetzner project cannot create 32 dedicated cores).
-    const wide = plan?.lookupKey === 'compute_l_monthly' ? 32 : null;
-    const [u] = await sql`insert into users (display_name, comp_max_threads) values ('T', ${wide}) returning id`;
+    // compute_l runs 64 threads, capped at the 32 cores of the ccx53 offer each test starts with.
+    const [u] = await sql`insert into users (display_name) values ('T') returning id`;
     if (plan) {
       await sql`insert into subscriptions (stripe_subscription_id, user_id, status, current_period_start, current_period_end, items, guild_id)
         values (${`sub_${randomUUID()}`}, ${u.id}, 'active', ${PERIOD.start}, ${PERIOD.end},
@@ -118,8 +118,8 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
 
   async function addWorker(over: { hcloudId?: number; status?: string; createdAt?: Date } = {}) {
     const token = randomBytes(32).toString('base64url');
-    const [w] = await sql`insert into workers (hcloud_id, server_type, token_hash, cores, status, hourly_eur, created_at, last_seen_at)
-      values (${over.hcloudId ?? null}, 'ccx53', ${sha256Hex(token)}, 32, ${over.status ?? 'ready'}, 0.5, ${over.createdAt ?? now()}, ${now()})
+    const [w] = await sql`insert into workers (hcloud_id, provider_id, server_type, token_hash, cores, status, hourly_eur, created_at, last_seen_at)
+      values (${over.hcloudId ?? null}, ${over.hcloudId === undefined ? null : String(over.hcloudId)}, 'ccx53', ${sha256Hex(token)}, 32, ${over.status ?? 'ready'}, 0.5, ${over.createdAt ?? now()}, ${now()})
       returning id`;
     return { id: w.id as string, token };
   }
@@ -156,6 +156,8 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
 
   // claimJob takes the oldest claimable job of ANY user, so every test starts from an empty queue and fleet.
   beforeEach(async () => {
+    // What the autoscaler's tick keeps warm in production: the configured server type's offer.
+    rememberOffers('hetzner', [{ provider: 'hetzner', size: 'ccx53', cores: 32, hourlyUsd: 0.595, maxHourlyUsd: 0.595, billing: 'hour', bootS: 45 }]);
     await sql`update compute_jobs set status = 'cancelled' where status in ('queued', 'running')`;
     await sql`update workers set status = 'deleted', deleted_at = ${now()} where deleted_at is null`;
     servers.clear();
@@ -590,6 +592,69 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
     expect(view!.lines.at(-1)).toBe('l599');
   });
 
+  describe('cost cap (what a plan pays)', () => {
+    // compute_s_monthly: $3 a month, $3 x 0.971 - $0.30 = $2.613 after Stripe's fee; 8 threads.
+    const PAID_S = 3 * (1 - 0.029) - 0.3;
+    const spend = (u: string, usd: number) => sql`insert into compute_jobs (user_id, source, pack_id, threads, status, created_at, cost_usd)
+      values (${u}, 'web', ${PACK}, 8, 'done', ${now()}, ${usd})`;
+
+    it('refuses at enqueue and at claim once spent plus the worst case passes what the plan pays', async () => {
+      const u = await user({ lookupKey: 'compute_s_monthly', coreHours: 20 });
+      const w = await addWorker();
+      await spend(u, PAID_S - 0.01);
+      expect(await enqueue(u)).toMatchObject({ ok: false, status: 402, code: 'cost-cap' });
+
+      const v = await user({ lookupKey: 'compute_s_monthly', coreHours: 20 });
+      await spend(v, 1);
+      const id = ((await enqueue(v)) as { id: string }).id;
+      await spend(v, PAID_S - 1 - 0.01); // spent elsewhere meanwhile
+      expect(await claimJob(app(), w.id, 32)).toBeNull();
+      expect(await jobRow(id)).toMatchObject({ status: 'failed', error: "This period's cloud runs have reached what the plan pays for." });
+    });
+
+    it('holds the worst case while a job runs, then charges its worker rate plus idle, never above that reserve', async () => {
+      const u = await user({ lookupKey: 'compute_s_monthly', coreHours: 20 });
+      const w = await addWorker();
+      const id = ((await enqueue(u)) as { id: string }).id;
+      expect(await claimJob(app(), w.id, 32)).toMatchObject({ id, threads: 8 });
+      const { reserve_usd: reserve } = await jobRow(id);
+      // 8 threads x 1800 s at $0.50/h over 32 cores, plus idle between 0.25 and 5 times use.
+      const perCoreS = 0.5 / 32 / 3600;
+      expect(Number(reserve) / (8 * 1800 * perCoreS) - 1).toBeGreaterThanOrEqual(0.25);
+      expect(Number(reserve) / (8 * 1800 * perCoreS) - 1).toBeLessThanOrEqual(5);
+      clock += 10_000;
+      uploaded.add(id);
+      expect(await completeJob(app(), w.id, id, 10, {})).toBe('ok');
+      const row = await jobRow(id);
+      expect(Number(row.core_seconds)).toBe(80);
+      const idle = Number(row.cost_usd) / (80 * perCoreS) - 1;
+      expect(idle).toBeGreaterThanOrEqual(0.25);
+      expect(idle).toBeLessThanOrEqual(5);
+      expect(Number(row.cost_usd)).toBeLessThanOrEqual(Number(reserve));
+    });
+
+    it('lets comped hours run whatever they cost', async () => {
+      const [{ id: u }] = await sql`insert into users (display_name, comp_core_seconds, comp_max_threads) values ('C', 36000, 8) returning id`;
+      await spend(u, 1000);
+      expect(await enqueue(u)).toMatchObject({ ok: true });
+    });
+  });
+
+  it('keeps a job off an EC2 worker while a live Hetzner server has room for it (its hour is paid either way)', async () => {
+    const u = await user();
+    const hetzner = await addWorker();
+    const [spot] = await sql`insert into workers (provider, provider_id, server_type, token_hash, cores, status, hourly_usd, created_at, last_seen_at)
+      values ('ec2', 'i-1', 'c8a.16xlarge', ${randomUUID()}, 64, 'ready', 1.2, ${now()}, ${now()}) returning id`;
+    const first = ((await enqueue(u)) as { id: string }).id;
+    expect(await claimJob(app(), spot.id, 64)).toBeNull();
+    expect(await jobRow(first)).toMatchObject({ status: 'queued' });
+    expect(await claimJob(app(), hetzner.id, 32)).toMatchObject({ id: first });
+    // Full, or silent for 30 s: the EC2 worker takes the next one.
+    const other = await user();
+    const second = ((await enqueue(other)) as { id: string }).id;
+    expect(await claimJob(app(), spot.id, 64)).toMatchObject({ id: second });
+  });
+
   describe('autoscaler tick', () => {
     it('creates a server when demand exceeds free cores, storing the token hash first', async () => {
       const id = ((await enqueue(await user())) as { id: string }).id;
@@ -620,7 +685,7 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
       expect(servers.size).toBe(0);
       expect((await sql`select status, deleted_at from workers where id = ${row.id}`)[0].status).toBe('deleted');
       expect(await jobRow(id)).toMatchObject({ status: 'queued', worker_id: null, attempts: 1 });
-      expect(logs).toContain(`compute: deleted hcloud server ${row.hcloud_id} (heartbeat lost)`);
+      expect(logs).toContain(`compute: deleted hetzner server ${row.hcloud_id} (heartbeat lost)`);
     });
 
     it('deletes orphans and forgets rows whose server is gone', async () => {

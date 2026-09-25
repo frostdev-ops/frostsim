@@ -27,7 +27,10 @@ interface StripeItem {
   /** On the item since API 2025-03-31.basil; the subscription no longer carries a period. */
   current_period_start?: number;
   current_period_end?: number;
-  price?: { lookup_key?: string | null; metadata?: Record<string, string> };
+  price?: {
+    lookup_key?: string | null; metadata?: Record<string, string>; unit_amount?: number | null; currency?: string;
+    recurring?: { interval?: string; interval_count?: number } | null;
+  };
 }
 
 interface StripeSubscription {
@@ -108,7 +111,9 @@ async function customerFor(ctx: RequestCtx, userId: string): Promise<string> {
 
 async function summary(ctx: RequestCtx): Promise<Response> {
   const userId = ctx.session!.userId;
-  const entitlements = await loadEntitlements(ctx.sql, { userId }, ctx.now());
+  // What a plan nets us is ours to know: the account dialog gets allowances, not revenue.
+  const { paidUsd: _paid, comped: _comped, ...ent } = await loadEntitlements(ctx.sql, { userId }, ctx.now());
+  const entitlements = { ...ent, guilds: ent.guilds.map(({ paidUsd: _guildPaid, ...g }) => g) };
   const { periodStart, periodEnd } = entitlements;
   const used = await usedCoreSeconds(ctx.sql, { userId }, periodStart, periodEnd);
   const rows = await ctx.sql`select stripe_subscription_id, status, current_period_end, items, guild_id
@@ -245,7 +250,14 @@ async function syncSubscription(ctx: AppCtx, subId: string): Promise<void> {
     const lookupKey = item.price?.lookup_key;
     if (!lookupKey) return [];
     const coreHours = Number(item.price?.metadata?.core_hours);
-    return [{ lookupKey, quantity: item.quantity ?? 1, ...(coreHours > 0 ? { coreHours } : {}) }];
+    // What the item charges, kept so the cost cap (queue.ts costProblem) knows what the plan pays. Months only for month or year terms.
+    const amount = item.price?.unit_amount, recurring = item.price?.recurring;
+    const months = (recurring?.interval === 'year' ? 12 : recurring?.interval === 'month' ? 1 : 0) * (recurring?.interval_count ?? 1);
+    return [{
+      lookupKey, quantity: item.quantity ?? 1, ...(coreHours > 0 ? { coreHours } : {}),
+      ...(Number.isInteger(amount) && amount! >= 0 && item.price?.currency ? { unitAmount: amount!, currency: item.price.currency } : {}),
+      ...(months > 0 ? { months } : {}),
+    }];
   });
   const dated = data.find((item) => item.current_period_start && item.current_period_end);
   const periodStart = dated ? new Date(dated.current_period_start! * 1000) : null;

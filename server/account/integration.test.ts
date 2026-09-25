@@ -23,7 +23,7 @@ import { usedCoreSeconds } from './usage';
 const PG = process.env.FROSTSIM_TEST_PG;
 const REDIS = process.env.FROSTSIM_TEST_REDIS;
 const MIGRATIONS = new URL('./migrations/', import.meta.url);
-const VERSIONS = ['001_init', '002_indexes', '003_character_history', '004_job_idempotency', '005_guild_role_limits'];
+const VERSIONS = ['001_init', '002_indexes', '003_character_history', '004_job_idempotency', '005_guild_role_limits', '006_providers'];
 const TABLES = ['audit_log', 'character_sims', 'character_snapshots', 'cloud_characters', 'compute_jobs', 'guild_role_limits', 'identities', 'integration_grants', 'schema_migrations',
   'sessions', 'shares', 'stripe_events', 'subscriptions', 'users', 'workers'];
 
@@ -185,7 +185,7 @@ describe.skipIf(!PG)('postgres integration (needs FROSTSIM_TEST_PG)', () => {
     const mine = await loadEntitlements(sql, { userId: user.id }, new Date());
     expect(mine).toMatchObject({ coreSeconds: 7800, maxThreads: 16, hostedShares: true, periodStart: start, periodEnd: end });
     const guild = await loadEntitlements(sql, { guildId: 'g9' }, new Date());
-    expect(guild.guilds).toEqual([{ guildId: 'g9', coreSeconds: 3600, maxThreads: 8, periodStart: start, periodEnd: end }]);
+    expect(guild.guilds).toEqual([{ guildId: 'g9', coreSeconds: 3600, maxThreads: 8, periodStart: start, periodEnd: end, paidUsd: 10 * (1 - 0.029) - 0.3 }]);
     expect(guild.coreSeconds).toBe(0);
   });
 

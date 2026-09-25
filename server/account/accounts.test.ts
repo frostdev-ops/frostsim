@@ -642,7 +642,7 @@ describe('admin', () => {
     const w = world(undefined, { role: 'admin' });
     expect((await patch(w, OTHER, { role: 'admin' })).status).toBe(404);
     expect((await patch(w, OTHER, { role: 'owner' })).status).toBe(400);
-    for (const bad of [{}, [], { name: 'x' }, { suspended: 'yes' }, { compCoreSeconds: -1 }, { compCoreSeconds: 1.5 }, { compMaxThreads: 0 }, { compMaxThreads: 33 }]) {
+    for (const bad of [{}, [], { name: 'x' }, { suspended: 'yes' }, { compCoreSeconds: -1 }, { compCoreSeconds: 1.5 }, { compMaxThreads: 0 }, { compMaxThreads: 65 }]) {
       expect(() => parsePatch(bad)).toThrow();
     }
     expect(parsePatch({ compMaxThreads: null, compCoreSeconds: 0 })).toEqual({ compMaxThreads: null, compCoreSeconds: 0 });
