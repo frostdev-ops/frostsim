@@ -11,6 +11,9 @@ import { usedCoreSeconds } from '../usage';
 import { tryRedis } from '../redis';
 import { configured } from '../config';
 import { assembleRun, validateRequest, type AssembledRun, type SimRequest } from '../../../src/lib/simc/assemble';
+import { cvOf, fitSpeed, iterationsFor, remainingSeconds, runFraction, secondsFor, unitsOf, workOf, type Speed, type SpeedSample, type Work } from '../../../src/lib/simc/cost';
+import { latestProgress } from '../../../src/lib/simc/progress';
+import { CLASS_LABELS } from '../../../src/lib/import/character';
 import { PACK_ID, nativeEngine, nativeInputProblem } from './native';
 import { cachedPrice, fleetLimits, monthSpend, spendRows } from './hetzner';
 
@@ -135,33 +138,130 @@ function jobThreads(app: App, maxThreads: number): number {
 
 /** Seconds from a worker's creation to its first claim before any worker has made one. */
 const DEFAULT_BOOT_S = 60;
-/** Expected wait for the autoscaler's next 15 s tick to order a server. */
+/** The autoscaler's tick, and the expected wait for its next one to order a server. */
+const TICK_S = 15;
 const HALF_TICK_S = 8;
+/** Finished jobs the cloud model is fitted from, and how long a fit is reused. */
+const MODEL_JOBS = 200;
+const MODEL_TTL_MS = 10 * 60_000;
+/** A class line, as characterBlocks reads one, for counting a stored request's characters in SQL. */
+const CLASS_LINE_SQL = `^\\s*(${Object.keys(CLASS_LABELS).join('|')})\\s*=`;
 
-export interface CapacityWorker { status: string; cores: number; busy: number; ageS: number }
 /** Where a new job would start: 'warm' on a free worker now, 'booting' on a server already starting, 'cold' on a server the
  *  autoscaler would order, 'queued' behind other runs (or the caller's own), 'none' when the cloud would refuse it (503/402).
- *  `waitS`: seconds until a worker claims it, when the server can tell. */
-export interface Capacity { state: 'warm' | 'booting' | 'cold' | 'queued' | 'none'; waitS?: number; threads: number }
+ *  `waitS`: seconds until a worker claims it, when the server can tell. `model`: cloud speed and DPS spread by fight style. */
+export interface Capacity { state: 'warm' | 'booting' | 'cold' | 'queued' | 'none'; waitS?: number; threads: number; model?: CloudModel }
 
-/** capacityView's decision, pure. `aheadThreads`: queued jobs a worker could claim before this one. */
+/** Cloud speed and DPS spread by fight style ('*': every style), fitted from recent finished jobs (cost.ts). */
+export interface CloudModel { speed: Record<string, Speed>; cv: Record<string, number> }
+
+export interface SlotWorker {
+  status: 'ready' | 'booting';
+  cores: number;
+  ageS: number;
+  /** Its running jobs: width and seconds left, null when unknown. */
+  running: { threads: number; leftS: number | null }[];
+}
+
+/** When a new job of `threads` would be claimed. Every worker offers a slot of that width whenever enough of its cores are free;
+ *  the jobs ahead take the earliest slots in order, each holding one for its expected run; this job gets the next. Pure. */
 export function capacityState(o: {
-  threads: number; ownRunning: boolean; workers: CapacityWorker[]; aheadThreads: number; canCreate: boolean; bootS: number;
-}): Omit<Capacity, 'threads'> {
-  // One running job per scope: the caller's next one waits for it, however many servers are free.
-  if (o.ownRunning) return { state: 'queued' };
-  const fits = (free: number) => Math.floor(Math.max(0, free) / o.threads);
-  let ahead = Math.ceil(o.aheadThreads / o.threads);
-  const ready = o.workers.filter((w) => w.status === 'ready').reduce((n, w) => n + fits(w.cores - w.busy), 0);
-  if (ready > ahead) return { state: 'warm', waitS: 0 };
-  ahead -= ready;
-  for (const w of o.workers.filter((w) => w.status === 'booting').sort((a, b) => b.ageS - a.ageS)) {
-    if (fits(w.cores) > ahead) return { state: 'booting', waitS: Math.round(Math.max(0, o.bootS - w.ageS)) };
-    ahead -= fits(w.cores);
+  threads: number;
+  /** Seconds left on the caller's own running job, which it must wait for: null when unknown, undefined with none running. */
+  ownLeftS?: number | null;
+  workers: SlotWorker[];
+  /** Claimable jobs queued before this one, oldest first: expected run seconds, null when unknown. */
+  ahead: (number | null)[];
+  /** Servers the autoscaler may still add, and their cores. */
+  canAdd: number;
+  serverCores: number;
+  bootS: number;
+}): Omit<Capacity, 'threads' | 'model'> {
+  type Slot = { at: number; source: 'ready' | 'booting' | 'cold' | 'freed' };
+  const slots: Slot[] = [];
+  for (const w of o.workers) {
+    const base = w.status === 'booting' ? Math.max(0, o.bootS - w.ageS) : 0;
+    let free = w.cores - w.running.reduce((n, r) => n + r.threads, 0);
+    const open = (at: number, source: Slot['source']) => {
+      for (; free >= o.threads; free -= o.threads) slots.push({ at, source });
+    };
+    open(base, w.status);
+    for (const r of [...w.running].sort((a, b) => (a.leftS ?? Infinity) - (b.leftS ?? Infinity))) {
+      free += r.threads;
+      open(Math.max(base, r.leftS ?? Infinity), 'freed');
+    }
   }
-  // ponytail: a cold job with others ahead waits for servers the autoscaler orders one per tick; that wait is not estimated.
-  if (o.canCreate && ahead === 0) return { state: 'cold', waitS: Math.round(o.bootS + HALF_TICK_S) };
-  return { state: 'queued' };
+  for (let k = 0; k < o.canAdd; k++) {
+    for (let n = Math.floor(o.serverCores / o.threads); n > 0; n--) slots.push({ at: o.bootS + HALF_TICK_S + k * TICK_S, source: 'cold' });
+  }
+  const earliest = () => slots.reduce<Slot | undefined>((best, s) => (!best || s.at < best.at ? s : best), undefined);
+  for (const run of o.ahead) {
+    const s = earliest();
+    if (!s || s.at === Infinity) return { state: 'queued' };
+    s.at += run ?? Infinity;
+    s.source = 'freed';
+  }
+  const s = earliest();
+  if (!s || s.at === Infinity || o.ownLeftS === null) return { state: 'queued' };
+  const waitS = Math.round(Math.max(s.at, o.ownLeftS ?? 0));
+  const state = o.ownLeftS !== undefined || s.source === 'freed' ? 'queued' : s.source === 'ready' ? 'warm' : s.source;
+  return { state, waitS };
+}
+
+/** The columns of a stored request that its work depends on, without its (possibly large) text. */
+const liteColumns = (sql: App['sql']) => sql`request->'settings' as settings, request->'accuracy' as accuracy,
+  request->'extraOptions' as extra, request->>'mode' as mode,
+  jsonb_array_length(coalesce(request->'profilesets', '[]'::jsonb))::int as sets,
+  regexp_count(coalesce(request->>'profile', ''), ${CLASS_LINE_SQL}, 1, 'in')::int as characters`;
+
+/** A request's work from its lite columns: a stand-in profile with as many characters and candidates keeps the same shape. */
+function liteWork(row: postgres.Row): Work {
+  return workOf({
+    schemaVersion: 1,
+    mode: row.mode ?? undefined,
+    profile: Array.from({ length: row.characters }, (_, i) => `mage=c${i}`).join('\n'),
+    settings: row.settings,
+    accuracy: row.accuracy,
+    extraOptions: Array.isArray(row.extra) ? row.extra : [],
+    profilesets: Array.from({ length: row.sets }, (_, i) => ({ id: `p${i}`, lines: [] })),
+  } as SimRequest);
+}
+
+let modelCache: { at: number; value: CloudModel } | null = null;
+
+/** Cloud speed and DPS spread by fight style, from the last finished jobs' work, wall time and result margin. */
+export async function cloudModel(app: App): Promise<CloudModel> {
+  const now = app.now().getTime();
+  if (modelCache && now - modelCache.at < MODEL_TTL_MS) return modelCache.value;
+  const rows = await app.sql`select threads, wall_seconds::float8 as wall, summary, ${liteColumns(app.sql)}
+    from compute_jobs where status = 'done' and wall_seconds > 0 and request is not null order by finished_at desc limit ${MODEL_JOBS}`;
+  const samples: Record<string, SpeedSample[]> = { '*': [] };
+  const cv2: Record<string, number[]> = {};
+  for (const row of rows) {
+    const iterations = Number(row.summary?.iterations);
+    if (!(iterations > 0) || !row.settings?.fightStyle) continue;
+    const work = liteWork(row);
+    const sample = { units: unitsOf(work, iterations), threads: row.threads, wall: row.wall };
+    (samples[work.fightStyle] ??= []).push(sample);
+    samples['*'].push(sample);
+    const cv = cvOf(Number(row.summary.dps), Number(row.summary.dpsError), iterations);
+    if (cv) (cv2[work.fightStyle] ??= []).push(cv * cv);
+  }
+  const speed: Record<string, Speed> = {};
+  for (const [style, list] of Object.entries(samples)) {
+    const fit = fitSpeed(list);
+    if (fit) speed[style] = fit;
+  }
+  const cv = Object.fromEntries(Object.entries(cv2).map(([style, v]) => [style, Math.sqrt(v.reduce((a, b) => a + b, 0) / v.length)]));
+  modelCache = { at: now, value: { speed, cv } };
+  return modelCache.value;
+}
+
+/** Expected run seconds of a queued job, from the cloud model; null when its iterations or speed are unknown. */
+function expectedRunS(model: CloudModel, work: Work, threads: number): number | null {
+  const speed = model.speed[work.fightStyle] ?? model.speed['*'];
+  const iterations = iterationsFor(work.accuracy, model.cv[work.fightStyle]);
+  return speed && iterations ? secondsFor(speed, unitsOf(work, iterations), threads) : null;
 }
 
 /** Where a job of the user's own plan would start now (GET /api/v1/compute/capacity), so a hybrid run can size its split first. */
@@ -171,29 +271,53 @@ export async function capacityView(app: App, userId: string): Promise<Capacity> 
   if (ent.maxThreads < 1) return { state: 'none', threads: 0 };
   const threads = jobThreads(app, ent.maxThreads);
   if (await capacityProblem(app, threads)) return { state: 'none', threads };
-  const [workers, [{ own }], [{ ahead }], [{ boot }], [{ total }]] = await Promise.all([
-    app.sql`select status, cores, extract(epoch from (${now}::timestamptz - created_at))::float8 as age,
-        coalesce((select sum(j.threads) from compute_jobs j where j.worker_id = w.id and j.status = 'running'), 0)::int as busy
-      from workers w where deleted_at is null and status in ('ready', 'booting') and cores >= ${threads}`,
-    app.sql`select exists (select 1 from compute_jobs where status = 'running' and user_id = ${userId} and guild_id is null) as own`,
-    app.sql`select coalesce(sum(threads), 0)::int as ahead from compute_jobs j where j.status = 'queued' and not exists (
+  const [model, workers, running, ahead, [{ boot }], [{ total }]] = await Promise.all([
+    cloudModel(app),
+    app.sql`select id, status, cores, extract(epoch from (${now}::timestamptz - created_at))::float8 as age
+      from workers where deleted_at is null and status in ('ready', 'booting') and cores >= ${threads}`,
+    app.sql`select id, worker_id, threads, user_id, guild_id, extract(epoch from (${now}::timestamptz - claimed_at))::float8 as elapsed,
+        ${liteColumns(app.sql)}
+      from compute_jobs where status = 'running'`,
+    app.sql`select threads, ${liteColumns(app.sql)} from compute_jobs j where j.status = 'queued' and not exists (
         select 1 from compute_jobs r where r.status = 'running'
-          and coalesce('g:' || r.guild_id, 'u:' || r.user_id::text) = coalesce('g:' || j.guild_id, 'u:' || j.user_id::text))`,
+          and coalesce('g:' || r.guild_id, 'u:' || r.user_id::text) = coalesce('g:' || j.guild_id, 'u:' || j.user_id::text))
+      order by j.created_at`,
     // Real cold starts: the autoscaler creates a worker for queued demand, so its first claim marks when it could take work.
     app.sql`select percentile_cont(0.5) within group (order by s)::float8 as boot from (
         select extract(epoch from (min(j.claimed_at) - w.created_at)) as s from workers w join compute_jobs j on j.worker_id = w.id
         where j.claimed_at is not null group by w.id, w.created_at order by w.created_at desc limit 20) recent`,
     app.sql`select count(*)::int as total from workers where deleted_at is null`,
   ]);
+  // A running job's time left: at its own pace once its progress says enough, else the model's run less what has passed.
+  const logs = running.length
+    ? await tryRedis(app.redis, app.log, async (r) => (await r.multi(running.map((j) => ['lrange', logKey(j.id), -30, -1])).exec())
+      ?.map(([err, lines]) => (err ? [] : (lines as string[]))) ?? [], [] as string[][])
+    : [];
+  const left = running.map((job, i): number | null => {
+    const work = liteWork(job);
+    const paced = remainingSeconds(runFraction(latestProgress(logs[i] ?? []), work.accuracy), job.elapsed);
+    if (paced !== undefined) return paced;
+    const expected = expectedRunS(model, work, job.threads);
+    return expected === null ? null : Math.max(0, expected - job.elapsed);
+  });
+  const own = running.findIndex((j) => j.user_id === userId && j.guild_id === null);
   const limits = fleetLimits(app.config);
+  const serverCores = (limits && cachedPrice(limits)?.cores) || threads;
   return {
     threads,
+    model,
     ...capacityState({
       threads,
-      ownRunning: own,
-      workers: workers.map((w) => ({ status: w.status, cores: w.cores ?? 0, busy: w.busy, ageS: w.age })),
-      aheadThreads: ahead,
-      canCreate: !!limits && total < limits.max,
+      ownLeftS: own === -1 ? undefined : left[own],
+      workers: workers.map((w) => ({
+        status: w.status,
+        cores: w.cores ?? 0,
+        ageS: w.age,
+        running: running.flatMap((j, i) => (j.worker_id === w.id ? [{ threads: j.threads, leftS: left[i] }] : [])),
+      })),
+      ahead: ahead.map((j) => expectedRunS(model, liteWork(j), j.threads)),
+      canAdd: limits ? Math.max(0, limits.max - total) : 0,
+      serverCores,
       bootS: boot ?? DEFAULT_BOOT_S,
     }),
   };

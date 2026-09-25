@@ -17,10 +17,6 @@ export interface RunView {
   log: string[]
   warnings: string[]
   progress: EngineProgress | null
-  /** The accuracy target this run is converging toward, when it has one. */
-  targetError: number | undefined
-  /** The earliest error the engine reported, the baseline for convergence. */
-  firstErrorPct: number | undefined
   assetProgress: { done: number; total?: number; cached?: boolean } | null
   /** Set when the last attempt failed; kept until the next run starts. */
   error: { message: string; detail?: string; fields?: string[] } | null
@@ -34,8 +30,6 @@ export const run: RunView = $state({
   log: [],
   warnings: [],
   progress: null,
-  targetError: undefined,
-  firstErrorPct: undefined,
   assetProgress: null,
   error: null,
   savedReportId: null,
@@ -100,9 +94,6 @@ function scheduleFlush(): void {
     run.log = [...buffer.lines]
     run.warnings = [...buffer.warnings]
     run.progress = buffer.progress ? { ...buffer.progress } : null
-    if (run.firstErrorPct === undefined && buffer.progress?.errorPct !== undefined) {
-      run.firstErrorPct = buffer.progress.errorPct
-    }
   }, FLUSH_MS)
 }
 
@@ -145,9 +136,6 @@ export async function startRun(opts: StartOptions): Promise<StartResult> {
   run.assetProgress = null
   run.error = null
   run.savedReportId = null
-  run.firstErrorPct = undefined
-  run.targetError =
-    opts.request.accuracy.mode === 'targetError' ? opts.request.accuracy.targetError : undefined
 
   const started = Date.now()
   // Job id chosen here so app.job exists before first event. Rerun = new report even from saved request.

@@ -20,6 +20,7 @@ import { candidatesDone, latestProgress, type EngineProgress } from './progress'
 import { acquireEngineSlot, type EngineSlot } from '../engine-budget'
 import { roleGroups, roleNote } from './role-share'
 import { SequenceWorker } from './sequence-worker'
+import { recordRun } from './speed-store'
 
 /** Engine worker message protocol; bump it and public/engine/sim-worker.js together. */
 export const WORKER_PROTOCOL = 1
@@ -358,6 +359,8 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
   /** simc's HTML report, when the run asked for one and the engine wrote it. */
   let htmlReportBytes: ArrayBuffer | null = null
   let placement: 'browser' | 'cloud' = 'browser'
+  /** This browser's engine ran the whole request, one sim run: its speed teaches the cost model (speed-store.ts). */
+  let soloLocal = false
   /** The engine said the script declared no actor. See the log handler. */
   let sawNothingToSim = false
   let lastEngineError = ''
@@ -627,6 +630,7 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
 
       emit('acquiring')
       const engineFor = (r: SimRequest) => deps.createEngineWorker ?? (remote ? remoteEngine?.(r, capability.engineDir) : null) ?? defaultDeps.createEngineWorker
+      soloLocal = !starts && !remote && !deps.createEngineWorker
       engineWorker = starts
         ? new SequenceWorker(starts, (i) => engineFor(groups![i].request)(capability.artifact, capability.engineDir)) as unknown as Worker
         : (deps.createEngineWorker ?? remote ?? defaultDeps.createEngineWorker)(capability.artifact, capability.engineDir)
@@ -860,6 +864,7 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
     }
 
     const raw = parsed.bytes
+    if (soloLocal && placement === 'browser') recordRun(req, parsed.report)
     // Kept for dev hook so stderr-reachability question can be asked from console.
     lastNotices = engineNotices
     succeed({

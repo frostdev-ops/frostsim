@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { __resetEngineRuntimeForTests, runJob, setRemoteEngine, WORKER_PROTOCOL, type JobEvent, type SimRequest } from './job'
-import { cloudShare, cloudWaitOf, createHybridEngine, learnSpeed, mergeCharacters, mergeProfilesets, mergeStats, splitOf, splitRequest, type RunPlace } from './hybrid'
+import { createHybridEngine, mergeCharacters, mergeProfilesets, mergeStats, planOf, priorPaces, splitOf, type RunPlace } from './hybrid'
 import { parseReport } from './report'
 import { DEFAULT_SETTINGS } from './options'
 import type { EngineCapability, EngineManifest } from './capability'
@@ -60,7 +60,9 @@ class LocalEngine {
   ids(): string[] {
     return idsIn(String(this.sent[0].profile))
   }
+  finished = false
   finish(): void {
+    this.finished = true
     this.say({ type: 'ready' })
     this.say({ type: 'done', report: new TextEncoder().encode(reportFor(this.ids(), namesIn(String(this.sent[0].profile)))) })
     this.say({ type: 'shutdown', reason: 'complete', threads: 4 })
@@ -78,7 +80,9 @@ class CloudServer {
   submit = 200
   status = 'queued'
   lines: string[] = []
+  /** The last job submitted, and every one, by id. */
   posted: SimRequest | null = null
+  jobs = new Map<string, SimRequest>()
   deletes = 0
   /** GET /api/v1/compute/capacity's answer; null answers 404 (an older server). */
   capacity: unknown = null
@@ -87,14 +91,18 @@ class CloudServer {
     if (url.endsWith('/capacity')) return this.capacity ? Response.json(this.capacity) : new Response(null, { status: 404 })
     if (init.method === 'POST') {
       this.posted = JSON.parse(String(init.body)).request
-      return this.submit === 200 ? Response.json({ id: CLOUD_ID }) : Response.json({ error: 'x' }, { status: this.submit })
+      if (this.submit !== 200) return Response.json({ error: 'x' }, { status: this.submit })
+      const id = CLOUD_ID.slice(0, -2) + String(this.jobs.size).padStart(2, '0')
+      this.jobs.set(id, this.posted!)
+      return Response.json({ id })
     }
     if (init.method === 'DELETE') {
       this.deletes++
       return new Response(null, { status: 204 })
     }
     if (url.endsWith('/result')) {
-      const body = new Blob([reportFor((this.posted!.profilesets ?? []).map((p) => p.id), namesIn(this.posted!.profile))]).stream().pipeThrough(new CompressionStream('gzip'))
+      const job = this.jobs.get(url.split('/').at(-2)!)!
+      const body = new Blob([reportFor((job.profilesets ?? []).map((p) => p.id), namesIn(job.profile))]).stream().pipeThrough(new CompressionStream('gzip'))
       return new Response(body)
     }
     return Response.json({ status: this.status, lines: this.lines, next: this.lines.length })
@@ -138,54 +146,6 @@ afterEach(async () => {
   __resetEngineRuntimeForTests()
 })
 
-describe('hybrid split and merge', () => {
-  it('splits by thread share, leaving each side at least one candidate', () => {
-    expect(cloudShare(4, 12, 4)).toBe(3)
-    expect(cloudShare(100, 16, 16)).toBe(50)
-    expect(cloudShare(2, 16, 1)).toBe(1)
-    expect(cloudShare(10, 1, 64)).toBe(1)
-  })
-
-  it('splits by measured speed for the soonest finish, and runs one side alone when that is sooner', () => {
-    const speed = { rel: 2, localWait: 3, cloudWait: 40, perPiece: { candidates: 1 } }
-    // Local 3 + (201 - n) s against cloud 40 + (n + 1) / 2 s: equal near n = 109.
-    expect(cloudShare(200, 12, 4, speed, 'candidates', 1)).toBe(109)
-    // The whole run here (3 + 11 s) ends before the cloud starts.
-    expect(cloudShare(10, 12, 4, speed, 'candidates', 1)).toBe(0)
-    // A cloud ten times as fast, starting as quickly as this browser, takes everything.
-    expect(cloudShare(4, 12, 4, { rel: 10, localWait: 5, cloudWait: 5, perPiece: { characters: 1 } }, 'characters')).toBe(4)
-    // No measurement for this kind: by thread share.
-    expect(cloudShare(4, 12, 4, speed, 'characters')).toBe(3)
-  })
-
-  it('learns speeds as moving averages, and nothing from a run too short to measure', () => {
-    const first = learnSpeed(null, 'candidates', { wait: 1, run: 10, pieces: 2 }, { wait: 30, run: 10, pieces: 4 })!
-    expect(first).toEqual({ rel: 2, localWait: 1, cloudWait: 30, perPiece: { candidates: 5 } })
-    const second = learnSpeed(first, 'candidates', { wait: 1, run: 10, pieces: 2 }, { wait: 5, run: 10, pieces: 4 })!
-    expect(second.cloudWait).toBe(20)
-    expect(learnSpeed(first, 'characters', { wait: 1, run: 1, pieces: 1 }, { wait: 1, run: 10, pieces: 1 })).toBe(first)
-    // With the server's estimate, the rest of the wait is the cloud's own overhead.
-    expect(learnSpeed(null, 'candidates', { wait: 1, run: 10, pieces: 2 }, { wait: 45, run: 10, pieces: 4 }, 38)!.cloudOverhead).toBe(7)
-  })
-
-  it('expects the cloud to start after the server\'s estimate plus its measured overhead', () => {
-    const speed = { rel: 2, localWait: 1, cloudWait: 90, cloudOverhead: 3, perPiece: {} }
-    expect(cloudWaitOf(speed, { state: 'cold', waitS: 45 })).toBe(48)
-    expect(cloudWaitOf(null, { state: 'warm', waitS: 0 })).toBe(5)
-    // Queued: the server cannot tell, so past runs decide.
-    expect(cloudWaitOf(speed, { state: 'queued' })).toBe(90)
-    expect(cloudWaitOf(speed, null)).toBe(90)
-  })
-
-  it('appends the cloud results, creating the section when the local side had none', () => {
-    const enc = (t: string) => new TextEncoder().encode(t).buffer as ArrayBuffer
-    const merged = (a: string[], b: string[]) => parseReport(JSON.parse(new TextDecoder().decode(mergeProfilesets(enc(reportFor(a)), enc(reportFor(b))))))
-    expect(merged(['c-0'], ['c-1', 'c-2']).profilesets.map((p) => p.name)).toEqual(['c-0', 'c-1', 'c-2'])
-    expect(merged([], ['c-1']).profilesets.map((p) => p.name)).toEqual(['c-1'])
-    expect(merged(['c-0'], []).profilesets.map((p) => p.name)).toEqual(['c-0'])
-  })
-})
-
 const twoCharacters = (): SimRequest => ({
   schemaVersion: 1,
   profile: '# Bob - frost\nmage="Bob"\nlevel=80\ntalents=a\n# Ann - fire\nmage="Ann"\nlevel=80\ntalents=b',
@@ -203,7 +163,12 @@ const weights = (normalize: boolean, stats = 'intellect,crit,haste,mastery,versa
 const enc = (t: unknown) => new TextEncoder().encode(JSON.stringify(t)).buffer as ArrayBuffer
 const dec = (b: ArrayBuffer) => JSON.parse(new TextDecoder().decode(b))
 
-describe('what splits', () => {
+/** request(4) at 100 iterations of 300 s is 30,000 units a candidate: this PC 5 s a candidate on 4 threads, the cloud 2.5 s on 12
+ *  plus 2 s of start-up. */
+const LOCAL_RUN = { 'frostsim.speed.v1': { runs: { Patchwerk: [{ units: 30_000, threads: 4, wall: 5 }] }, cv2: {} } }
+const CLOUD_MODEL = { speed: { Patchwerk: { overheadS: 2, secondsPerUnit: 0.001 } }, cv: {} }
+
+describe('hybrid plans', () => {
   it('splits candidates, characters of a multi-character run, and stat weights; never one character or a custom script', () => {
     expect(splitOf(request(3))).toEqual({ kind: 'candidates', pieces: 3 })
     expect(splitOf(twoCharacters())).toEqual({ kind: 'characters', pieces: 2 })
@@ -216,26 +181,47 @@ describe('what splits', () => {
     expect(splitOf({ ...twoCharacters(), mode: 'raw' })).toBeNull()
   })
 
-  it('gives this browser the first character, with the scenario lines, and the cloud the rest', () => {
-    const sides = splitRequest(twoCharacters(), 12)!
-    expect(sides.place).toMatchObject({ mode: 'hybrid', kind: 'characters', hereNames: ['Bob'], thereNames: ['Ann'] })
-    expect(namesIn(sides.cloud.profile)).toEqual(['Ann'])
-    const local = sides.localStart({ profile: 'whole', args: ['a'] })
+  it('gives any chunk of characters its own profile, with the scenario lines, keeping the controller\'s args', () => {
+    const plan = planOf(twoCharacters())!
+    expect(namesIn(plan.request([1]).profile)).toEqual(['Ann'])
+    const local = plan.localStart({ profile: 'whole', args: ['a'] }, [0])
     expect(namesIn(local.profile)).toEqual(['Bob'])
     expect(local.profile).toContain('enemy=Boss')
     expect(local.args).toEqual(['a'])
   })
 
-  it('splits stats by scale_only, the primary on both sides when normalizing, and swaps only that argument locally', () => {
-    const sides = splitRequest(weights(true), 12)!
-    expect(sides.place).toMatchObject({ kind: 'stats', both: ['intellect'], hereNames: ['crit'], thereNames: ['haste', 'mastery', 'versatility'] })
-    expect(sides.cloud.extraOptions).toContain('scale_only=intellect,haste,mastery,versatility')
-    expect(sides.localStart({ profile: 'p', args: ['x', 'scale_only=intellect,crit,haste,mastery,versatility', 'y'] }).args)
+  it('gives a chunk of stats its scale_only, the primary on every chunk when normalizing, swapping only that argument', () => {
+    const plan = planOf(weights(true))!
+    expect(plan).toMatchObject({ kind: 'stats', names: ['crit', 'haste', 'mastery', 'versatility'], shared: 2, both: ['intellect'] })
+    expect(plan.request([1, 2, 3]).extraOptions).toContain('scale_only=intellect,haste,mastery,versatility')
+    expect(plan.localStart({ profile: 'p', args: ['x', 'scale_only=intellect,crit,haste,mastery,versatility', 'y'] }, [0]).args)
       .toEqual(['x', 'scale_only=intellect,crit', 'y'])
+  })
+
+  it('drops the other candidates\' lines from a local chunk', () => {
+    const plan = planOf(request(3))!
+    const profile = 'mage="Bob"\nprofileset."c-0"+=talents=t0\nprofileset."c-1"+=talents=t1\nprofileset."c-2"+=talents=t2'
+    expect(idsIn(plan.localStart({ profile, args: [] }, [0, 2]).profile)).toEqual(['c-0', 'c-2'])
+  })
+
+  it('paces each side from this device\'s runs and the server\'s cloud model, at the iterations the spread needs', () => {
+    const store = memoryStore(LOCAL_RUN)
+    expect(priorPaces(request(4), 12, { state: 'warm', waitS: 0, model: CLOUD_MODEL }, store)).toEqual({
+      local: { piece: 5, chunk: 5 }, cloud: { piece: 2.5, chunk: 4.5 },
+    })
+    // A target error with no measured spread: the iterations, and so the paces, are unknown.
+    expect(priorPaces({ ...request(4), accuracy: { mode: 'targetError', targetError: 0.1, maxIterations: 1000 } }, 12, null, store)).toEqual({})
   })
 })
 
 describe('merges', () => {
+  it('appends the cloud results, creating the section when the local side had none', () => {
+    const merged = (a: string[], b: string[]) => parseReport(dec(mergeProfilesets(enc(JSON.parse(reportFor(a))), enc(JSON.parse(reportFor(b))))))
+    expect(merged(['c-0'], ['c-1', 'c-2']).profilesets.map((p) => p.name)).toEqual(['c-0', 'c-1', 'c-2'])
+    expect(merged([], ['c-1']).profilesets.map((p) => p.name)).toEqual(['c-1'])
+    expect(merged(['c-0'], []).profilesets.map((p) => p.name)).toEqual(['c-0'])
+  })
+
   it('appends the cloud characters after this browser\'s', () => {
     const merged = parseReport(dec(mergeCharacters(enc(JSON.parse(reportFor([], ['Bob']))), enc(JSON.parse(reportFor([], ['Ann', 'Cy']))))))
     expect(merged.players.map((p) => p.name)).toEqual(['Bob', 'Ann', 'Cy'])
@@ -256,6 +242,15 @@ describe('merges', () => {
   })
 })
 
+/** Finishes every local engine as it appears and lets the cloud answer, until the run settles. */
+async function drive(s: CloudServer, settled: () => boolean): Promise<void> {
+  s.status = 'done'
+  for (let i = 0; i < 40 && !settled(); i++) {
+    for (const w of spawned.filter((x) => x.url !== 'report' && !x.finished && x.sent.length)) w.finish()
+    await vi.advanceTimersByTimeAsync(1000)
+  }
+}
+
 describe('hybrid runs', () => {
   it('runs a multi-character Quick Sim a character each side and returns one report with both, and says so', async () => {
     const s = new CloudServer()
@@ -265,11 +260,15 @@ describe('hybrid runs', () => {
     expect(namesIn(String(spawned[0].sent[0].profile))).toEqual(['Bob'])
     expect(namesIn(s.posted!.profile)).toEqual(['Ann'])
 
+    // A server claims Ann's job; Bob takes 10 s here.
+    s.status = 'running'
+    await vi.advanceTimersByTimeAsync(10_000)
     spawned[0].finish()
     s.status = 'done'
     await vi.advanceTimersByTimeAsync(1000)
     const outcome = await run.handle.result
     expect(outcome.report.players.map((p) => p.name)).toEqual(['Bob', 'Ann'])
+    expect(spawned.filter((w) => w.url !== 'report')).toHaveLength(1)
   })
 
   it('says why a run with one piece runs whole on Frostsim Cloud', async () => {
@@ -280,42 +279,34 @@ describe('hybrid runs', () => {
     await expect(run.handle.result).rejects.toMatchObject({ name: 'AbortError' })
   })
 
-  it('runs each share on its own side at once and returns one report with every candidate', async () => {
+  it('hands out chunks as each side frees up, and returns every candidate once, with whole-run progress', async () => {
     const s = new CloudServer()
-    const run = hybridRun(s, request(4))
+    const run = hybridRun(s, request(6))
     await vi.advanceTimersByTimeAsync(0)
+    // By thread share (4 here, 12 there) and halved: one here, two there, the rest held back.
+    expect(spawned[0].ids()).toEqual(['c-0'])
+    expect(s.posted!.profilesets!.map((p) => p.id)).toEqual(['c-4', 'c-5'])
 
-    expect(spawned).toHaveLength(1)
-    const local = spawned[0]
-    expect(local.ids()).toEqual(['c-0'])
-    expect(s.posted!.profilesets!.map((p) => p.id)).toEqual(['c-1', 'c-2', 'c-3'])
+    spawned[0].say({ type: 'ready' })
+    spawned[0].say({ type: 'log', stream: 'out', lines: [progress('c-0', 2, 2)] })
+    expect(run.events.at(-1)?.engineProgress).toMatchObject({ base: 'Hybrid', phase: '0 of 6' })
 
-    // Candidate progress counts both sides against the whole run: 1 local + 2 cloud done of 4.
-    s.status = 'running'
-    s.lines = [progress('c-3', 3, 4)]
-    await vi.advanceTimersByTimeAsync(1000)
-    local.say({ type: 'ready' })
-    local.say({ type: 'log', stream: 'out', lines: [progress('c-0', 2, 2)] })
-    expect(run.events.at(-1)?.stage).toMatchObject({ done: 3, total: 4 })
-
-    local.finish()
-    await vi.advanceTimersByTimeAsync(0)
-    expect(run.events.some((e) => e.state === 'analyzing')).toBe(false)
-    s.status = 'done'
-    await vi.advanceTimersByTimeAsync(1000)
-    const outcome = await run.handle.result
-    expect(outcome.report.profilesets.map((p) => p.name).sort()).toEqual(['c-0', 'c-1', 'c-2', 'c-3'])
-    expect(outcome.profilesetStatus.missing).toEqual([])
-    expect(spawned.filter((w) => w.url !== 'report')).toHaveLength(1)
+    let outcome: Awaited<typeof run.handle.result> | undefined
+    void run.handle.result.then((o) => { outcome = o })
+    await drive(s, () => outcome !== undefined)
+    expect(outcome!.report.profilesets.map((p) => p.name).sort()).toEqual(['c-0', 'c-1', 'c-2', 'c-3', 'c-4', 'c-5'])
+    expect(outcome!.profilesetStatus.missing).toEqual([])
+    // More than one chunk ran on each side.
+    expect(spawned.filter((w) => w.url !== 'report').length).toBeGreaterThan(1)
+    expect(s.jobs.size).toBeGreaterThan(1)
   })
 
-  it('runs a declined cloud share here, only after the local share has shut down', async () => {
+  it('sends a declined cloud chunk\'s candidates back to this PC, after its current engine is gone', async () => {
     const s = new CloudServer()
     s.submit = 402
     const run = hybridRun(s, request(4))
     await vi.advanceTimersByTimeAsync(0)
     expect(spawned).toHaveLength(1)
-
     spawned[0].finish()
     await vi.advanceTimersByTimeAsync(0)
     expect(spawned).toHaveLength(2)
@@ -324,6 +315,7 @@ describe('hybrid runs', () => {
     const outcome = await run.handle.result
     expect(outcome.report.profilesets).toHaveLength(4)
     expect(run.events.some((e) => e.warning?.startsWith('Frostsim Cloud: no compute allowance'))).toBe(true)
+    expect(places.at(-1)?.note).toContain('The rest runs on this PC')
   })
 
   it('cancels both sides and deletes the cloud job', async () => {
@@ -337,46 +329,24 @@ describe('hybrid runs', () => {
     expect(spawned[0].sent.some((m) => m.type === 'cancel')).toBe(true)
   })
 
-  it('measures both sides of a finished run for the next split', async () => {
+  it('learns this device\'s speed from its chunks', async () => {
     const store = memoryStore()
     const s = new CloudServer()
     const run = hybridRun(s, request(4), store)
+    let settled = false
+    void run.handle.result.then(() => { settled = true })
     await vi.advanceTimersByTimeAsync(0)
-    const local = spawned[0]
-    local.say({ type: 'ready' })
-    await vi.advanceTimersByTimeAsync(1000)
-    local.say({ type: 'log', stream: 'out', lines: [progress('c-0', 1, 2)] })
-    s.status = 'running'
-    s.lines = [progress('c-1', 1, 4)]
-    await vi.advanceTimersByTimeAsync(10_000)
-    local.finish()
-    s.status = 'done'
-    await vi.advanceTimersByTimeAsync(1000)
-    await run.handle.result
-    const speed = JSON.parse(store.getItem('frostsim.hybrid.speed')!)['4/12']
-    // This browser: 1 s to start, then 10 s for its candidate and the baseline.
-    expect(speed).toMatchObject({ localWait: 1, perPiece: { candidates: 5 } })
-    expect(speed.rel).toBeGreaterThan(1)
+    await drive(s, () => settled)
+    expect(JSON.parse(store.getItem('frostsim.speed.v1')!).runs.Patchwerk.length).toBeGreaterThan(0)
   })
 
-  it('runs the whole run here when past runs say the cloud would start too late, and says so', async () => {
-    const s = new CloudServer()
-    const run = hybridRun(s, request(4), memoryStore({ 'frostsim.hybrid.speed': { '4/12': { rel: 2, localWait: 1, cloudWait: 90, perPiece: { candidates: 5 } } } }))
-    await vi.advanceTimersByTimeAsync(0)
-    expect(s.posted).toBeNull()
-    expect(spawned[0].ids()).toEqual(['c-0', 'c-1', 'c-2', 'c-3'])
-    expect(places).toEqual([expect.objectContaining({ mode: 'browser', note: expect.stringContaining('none of your allowance') })])
-    spawned[0].finish()
-    expect((await run.handle.result).report.profilesets).toHaveLength(4)
-  })
-
-  it('splits when a cloud server is free, and runs here alone when one would have to boot first', async () => {
-    const measured = { 'frostsim.hybrid.speed': { '4/12': { rel: 2, localWait: 1, cloudWait: 20, cloudOverhead: 2, perPiece: { candidates: 5 } } } }
+  it('splits by measured pace when a cloud server is free, and keeps everything here when one would have to boot', async () => {
     const warm = new CloudServer()
-    warm.capacity = { state: 'warm', waitS: 0 }
-    const run = hybridRun(warm, request(4), memoryStore(measured))
+    warm.capacity = { state: 'warm', waitS: 0, model: CLOUD_MODEL }
+    const run = hybridRun(warm, request(4), memoryStore(LOCAL_RUN))
     await vi.advanceTimersByTimeAsync(0)
-    expect(places).toEqual([expect.objectContaining({ mode: 'hybrid', here: 1, there: 3, note: expect.stringContaining('start in about 2 s') })])
+    // Both finish near 15 s: two candidates here (5 s start-up + 10 s), two there (2 s wait + 4.5 s + 5 s).
+    expect(places.at(-1)).toMatchObject({ mode: 'hybrid', here: 2, there: 2 })
     run.handle.cancel()
     await expect(run.handle.result).rejects.toMatchObject({ name: 'AbortError' })
     await vi.advanceTimersByTimeAsync(20_000)
@@ -384,11 +354,12 @@ describe('hybrid runs', () => {
     spawned.length = 0
 
     const cold = new CloudServer()
-    cold.capacity = { state: 'cold', waitS: 60 }
-    const alone = hybridRun(cold, request(4), memoryStore(measured))
+    cold.capacity = { state: 'cold', waitS: 60, model: CLOUD_MODEL }
+    const alone = hybridRun(cold, request(4), memoryStore(LOCAL_RUN))
     await vi.advanceTimersByTimeAsync(0)
     expect(cold.posted).toBeNull()
-    expect(places).toEqual([expect.objectContaining({ mode: 'browser', note: expect.stringContaining('start a server') })])
+    expect(spawned[0].ids()).toEqual(['c-0', 'c-1', 'c-2', 'c-3'])
+    expect(places.at(-1)).toMatchObject({ here: 4, there: 0, note: expect.stringContaining('none of your allowance') })
     spawned[0].finish()
     expect((await alone.handle.result).report.profilesets).toHaveLength(4)
   })
@@ -399,23 +370,52 @@ describe('hybrid runs', () => {
     const run = hybridRun(s, request(4))
     await vi.advanceTimersByTimeAsync(0)
     expect(s.posted).toBeNull()
-    expect(places).toEqual([expect.objectContaining({ mode: 'browser', note: expect.stringContaining('cannot take runs') })])
+    expect(places.at(-1)?.note).toContain('cannot take runs')
     spawned[0].finish()
     expect((await run.handle.result).report.profilesets).toHaveLength(4)
   })
 
-  it('confirms a cancel at once when both shares already finished', async () => {
+  it('takes back a cloud chunk no server has claimed once this PC is idle', async () => {
+    const s = new CloudServer()
+    const run = hybridRun(s, twoCharacters())
+    await vi.advanceTimersByTimeAsync(0)
+    expect(namesIn(s.posted!.profile)).toEqual(['Ann'])
+    // The cloud job is still queued when this PC finishes Bob.
+    spawned[0].finish()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(s.deletes).toBe(1)
+    expect(namesIn(String(spawned[1].sent[0].profile))).toEqual(['Ann'])
+    spawned[1].finish()
+    expect((await run.handle.result).report.players.map((p) => p.name)).toEqual(['Bob', 'Ann'])
+  })
+
+  it('races a cloud chunk running far slower than expected, and cancels the side that loses', async () => {
+    const s = new CloudServer()
+    s.capacity = { state: 'warm', waitS: 0, model: CLOUD_MODEL }
+    const run = hybridRun(s, twoCharacters(), memoryStore(LOCAL_RUN))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(namesIn(s.posted!.profile)).toEqual(['Ann'])
+    // The cloud is a tenth of the way through Ann after about 20 s; Bob took 20 s here.
+    s.status = 'running'
+    s.lines = ['Generating\t1\t1\t10\t100\t5\t0']
+    await vi.advanceTimersByTimeAsync(20_000)
+    spawned[0].finish()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(namesIn(String(spawned[1].sent[0].profile))).toEqual(['Ann'])
+    spawned[1].finish()
+    expect((await run.handle.result).report.players.map((p) => p.name)).toEqual(['Bob', 'Ann'])
+    await vi.advanceTimersByTimeAsync(0)
+    expect(s.deletes).toBe(1)
+  })
+
+  it('reports before shutting down, and confirms a cancel at once when nothing is left running', async () => {
     const s = new CloudServer()
     const worker = createHybridEngine({ fetch: s.fetch, pollMs: 1000, cloudThreads: 12, speedStore: null })(request(4), PACK_DIR)!('threaded') as unknown as LocalEngine
     const got: Record<string, unknown>[] = []
     worker.onmessage = (e) => got.push((e as MessageEvent).data)
     worker.postMessage({ protocol: WORKER_PROTOCOL, jobId: 'j1', profile: 'x', args: [] })
     await vi.advanceTimersByTimeAsync(0)
-    spawned[0].finish()
-    s.status = 'done'
-    await vi.advanceTimersByTimeAsync(1000)
-    await vi.waitFor(() => expect(got.some((m) => m.type === 'shutdown')).toBe(true))
-    // The report comes before the shutdown.
+    await drive(s, () => got.some((m) => m.type === 'shutdown'))
     expect(got.filter((m) => m.type === 'done' || m.type === 'shutdown').map((m) => m.type)).toEqual(['done', 'shutdown'])
     worker.postMessage({ type: 'cancel' })
     expect(got.at(-1)).toMatchObject({ type: 'shutdown', reason: 'cancelled' })

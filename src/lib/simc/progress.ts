@@ -150,6 +150,8 @@ export function latestProgress(lines: readonly string[]): EngineProgress | null 
 
 /** Count finished candidates: engine counts baseline as phase 1, so phase N = N-1 candidates done. Parallel line counts directly. */
 export function candidatesDone(progress: EngineProgress, candidateCount: number): number {
+  // A hybrid run's record names its finished parts: "3 of 10" (hybrid.ts).
+  if (progress.base === 'Hybrid') return Math.min(Number(progress.phase?.split(' ')[0]) || 0, candidateCount)
   if (progress.base === 'Profilesets') return Math.min(progress.phaseIndex, candidateCount)
   return Math.max(0, Math.min(progress.phaseIndex - 1, candidateCount))
 }

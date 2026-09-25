@@ -143,15 +143,19 @@ when the result download fails or takes over 150 s. Closing the page cancels the
 
 Placement (`src/lib/account/placement.svelte.ts`): with a compute plan, runs go to the cloud by default, and a "Run on" switch beside
 the character picker on every tool screen keeps an explicit choice. Avalanche (`compute_l`) adds Hybrid, its default
-(`src/lib/simc/hybrid.ts`): a run made of two or more independent sims splits them between this browser and one cloud job, both
-running at once, and concatenates the results into one report. The split aims for the soonest finish: each finished run records, on
-this device, both sides' seconds per piece and their start-up waits (engine load here; queue, worker boot and upload there) as moving
-averages, and the next run picks the share with the earliest predicted end. Before splitting it asks `GET /api/v1/compute/capacity`
-(`capacityView` in `compute/queue.ts`) where a job of the user's width would start: `warm` on a free worker, `booting` on a server
-already starting (the rest of its boot), `cold` on one the autoscaler would order (the median created-to-first-claim time of the
-last 20 workers, plus half a tick), `queued` behind other runs, or `none` when the cloud would refuse it, which runs the whole run
-here without submitting. The predicted cloud start is that estimate plus the cloud's own overhead measured beyond it; with no
-answer inside 1.5 s, past runs' average wait. With no measurements it splits by thread share. When one
+(`src/lib/simc/hybrid.ts`): a run made of two or more independent sims (pieces) runs on this browser and Frostsim Cloud at once,
+in chunks from one queue, and concatenates the chunk reports into one. Estimates come from one cost model shared with the server
+(`src/lib/simc/cost.ts`): work is pieces x iterations x fight seconds; iterations for a target error come from the DPS spread; a
+side's speed is a fitted start-up plus seconds per unit per thread. This device fits its own speed and spread from its finished
+runs (`speed-store.ts`, localStorage); the server fits the cloud's from its last 200 finished jobs and returns them from
+`GET /api/v1/compute/capacity` (`capacityView` in `compute/queue.ts`), with where a job of the user's width would start and when:
+`warm`, `booting` (the rest of its boot), `cold` (median created-to-first-claim of the last 20 workers, plus half a tick), `queued`
+(a slot simulation: running jobs finish at their own pace from their progress, queued jobs ahead take slots for their predicted
+run) or `none`, which runs everything here without submitting. Each side takes the next chunk when it is free: half of the share
+that makes both finish together, counting start-ups and the cloud's wait, so chunks shrink and the split corrects itself as live
+paces replace past ones; a side that would finish after the other could do everything alone takes nothing. At the end an idle
+side takes back a cloud chunk no server has claimed, or races the other side's last chunk when it would finish it 25% sooner, and
+cancels the loser. At most 8 cloud jobs per run; with no measurements, chunks follow thread share. When one
 side alone is predicted to finish sooner, the whole run goes there, and the run panel says why. Three kinds split: profileset candidates (Top Gear,
 Droptimizer, Crest and Compare batches; profileset results appended), the characters of a multi-character Quick Sim (each its own
 sim under `single_actor_batch=1`; the first character stays local and the cloud's players are appended) and Stat Weights by

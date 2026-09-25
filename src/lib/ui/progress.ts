@@ -18,29 +18,6 @@ export function fractionOf(p: EngineProgress | null): number | undefined {
   return Math.min(1, p.iterations / p.iterationTotal)
 }
 
-/** ESTIMATE of how far target-accuracy run converged, not % work (error can rise as samples accumulate). Returns < 1; only engine terminal can say finished. */
-export const MAX_ESTIMATED_PROGRESS = 0.99
-
-export function convergenceOf(
-  p: EngineProgress | null,
-  first: number | undefined,
-  target: number | undefined,
-): number | undefined {
-  const current = p?.errorPct
-  // Zero/negative/non-finite = "engine didn't tell us" (zero error before terminal is report artefact).
-  if (!isPositiveFinite(current) || !isPositiveFinite(first) || !isPositiveFinite(target)) {
-    return undefined
-  }
-  if (first <= target) return undefined
-  const travelled = (first - current) / (first - target)
-  // Clamped both ends: error above start shows no progress not negative bar.
-  return Math.max(0, Math.min(MAX_ESTIMATED_PROGRESS, travelled))
-}
-
-function isPositiveFinite(n: number | undefined): n is number {
-  return typeof n === 'number' && Number.isFinite(n) && n > 0
-}
-
 /** Keeps best estimate seen so far so rising error doesn't drag bar backwards; cosmetic, never reaches 1 (never read as target reached). */
 export function highWater(previous: number | undefined, next: number | undefined): number | undefined {
   if (next === undefined) return previous
