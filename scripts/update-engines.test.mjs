@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdDecompressSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
-import { buildNative, nativeTargets, r2Credentials, sigV4, writeNativeStatus } from './update-engines.mjs';
+import { buildNative, hcloudCredentials, nativeTargets, r2Credentials, remoteBuilder, sigV4, sweepBuilders, writeNativeStatus } from './update-engines.mjs';
 
 const green = { status: 'completed', conclusion: 'success', event: 'push', head_branch: 'midnight', path: '.github/workflows/main.yml',
   repository: { full_name: 'simulationcraft/simc' }, head_repository: { full_name: 'simulationcraft/simc' }, head_sha: 'a'.repeat(40) };
@@ -165,6 +165,110 @@ describe('native builds', () => {
       delete process.env.FROSTSIM_BUILD_TMP;
       rmSync(tmp, { recursive: true, force: true });
     }
+  });
+});
+
+describe('remote native builds', () => {
+  const tmp = mkdtempSync(join(tmpdir(), 'frostsim-builder-test-'));
+  const hc = { token: 'tok', serverType: 'cpx62', location: 'nbg1' };
+  /** Fake Hetzner: records every call, answers creates, 204s deletes. */
+  function hetzner() {
+    const calls = [];
+    const fetchFn = async (url, init) => {
+      const path = url.replace('https://api.hetzner.cloud/v1', '');
+      calls.push({ method: init.method, path, body: init.body ? JSON.parse(init.body) : undefined, auth: init.headers.authorization });
+      if (init.method === 'POST' && path === '/ssh_keys') return Response.json({ ssh_key: { id: 7 } });
+      if (init.method === 'POST' && path === '/servers') return Response.json({ server: { id: 9, public_net: { ipv4: { ip: '192.0.2.1' } } } });
+      return new Response(null, { status: 204 });
+    };
+    return { calls, fetchFn };
+  }
+  /** Fake exec: records commands; makes ssh-keygen's key and the copied-back binary exist. */
+  function execs({ sshFails = false } = {}) {
+    const commands = [];
+    const exec = (cwd, command, args) => {
+      commands.push([command, ...args].join(' '));
+      if (command === 'ssh-keygen') { const key = args[args.indexOf('-f') + 1]; writeFileSync(key, 'private'); writeFileSync(`${key}.pub`, 'ssh-ed25519 AAAA frostsim-native-build'); }
+      if (command === 'ssh' && sshFails) throw new Error('connection refused');
+      if (command === 'scp' && args.at(-2)?.endsWith(':/w/build/native/simc')) writeFileSync(args.at(-1), 'ELF from the builder');
+    };
+    return { commands, exec };
+  }
+
+  it('reads hcloud.env with defaults, is off without it, and refuses a readable or tokenless one', () => {
+    const env = (name, text, mode = 0o640) => { const file = join(tmp, name); writeFileSync(file, text, { mode }); chmodSync(file, mode); return file; };
+    expect(hcloudCredentials(join(tmp, 'absent.env'))).toBeNull();
+    expect(hcloudCredentials(env('ok.env', 'HCLOUD_TOKEN=abc\n'))).toEqual({ token: 'abc', serverType: 'cpx62', location: 'nbg1' });
+    expect(hcloudCredentials(env('custom.env', 'HCLOUD_TOKEN=abc\nHCLOUD_BUILD_SERVER_TYPE=ccx33\nHCLOUD_BUILD_LOCATION=fsn1\n')))
+      .toEqual({ token: 'abc', serverType: 'ccx33', location: 'fsn1' });
+    expect(() => hcloudCredentials(env('open.env', 'HCLOUD_TOKEN=abc\n', 0o644))).toThrow(/readable by other users/);
+    expect(() => hcloudCredentials(env('empty.env', 'HCLOUD_BUILD_LOCATION=fsn1\n'))).toThrow(/HCLOUD_TOKEN/);
+  });
+
+  it('builds on a labelled Ubuntu 24.04 server, copies the binary back for the local smoke and upload, and deletes the server', async () => {
+    const work = mkdtempSync(join(tmp, 'work-'));
+    const { calls, fetchFn } = hetzner();
+    const { commands, exec } = execs();
+    const builder = await remoteBuilder(hc, work, { fetchFn, exec, sleep: async () => {} });
+    const server = calls.find((c) => c.path === '/servers' && c.method === 'POST');
+    expect(server.body).toMatchObject({ server_type: 'cpx62', image: 'ubuntu-24.04', location: 'nbg1', ssh_keys: [7], labels: { frostsim: 'native-build' } });
+    expect(server.auth).toBe('Bearer tok');
+
+    const output = join(tmp, 'out'), pack = join(output, 'engine/versions/p1');
+    mkdirSync(join(pack, 'source'), { recursive: true });
+    writeFileSync(join(pack, 'source/simc.tar.gz'), 'tar');
+    const dir = mkdtempSync(join(tmp, 'build-'));
+    builder.compile(pack, dir);
+    expect(readFileSync(join(dir, 'build/native/simc'), 'utf8')).toBe('ELF from the builder');
+    expect(commands.some((c) => c.startsWith('scp') && c.includes('source/simc.tar.gz root@192.0.2.1:/root/simc.tar.gz'))).toBe(true);
+    const remote = commands.find((c) => c.includes('cmake -S vendor/simc'));
+    expect(remote).toContain('-DSC_NO_NETWORKING=ON -DCMAKE_CXX_FLAGS=-DSC_USE_PTR=0');
+    expect(remote).not.toContain('ccache');
+    expect(commands.every((c) => !c.startsWith('ssh ') || c.includes('StrictHostKeyChecking=no'))).toBe(true);
+
+    await builder.close();
+    expect(calls.filter((c) => c.method === 'DELETE').map((c) => c.path)).toEqual(['/servers/9', '/ssh_keys/7']);
+  });
+
+  it('deletes the server and key when setup fails, before throwing', async () => {
+    const work = mkdtempSync(join(tmp, 'work-'));
+    const { calls, fetchFn } = hetzner();
+    await expect(remoteBuilder(hc, work, { fetchFn, exec: execs({ sshFails: true }).exec, sleep: async () => {} })).rejects.toThrow(/never accepted ssh/);
+    expect(calls.filter((c) => c.method === 'DELETE').map((c) => c.path)).toEqual(['/servers/9', '/ssh_keys/7']);
+  });
+
+  it('sweeps only builders older than two hours', async () => {
+    const now = Date.parse('2026-09-25T12:00:00Z');
+    const deleted = [];
+    const fetchFn = async (url, init) => {
+      if (init.method === 'GET') {
+        expect(url).toContain('label_selector=frostsim%3Dnative-build');
+        return Response.json({ servers: [{ id: 1, created: '2026-09-25T09:00:00Z' }, { id: 2, created: '2026-09-25T11:30:00Z' }] });
+      }
+      deleted.push(url);
+      return new Response(null, { status: 204 });
+    };
+    expect(await sweepBuilders(hc, { fetchFn, now })).toEqual([1]);
+    expect(deleted).toEqual(['https://api.hetzner.cloud/v1/servers/1']);
+  });
+
+  it('smokes and uploads a builder-compiled binary like a local one', async () => {
+    const output = join(tmp, 'out2'), pack = join(output, 'engine/versions/p2');
+    mkdirSync(join(pack, 'source'), { recursive: true });
+    writeFileSync(join(pack, 'source/simc.tar.gz'), 'tar');
+    const commands = [];
+    const exec = (cwd, command, args) => {
+      commands.push(command);
+      if (command.endsWith('build/native/simc')) writeFileSync(join(cwd, 'native-smoke.json'), JSON.stringify({ sim: { players: [{ collected_data: { dps: { mean: 1 } } }] } }));
+    };
+    const compile = (packDir, dir) => { mkdirSync(join(dir, 'build/native'), { recursive: true }); writeFileSync(join(dir, 'build/native/simc'), 'ELF remote'); };
+    const puts = [];
+    const native = await buildNative(output, 'p2', { accountId: 'a'.repeat(32), accessKeyId: 'id', secretAccessKey: 's', bucket: 'frostsim-engines' },
+      { exec, compile, fetchFn: async (url, init) => { puts.push(url); return new Response(null, { status: 200 }); } });
+    expect(commands).not.toContain('cmake');
+    expect(commands.some((c) => c.endsWith('build/native/simc'))).toBe(true);
+    expect(puts).toHaveLength(2);
+    expect(JSON.parse(readFileSync(join(pack, 'native.json'), 'utf8'))).toEqual(native);
   });
 });
 

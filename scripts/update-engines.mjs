@@ -382,6 +382,92 @@ async function r2Put(creds, key, body, headers, fetchFn) {
   if (!response.ok) throw new Error(`R2 PUT ${key}: HTTP ${response.status}`);
 }
 
+// Remote native builds: the VPS has 4 cores shared with nginx and the APIs, so a cold native build takes about an hour there.
+// With hcloud.env, one temporary Hetzner server per run compiles every pending pack in minutes. It runs Ubuntu 24.04, the
+// worker OS, so the binary links the workers' glibc. The binary comes back here for the same smoke, compression and upload,
+// and the server is always deleted. Any remote failure builds that pack here instead.
+const HCLOUD_API = 'https://api.hetzner.cloud/v1';
+const BUILDER_LABEL = { frostsim: 'native-build' };
+/** A builder older than this is a leak from a crashed run; each run deletes those first. */
+const BUILDER_MAX_AGE_MS = 2 * 3600_000;
+/** scripts/update-engines.mjs's native flags without the launcher: the builder is fresh, so ccache would only cost time. */
+const NATIVE_CMAKE = ['-S', 'vendor/simc', '-B', 'build/native', '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', '-DBUILD_GUI=OFF',
+  '-DBUILD_TESTING=OFF', '-DSC_NO_NETWORKING=ON', '-DCMAKE_CXX_FLAGS=-DSC_USE_PTR=0'];
+
+/** Hetzner token for remote builds, read like r2.env. null when the file is absent: every pack builds here. */
+export function hcloudCredentials(file = process.env.FROSTSIM_HCLOUD_ENV_FILE || '/opt/frostsim/engine-updater/hcloud.env') {
+  if (!existsSync(file)) return null;
+  // The token can create servers on the project's bill.
+  if (statSync(file).mode & 0o007) throw new Error(`${file} is readable by other users; chmod 640 (root:frostsim-build)`);
+  const text = readFileSync(file, 'utf8');
+  const value = name => text.match(new RegExp(`^${name}=(.+)$`, 'm'))?.[1].trim();
+  const token = value('HCLOUD_TOKEN');
+  if (!token) throw new Error('hcloud.env needs HCLOUD_TOKEN');
+  return { token, serverType: value('HCLOUD_BUILD_SERVER_TYPE') || 'cpx62', location: value('HCLOUD_BUILD_LOCATION') || 'nbg1' };
+}
+
+async function hcloudCall(hc, method, path, body, fetchFn) {
+  const response = await fetchFn(HCLOUD_API + path, {
+    method, headers: { authorization: `Bearer ${hc.token}`, 'content-type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(60_000),
+  });
+  if (method === 'DELETE' && response.status === 404) return null;
+  if (!response.ok) throw new Error(`hcloud ${method} ${path.split('?')[0]}: HTTP ${response.status}`);
+  const text = await response.text();
+  return text ? JSON.parse(text) : {};
+}
+
+/** Deletes builders a crashed run left behind; returns their ids. */
+export async function sweepBuilders(hc, { fetchFn = fetch, now = Date.now() } = {}) {
+  const { servers = [] } = await hcloudCall(hc, 'GET', '/servers?label_selector=frostsim%3Dnative-build', null, fetchFn);
+  const stale = servers.filter(s => now - Date.parse(s.created) > BUILDER_MAX_AGE_MS);
+  for (const s of stale) await hcloudCall(hc, 'DELETE', `/servers/${s.id}`, null, fetchFn);
+  return stale.map(s => s.id);
+}
+
+/**
+ * One temporary builder for this run. compile(pack, dir) leaves build/native/simc in dir. close() deletes the server and its
+ * ssh key, and runs even when setup fails.
+ */
+export async function remoteBuilder(hc, work, { fetchFn = fetch, exec = run, sleep = ms => new Promise(done => setTimeout(done, ms)) } = {}) {
+  const key = join(work, 'id_ed25519');
+  exec(work, 'ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-C', 'frostsim-native-build', '-f', key]);
+  const name = `frostsim-native-build-${Date.now()}`;
+  let keyId = null, serverId = null;
+  const close = async () => {
+    if (serverId) await hcloudCall(hc, 'DELETE', `/servers/${serverId}`, null, fetchFn).catch(err => console.error(`Builder ${serverId} NOT deleted: ${err.message}`));
+    if (keyId) await hcloudCall(hc, 'DELETE', `/ssh_keys/${keyId}`, null, fetchFn).catch(() => {});
+  };
+  try {
+    keyId = (await hcloudCall(hc, 'POST', '/ssh_keys', { name, public_key: readFileSync(`${key}.pub`, 'utf8').trim(), labels: BUILDER_LABEL }, fetchFn)).ssh_key.id;
+    const { server } = await hcloudCall(hc, 'POST', '/servers', {
+      name, server_type: hc.serverType, image: 'ubuntu-24.04', location: hc.location, ssh_keys: [keyId], labels: BUILDER_LABEL,
+    }, fetchFn);
+    serverId = server.id;
+    const host = `root@${server.public_net.ipv4.ip}`;
+    const ssh = ['-i', key, '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null', '-o', 'LogLevel=ERROR',
+      '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=15'];
+    for (let attempt = 0; ; attempt++) {
+      try { exec(work, 'ssh', [...ssh, host, 'true'], { stdio: 'ignore' }); break; }
+      catch { if (attempt >= 60) throw new Error('the builder never accepted ssh'); await sleep(5000); }
+    }
+    exec(work, 'ssh', [...ssh, host, 'cloud-init status --wait >/dev/null || true; export DEBIAN_FRONTEND=noninteractive; '
+      + 'apt-get update -qq && apt-get install -y -qq --no-install-recommends cmake ninja-build g++ >/dev/null']);
+    const compile = (pack, dir) => {
+      exec(work, 'scp', [...ssh, '-q', join(pack, 'source/simc.tar.gz'), `${host}:/root/simc.tar.gz`]);
+      exec(work, 'ssh', [...ssh, host, 'set -e; rm -rf /w && mkdir -p /w/vendor/simc && cd /w && tar -xzf /root/simc.tar.gz -C vendor/simc && '
+        + `cmake ${NATIVE_CMAKE.join(' ')} >/dev/null && { cmake --build build/native >/w/build.log 2>&1 || { tail -40 /w/build.log; exit 1; }; }`]);
+      mkdirSync(join(dir, 'build/native'), { recursive: true });
+      exec(work, 'scp', [...ssh, '-q', `${host}:/w/build/native/simc`, join(dir, 'build/native/simc')]);
+      exec(work, 'chmod', ['755', join(dir, 'build/native/simc')]);
+    };
+    return { compile, close };
+  } catch (err) {
+    await close();
+    throw err;
+  }
+}
+
 /** Retained packs with a source archive and no native.json yet, in index order (newest first). */
 export function nativeTargets(output, packs) {
   return packs.filter(p => {
@@ -390,20 +476,23 @@ export function nativeTargets(output, packs) {
   });
 }
 
-/** One pack: build, smoke, zstd, upload binary then its .sha256 sibling, and write native.json last. */
-export async function buildNative(output, id, creds, { exec = run, fetchFn = fetch } = {}) {
+/** One pack: build (here, or with `compile` on a remote builder), smoke here, zstd, upload binary then its .sha256 sibling, and
+ *  write native.json last. */
+export async function buildNative(output, id, creds, { exec = run, fetchFn = fetch, compile } = {}) {
   const pack = join(output, 'engine/versions', id);
   const work = mkdtempSync(join(process.env.FROSTSIM_BUILD_TMP ?? tmpdir(), 'frostsim-native-'));
   try {
     mkdirSync(join(work, 'vendor/simc'), { recursive: true });
+    // Extracted here either way: the smoke below reads the pack's own profile.
     exec(work, 'tar', ['-xzf', join(pack, 'source/simc.tar.gz'), '-C', 'vendor/simc']);
-    // cloud/sim-bench/build-native.sh's flags. The threaded wasm build applies no patches, so neither does this.
-    // ccache (installed by install-engine-updater.sh, CCACHE_* set in the unit) turns each pack after the first, and every
-    // retry of a failed pack, into a changed-files build, as build-engine.sh does for the wasm.
-    exec(work, 'cmake', ['-S', 'vendor/simc', '-B', 'build/native', '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', '-DBUILD_GUI=OFF',
-      '-DBUILD_TESTING=OFF', '-DSC_NO_NETWORKING=ON', '-DCMAKE_CXX_FLAGS=-DSC_USE_PTR=0',
-      '-DCMAKE_CXX_COMPILER_LAUNCHER=ccache', '-DCMAKE_C_COMPILER_LAUNCHER=ccache']);
-    exec(work, 'cmake', ['--build', 'build/native']);
+    if (compile) compile(pack, work);
+    else {
+      // cloud/sim-bench/build-native.sh's flags. The threaded wasm build applies no patches, so neither does this.
+      // ccache (installed by install-engine-updater.sh, CCACHE_* set in the unit) turns each pack after the first, and every
+      // retry of a failed pack, into a changed-files build, as build-engine.sh does for the wasm.
+      exec(work, 'cmake', [...NATIVE_CMAKE, '-DCMAKE_CXX_COMPILER_LAUNCHER=ccache', '-DCMAKE_C_COMPILER_LAUNCHER=ccache']);
+      exec(work, 'cmake', ['--build', 'build/native']);
+    }
     const binary = join(work, 'build/native/simc');
     exec(work, binary, ['vendor/simc/profiles/MID2/MID2_Mage_Frost.simc', 'iterations=50', 'threads=2', 'json=native-smoke.json,version=2']);
     assert(json(join(work, 'native-smoke.json')).sim.players[0].collected_data.dps.mean > 0, 'Native smoke produced no DPS');
@@ -428,6 +517,24 @@ export function writeNativeStatus(indexPath, status) {
   renameSync(`${indexPath}.tmp`, indexPath);
 }
 
+/** The remote builder, or null (no hcloud.env, or Hetzner refused): the packs then build here. */
+async function openBuilder() {
+  let hc;
+  try { hc = hcloudCredentials(); } catch (err) { console.error(`Remote builds off: ${err.message}`); return null; }
+  if (!hc) return null;
+  const work = mkdtempSync(join(process.env.FROSTSIM_BUILD_TMP ?? tmpdir(), 'frostsim-builder-'));
+  try {
+    const swept = await sweepBuilders(hc);
+    if (swept.length) console.error(`Deleted leaked builders ${swept.join(', ')}`);
+    const builder = await remoteBuilder(hc, work);
+    return { compile: builder.compile, close: async () => { await builder.close(); rmSync(work, { recursive: true, force: true }); } };
+  } catch (err) {
+    console.error(`Remote builder unavailable, building here: ${err.message}`);
+    rmSync(work, { recursive: true, force: true });
+    return null;
+  }
+}
+
 /** Never fails the pack or the run: failures go to their own alert issue and `nativeStatus` in the index. */
 async function nativeBuilds(output, index, indexPath) {
   const status = { checkedAt: new Date().toISOString(), state: 'current', reason: null, upstreamHead: index.status?.upstreamHead ?? null };
@@ -435,10 +542,21 @@ async function nativeBuilds(output, index, indexPath) {
     const creds = r2Credentials();
     if (!creds) { console.log('Native builds disabled: no R2 credential file'); return; }
     const failures = [];
-    for (const pack of nativeTargets(output, index.packs)) {
-      try { console.log(`Native ${pack.id}: ${(await buildNative(output, pack.id, creds)).key}`); }
-      catch (err) { failures.push(`${pack.id}: ${err.message}`); console.error(err.stack ?? err.message); }
-    }
+    const targets = nativeTargets(output, index.packs);
+    const builder = targets.length ? await openBuilder() : null;
+    try {
+      for (const pack of targets) {
+        try {
+          let native = null;
+          if (builder) {
+            try { native = await buildNative(output, pack.id, creds, { compile: builder.compile }); }
+            catch (err) { console.error(`Remote build of ${pack.id} failed, building here: ${err.message}`); }
+          }
+          native ??= await buildNative(output, pack.id, creds);
+          console.log(`Native ${pack.id}: ${native.key}`);
+        } catch (err) { failures.push(`${pack.id}: ${err.message}`); console.error(err.stack ?? err.message); }
+      }
+    } finally { await builder?.close(); }
     if (failures.length) Object.assign(status, { state: 'failed', reason: `Native build failed for ${failures.join('; ')}` });
   } catch (err) { Object.assign(status, { state: 'failed', reason: `Native builds: ${err.message}` }); }
   try { await notify(index.nativeStatus ?? null, status, NATIVE_ALERT_LABEL); }
