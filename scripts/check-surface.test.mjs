@@ -121,6 +121,10 @@ describe('checkSurface', () => {
     const { failures } = checkSurface({ root, dist: fixtureDist(Buffer.concat([entry, randomBytes(700)])), base });
     expect(failures).toHaveLength(1);
     expect(failures[0]).toMatch(/^entry set gzip -9: .* over 3 files, .* \(limit 512\)$/);
+    // A deliberate core change (a PR labelled entry-growth-ok) reports the growth instead of failing on it.
+    const allowed = checkSurface({ root, dist: fixtureDist(Buffer.concat([entry, randomBytes(700)])), base, allowEntryGrowth: true });
+    expect(allowed.failures).toEqual([]);
+    expect(allowed.notes.at(-1)).toMatch(/allowed by --allow-entry-growth$/);
   });
 });
 

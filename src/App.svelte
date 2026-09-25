@@ -29,7 +29,6 @@
   import { decodeShare, isShareFragment, stripFragment } from './lib/store/share'
   import type { ImportedCharacter } from './lib/import/character'
   import Banner from './lib/ui/Banner.svelte'
-  import CharacterBar from './lib/ui/CharacterBar.svelte'
   import EngineStatus from './lib/ui/EngineStatus.svelte'
   import Dialog from './lib/ui/Dialog.svelte'
   import SiteLegal from './lib/ui/SiteLegal.svelte'
@@ -529,7 +528,8 @@
     so Try again re-renders with the same data and usually reproduces it — which
     is what makes the message worth reading rather than worth hiding.
   -->
-  {#if scope && scope !== 'character'}<CharacterBar />{/if}
+  <!-- Lazy: its popover is not on the path to first paint. -->
+  {#if scope && scope !== 'character'}{#await import('./lib/ui/CharacterBar.svelte') then m}<m.default />{/await}{/if}
   <svelte:boundary onerror={(e) => trace('screen.render-failed', { message: e instanceof Error ? e.message : String(e) })}>
     {#if router.raw.startsWith('r/')}
       <SharedReport />

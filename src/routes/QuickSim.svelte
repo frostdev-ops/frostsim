@@ -2,8 +2,6 @@
   // Quick Sim: setup, run, result header (P06.1-P06.4, P06.9-P06.12).
   import { activeCharacter, activeStored, app, DRAFT, isBusy, maxThreads, openDraft, toast } from '../lib/app.svelte'
   import { X } from '@lucide/svelte'
-  import CharacterPicker from '../lib/ui/CharacterPicker.svelte'
-  import { multiActorParts } from '../lib/simc/multi-actor'
   import { run, startRun } from '../lib/job.svelte'
   import { estimateSeconds, iterationsForTarget } from '../lib/estimate'
   import { takeSetup, type SetupHandoff } from '../lib/handoff.svelte'
@@ -21,6 +19,7 @@
   import { quickSettings } from '../lib/settings.svelte'
   import ReportResult from '../lib/ui/ReportResult.svelte'
   import CharacterBanner from '../lib/ui/CharacterBanner.svelte'
+  import { multiActorParts } from '../lib/simc/multi-actor'
   import SimulationDetails from '../lib/ui/SimulationDetails.svelte'
   import { parseAddonExport } from '../lib/import/character'
   import type { PlayerDetail as Detail } from '../lib/simc/detail'
@@ -171,7 +170,7 @@
           <button class="ghost sm" onclick={() => (app.quickExtras = app.quickExtras.filter((id) => id !== e.id))} aria-label="Remove {e.label} from this sim"><X size={14} /></button>
         </span>
       {/each}
-      <CharacterPicker add value={null} exclude={[app.activeCharacterId ?? '', ...app.quickExtras]} onpick={(id) => (app.quickExtras = [...app.quickExtras, id])} label="Add a character to this sim" />
+      {#await import('../lib/ui/CharacterPicker.svelte') then m}<m.default add value={null} exclude={[app.activeCharacterId ?? '', ...app.quickExtras]} onpick={(id) => (app.quickExtras = [...app.quickExtras, id])} label="Add a character to this sim" />{/await}
       {#if extras.length}<span class="xs muted">Each character runs in its own batch with these settings, so every one gets its own number.</span>{/if}
     </div>
     <SettingsForm settings={quickSettings} {character} />
