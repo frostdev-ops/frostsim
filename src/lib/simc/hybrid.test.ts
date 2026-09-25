@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { __resetEngineRuntimeForTests, runJob, setRemoteEngine, WORKER_PROTOCOL, type JobEvent, type SimRequest } from './job'
-import { cloudShare, createHybridEngine, mergeCharacters, mergeProfilesets, mergeStats, splitOf, splitRequest, type RunPlace } from './hybrid'
+import { cloudShare, createHybridEngine, learnSpeed, mergeCharacters, mergeProfilesets, mergeStats, splitOf, splitRequest, type RunPlace } from './hybrid'
 import { parseReport } from './report'
 import { DEFAULT_SETTINGS } from './options'
 import type { EngineCapability, EngineManifest } from './capability'
@@ -107,10 +107,15 @@ const request = (n: number): SimRequest => ({
   profilesets: sets(n),
 })
 
+const memoryStore = (init: Record<string, unknown> = {}) => {
+  const m = new Map(Object.entries(init).map(([k, v]) => [k, JSON.stringify(v)]))
+  return { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v) }
+}
+
 let places: RunPlace[] = []
-function hybridRun(s: CloudServer, req: SimRequest) {
+function hybridRun(s: CloudServer, req: SimRequest, speedStore: ReturnType<typeof memoryStore> | null = null) {
   places = []
-  setRemoteEngine(createHybridEngine({ fetch: s.fetch, pollMs: 1000, cloudThreads: 12, onplace: (p) => places.push(p) }))
+  setRemoteEngine(createHybridEngine({ fetch: s.fetch, pollMs: 1000, cloudThreads: 12, onplace: (p) => places.push(p), speedStore, now: () => Date.now() }))
   const events: JobEvent[] = []
   const handle = runJob(req, (e) => events.push(e), { createReportWorker: () => new FakeReportWorker('report') as unknown as Worker, capability })
   return { handle, events }
@@ -136,6 +141,26 @@ describe('hybrid split and merge', () => {
     expect(cloudShare(100, 16, 16)).toBe(50)
     expect(cloudShare(2, 16, 1)).toBe(1)
     expect(cloudShare(10, 1, 64)).toBe(1)
+  })
+
+  it('splits by measured speed for the soonest finish, and runs one side alone when that is sooner', () => {
+    const speed = { rel: 2, localWait: 3, cloudWait: 40, perPiece: { candidates: 1 } }
+    // Local 3 + (201 - n) s against cloud 40 + (n + 1) / 2 s: equal near n = 109.
+    expect(cloudShare(200, 12, 4, speed, 'candidates', 1)).toBe(109)
+    // The whole run here (3 + 11 s) ends before the cloud starts.
+    expect(cloudShare(10, 12, 4, speed, 'candidates', 1)).toBe(0)
+    // A cloud ten times as fast, starting as quickly as this browser, takes everything.
+    expect(cloudShare(4, 12, 4, { rel: 10, localWait: 5, cloudWait: 5, perPiece: { characters: 1 } }, 'characters')).toBe(4)
+    // No measurement for this kind: by thread share.
+    expect(cloudShare(4, 12, 4, speed, 'characters')).toBe(3)
+  })
+
+  it('learns speeds as moving averages, and nothing from a run too short to measure', () => {
+    const first = learnSpeed(null, 'candidates', { wait: 1, run: 10, pieces: 2 }, { wait: 30, run: 10, pieces: 4 })!
+    expect(first).toEqual({ rel: 2, localWait: 1, cloudWait: 30, perPiece: { candidates: 5 } })
+    const second = learnSpeed(first, 'candidates', { wait: 1, run: 10, pieces: 2 }, { wait: 5, run: 10, pieces: 4 })!
+    expect(second.cloudWait).toBe(20)
+    expect(learnSpeed(first, 'characters', { wait: 1, run: 1, pieces: 1 }, { wait: 1, run: 10, pieces: 1 })).toBe(first)
   })
 
   it('appends the cloud results, creating the section when the local side had none', () => {
@@ -296,6 +321,56 @@ describe('hybrid runs', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(s.deletes).toBe(1)
     expect(spawned[0].sent.some((m) => m.type === 'cancel')).toBe(true)
+  })
+
+  it('measures both sides of a finished run for the next split', async () => {
+    const store = memoryStore()
+    const s = new CloudServer()
+    const run = hybridRun(s, request(4), store)
+    await vi.advanceTimersByTimeAsync(0)
+    const local = spawned[0]
+    local.say({ type: 'ready' })
+    await vi.advanceTimersByTimeAsync(1000)
+    local.say({ type: 'log', stream: 'out', lines: [progress('c-0', 1, 2)] })
+    s.status = 'running'
+    s.lines = [progress('c-1', 1, 4)]
+    await vi.advanceTimersByTimeAsync(10_000)
+    local.finish()
+    s.status = 'done'
+    await vi.advanceTimersByTimeAsync(1000)
+    await run.handle.result
+    const speed = JSON.parse(store.getItem('frostsim.hybrid.speed')!)['4/12']
+    // This browser: 1 s to start, then 10 s for its candidate and the baseline.
+    expect(speed).toMatchObject({ localWait: 1, perPiece: { candidates: 5 } })
+    expect(speed.rel).toBeGreaterThan(1)
+  })
+
+  it('runs the whole run here when past runs say the cloud would start too late, and says so', async () => {
+    const s = new CloudServer()
+    const run = hybridRun(s, request(4), memoryStore({ 'frostsim.hybrid.speed': { '4/12': { rel: 2, localWait: 1, cloudWait: 90, perPiece: { candidates: 5 } } } }))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(s.posted).toBeNull()
+    expect(spawned[0].ids()).toEqual(['c-0', 'c-1', 'c-2', 'c-3'])
+    expect(places).toEqual([expect.objectContaining({ mode: 'browser', note: expect.stringContaining('none of your allowance') })])
+    spawned[0].finish()
+    expect((await run.handle.result).report.profilesets).toHaveLength(4)
+  })
+
+  it('confirms a cancel at once when both shares already finished', async () => {
+    const s = new CloudServer()
+    const worker = createHybridEngine({ fetch: s.fetch, pollMs: 1000, cloudThreads: 12, speedStore: null })(request(4), PACK_DIR)!('threaded') as unknown as LocalEngine
+    const got: Record<string, unknown>[] = []
+    worker.onmessage = (e) => got.push((e as MessageEvent).data)
+    worker.postMessage({ protocol: WORKER_PROTOCOL, jobId: 'j1', profile: 'x', args: [] })
+    await vi.advanceTimersByTimeAsync(0)
+    spawned[0].finish()
+    s.status = 'done'
+    await vi.advanceTimersByTimeAsync(1000)
+    await vi.waitFor(() => expect(got.some((m) => m.type === 'shutdown')).toBe(true))
+    // The report comes before the shutdown.
+    expect(got.filter((m) => m.type === 'done' || m.type === 'shutdown').map((m) => m.type)).toEqual(['done', 'shutdown'])
+    worker.postMessage({ type: 'cancel' })
+    expect(got.at(-1)).toMatchObject({ type: 'shutdown', reason: 'cancelled' })
   })
 
   it('sends a run with one candidate to the cloud whole', async () => {

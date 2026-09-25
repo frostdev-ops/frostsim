@@ -143,8 +143,11 @@ when the result download fails or takes over 150 s. Closing the page cancels the
 
 Placement (`src/lib/account/placement.svelte.ts`): with a compute plan, runs go to the cloud by default, and a "Run on" switch beside
 the character picker on every tool screen keeps an explicit choice. Avalanche (`compute_l`) adds Hybrid, its default
-(`src/lib/simc/hybrid.ts`): a run made of two or more independent sims splits them by thread share between this browser and one
-cloud job, both running at once, and concatenates the results into one report. Three kinds split: profileset candidates (Top Gear,
+(`src/lib/simc/hybrid.ts`): a run made of two or more independent sims splits them between this browser and one cloud job, both
+running at once, and concatenates the results into one report. The split aims for the soonest finish: each finished run records, on
+this device, both sides' seconds per piece and their start-up waits (engine load here; queue, worker boot and upload there) as moving
+averages, and the next run picks the share with the earliest predicted end. With no measurements it splits by thread share. When one
+side alone is predicted to finish sooner, the whole run goes there, and the run panel says why. Three kinds split: profileset candidates (Top Gear,
 Droptimizer, Crest and Compare batches; profileset results appended), the characters of a multi-character Quick Sim (each its own
 sim under `single_actor_batch=1`; the first character stays local and the cloud's players are appended) and Stat Weights by
 `scale_only` stat (each player's `scale_factors`, `scale_factors_all` and `scale_deltas` unioned; with `normalize_scale_factors`
