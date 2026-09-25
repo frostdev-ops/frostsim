@@ -53,9 +53,9 @@ const slot = (n, required) => ({
 
 export const COMMANDS = [
   {
-    name: 'compare', type: CHAT_INPUT, description: 'Compare two to four characters in one Frostsim Cloud run',
+    name: 'compare', type: CHAT_INPUT, description: 'Compare two to six characters in one Frostsim Cloud run',
     // Required options come first (Discord refuses a list that puts them after optional ones).
-    options: [slot(1, true), slot(2, true), slot(3, false), slot(4, false),
+    options: [slot(1, true), slot(2, true), slot(3, false), slot(4, false), slot(5, false), slot(6, false),
       { type: STRING, name: 'region', description: 'Region for typed Name-Realm lookups (default US)', choices: choices(REGIONS) },
       ...RUN_OPTIONS],
   },

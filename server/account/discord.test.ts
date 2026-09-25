@@ -839,7 +839,7 @@ describe('/compare', () => {
     effective: { threads: 16, args: [], profile: RAW }, createdAt: new Date(NOW - 60_000), finishedAt: new Date(NOW),
   });
 
-  it('runs two to four characters in one job, from cloud slots or the Armory, and posts a ranked compare embed', async () => {
+  it('runs two to six characters in one job, from cloud slots or the Armory, and posts a ranked compare embed', async () => {
     world.characters.push({ id: '0c000000-0000-4000-8000-000000000009', user_id: USER, label: 'Healz', raw: RAW.replace(/^warlock=.*$/m, 'warlock=Healz') });
     const { store, redis } = fakeRedis();
     await call(redis, command('compare', [
@@ -862,7 +862,7 @@ describe('/compare', () => {
     const bad = (looks: string) => createApp(deps(redis), routes)(new Request(`https://sim.test/api/v1/discord/fight/${looks}.gif`), '10.0.0.1');
     expect((await bad('mage,nobody')).status).toBe(404);
     expect((await bad('mage')).status).toBe(404);
-    expect((await bad('mage,mage,mage,mage,mage')).status).toBe(404);
+    expect((await bad('mage,mage,mage,mage,mage,mage,mage')).status).toBe(404);
 
     edits = [];
     world.subscriptions[USER] = [];

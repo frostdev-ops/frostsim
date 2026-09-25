@@ -74,8 +74,8 @@ export const ACCURACY: Readonly<Record<string, Accuracy>> = {
   standard: DEFAULT_ACCURACY,
   high: { mode: 'targetError', targetError: 0.05, maxIterations: 100_000 },
 };
-/** /compare takes two to four characters. */
-export const COMPARE_SLOTS = ['character1', 'character2', 'character3', 'character4'] as const;
+/** /compare takes two to six characters, as many as the pixel battle draws (MAX_PARTY). */
+export const COMPARE_SLOTS = ['character1', 'character2', 'character3', 'character4', 'character5', 'character6'] as const;
 /** An Armory character picked from autocomplete: `armory:<region>:<realm slug>:<name>`. */
 const ARMORY_VALUE = /^armory:(us|eu|kr|tw):([a-z0-9-]{1,80}):([^:]{1,24})$/;
 /** Progress edits: at most one per this long per run, and only when the bar moved. */

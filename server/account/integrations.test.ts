@@ -1,6 +1,6 @@
 // Loothing integration (CLAUDE.md D15; DESIGN.md P3): bearer auth, link and grant refusals with their fix-it URLs, the per-Discord-user
 // rate limit, job creation through enqueueJob with an Idempotency-Key, Retry-After hints, read-back, listing and cancel limited to
-// Loothing's own jobs, and one audit row per call; the agent additions: compare jobs from 2-4 slots, `origin`, the list window and
+// Loothing's own jobs, and one audit row per call; the agent additions: compare jobs from 2-6 slots, `origin`, the list window and
 // limit, the compact detail of a finished job, and slot context on resolve. Compute and packs
 // are fakes; SQL and Redis are stand-ins. The same routes run against real Postgres in integrations.integration.test.ts.
 
@@ -179,7 +179,7 @@ describe('resolve and jobs', () => {
     ] });
   });
 
-  it('creates one compare job from 2-4 of the user\'s slots, and records an agent origin in the audit row', async () => {
+  it('creates one compare job from 2-6 of the user\'s slots, and records an agent origin in the audit row', async () => {
     const create = (over: object) => send('POST', '/api/v1/integrations/loothing/jobs', { discordId: DISCORD, preset: 'patchwerk', ...over });
     const res = await create({ characterIds: [CHAR, CHAR2], origin: 'agent' });
     expect(res.status).toBe(201);

@@ -7,7 +7,7 @@
 // create maps to the first job (200) instead of a second paid run; 429 and 503 carry Retry-After; the job object echoes the slot and
 // fight; DELETE cancels; GET /jobs lists the last day's jobs so a restarted bot worker can recover a reply it lost.
 //
-// Extended for Loothing's Discord agent (2026-09-25): POST /jobs takes `characterIds` (2-4 slots, one compare job) in place of
+// Extended for Loothing's Discord agent (2026-09-25): POST /jobs takes `characterIds` (2-6 slots, one compare job) in place of
 // `characterId`, and an optional `origin` ('agent' | 'command') kept in the audit row only; GET /jobs takes `days` (1-30) and `limit`
 // (1-100); GET /jobs/:id/detail is the compact report (loothing-detail.ts) while the result is kept (1 day, then 410); /resolve
 // also returns each slot's name, class, spec, realm, region and item level.
@@ -141,7 +141,7 @@ function bounded(ctx: RequestCtx, name: string, max: number, fallback: number): 
   return n;
 }
 
-/** One compare job's request from 2-4 of the user's slots; null when any id is not theirs. */
+/** One compare job's request from 2-6 of the user's slots; null when any id is not theirs. */
 async function compareOf(ctx: RequestCtx, userId: string, ids: string[], presetId: string): Promise<SimRequest | null> {
   // A user has a handful of slots: read them all rather than bind an array.
   const rows = await ctx.sql`select id, raw from cloud_characters where user_id = ${userId}`;
