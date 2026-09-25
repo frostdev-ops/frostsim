@@ -86,10 +86,17 @@ function parseSimpleRecord(text: string): EngineProgress | null {
 
 /** Return null for non-progress-bar lines (most of them). */
 export function parseProgressLine(line: string): EngineProgress | null {
-  // Bar rewritten in place; chunk holds several revisions, take latest.
-  const text = line.replace(/\r/g, '\n').split('\n').filter(Boolean).at(-1)
-  if (!text) return null
+  // Bar rewritten in place; chunk holds several revisions, take the latest that parses. The parallel profileset bar ends in \r
+  // only, so a cloud worker hands it over in 4 KiB cuts (cloud/worker/agent.mjs readLines) whose last record can be cut short.
+  const records = line.replace(/\r/g, '\n').split('\n').filter(Boolean)
+  for (let i = records.length - 1; i >= 0; i--) {
+    const parsed = parseRecord(records[i])
+    if (parsed) return parsed
+  }
+  return null
+}
 
+function parseRecord(text: string): EngineProgress | null {
   if (text.includes('\t')) {
     const simple = parseSimpleRecord(text)
     if (simple) return simple

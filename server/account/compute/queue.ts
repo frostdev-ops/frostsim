@@ -66,7 +66,7 @@ export function cloudRun(request: SimRequest, threads: number): { run: Assembled
   const cloudReq: SimRequest = { ...request, settings: { ...request.settings, threads } };
   const issues = validateRequest(cloudReq, threads);
   if (issues.length) return { problem: issues.map((i) => `${i.field}: ${i.message}`).join('; ').slice(0, 1000) };
-  const run = assembleRun(cloudReq, threads);
+  const run = assembleRun(cloudReq, threads, 'native');
   const unsafe = nativeInputProblem(run, request.extraOptions);
   return unsafe ? { problem: unsafe } : { run };
 }

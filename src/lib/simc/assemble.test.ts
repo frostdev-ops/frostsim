@@ -30,6 +30,21 @@ describe('assembleRun', () => {
     expect(run.threads).toBe(4)
   })
 
+  it('runs candidates side by side: native on every thread, the browser inside its pool and only when progress stays live', () => {
+    const profilesets = Array.from({ length: 100 }, (_, i) => ({ id: `c${i}`, lines: [`head=${i}`] }))
+    const quick = { mode: 'targetError' as const, targetError: 1, maxIterations: 1673 }
+    const native = assembleRun(request({ profilesets, accuracy: quick, settings: { ...request().settings, threads: 64 } }), 64, 'native')
+    expect(native.args).toContain('threads=64')
+    expect(native.args[native.args.indexOf('threads=64') + 1]).toBe('profileset_work_threads=4')
+    const browser = assembleRun(request({ profilesets, accuracy: quick, settings: { ...request().settings, threads: 16 } }), 16)
+    expect(browser.args).toEqual(expect.arrayContaining(['threads=15', 'profileset_work_threads=1']))
+    expect(browser.threads).toBe(15)
+    // Long candidates in the browser, or no candidates at all: unchanged.
+    const long = assembleRun(request({ profilesets, accuracy: { mode: 'iterations', iterations: 40_000 } }), 16)
+    expect(long.args.some((a) => a.startsWith('profileset_work_threads'))).toBe(false)
+    expect(assembleRun(request(), 16).args).not.toContain('profileset_work_threads=4')
+  })
+
   it('raw: leaves the script alone and adds no guided settings', () => {
     const run = assembleRun(request({ mode: 'raw' }), 16)
     expect(run.profile).not.toContain('potion=')

@@ -21,6 +21,7 @@ import {
   type SimSettings,
   type ValidationIssue,
 } from './options'
+import { profilesetCount, workPlan } from './profileset-workers'
 
 export interface JobLimits {
   /** Worker start through engine module instantiation, which includes wasm download. */
@@ -85,8 +86,9 @@ export interface AssembledRun {
   threads: number
 }
 
-/** Profile text and args for a validated request. Pool ceiling comes from the caller, never the request (D11). */
-export function assembleRun(req: SimRequest, maxThreads: number): AssembledRun {
+/** Profile text and args for a validated request. Pool ceiling comes from the caller, never the request (D11). `engine`: 'wasm'
+ *  treats maxThreads as the browser build's fixed pthread pool; 'native' (cloud workers) has none. */
+export function assembleRun(req: SimRequest, maxThreads: number, engine: 'wasm' | 'native' = 'wasm'): AssembledRun {
   const mode = req.mode ?? 'guided'
   // A saved 16-thread setting opened against the fallback is clamped, not refused.
   const threads = clampThreads(req.settings.threads, maxThreads)
@@ -116,13 +118,25 @@ export function assembleRun(req: SimRequest, maxThreads: number): AssembledRun {
       .map((part) => part.replace(/\n+$/, ''))
       .join('\n') + '\n'
 
+  // Candidates side by side instead of one after another (profileset-workers.ts). Both options are protected, so these args are the
+  // only place they are set; the threads arg is rewritten to what the plan uses, which under a pool can be less than asked.
+  const iterations = req.accuracy.mode === 'iterations' ? req.accuracy.iterations : req.accuracy.mode === 'targetError' ? req.accuracy.maxIterations : null
+  const plan = workPlan({
+    threads,
+    candidates: profilesetCount(profile),
+    pool: engine === 'wasm' ? maxThreads : undefined,
+    // A script decides its own iterations and fight length, so they count as unknown.
+    iterations: mode === 'guided' ? iterations : null,
+    simSeconds: req.settings.maxTime,
+  })
   const args = buildArgs({
-    settings: req.settings,
+    settings: { ...req.settings, threads: plan.threads },
     accuracy: req.accuracy,
     extraOptions: req.extraOptions,
     maxThreads,
     mode,
     htmlReport: req.htmlReport,
   })
-  return { profile, args, warnings, threads }
+  if (plan.workThreads) args.splice(args.findIndex((a) => a.startsWith('threads=')) + 1, 0, `profileset_work_threads=${plan.workThreads}`)
+  return { profile, args, warnings, threads: plan.threads }
 }

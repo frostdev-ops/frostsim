@@ -66,6 +66,13 @@ describe('parseProgressLine, progressbar_type=1 records', () => {
   })
 })
 
+describe('parseProgressLine, parallel profilesets', () => {
+  it('takes the latest whole record from a cloud worker\'s 4 KiB cut of \\r-joined bars', () => {
+    const bar = (n: number) => `Profilesets (16*4): ${n}/100 [====>........] avg=0.1s done=1s left=9s     `
+    expect(parseProgressLine([bar(3), bar(4), bar(5).slice(0, 12)].join('\r'))).toMatchObject({ base: 'Profilesets', phaseIndex: 4, phaseTotal: 100 })
+  })
+})
+
 describe('parseProgressLine', () => {
   it('reads a plain run', () => {
     const p = parseProgressLine('Generating Baseline: 1/1 [==>.................] 7/50 52.478')

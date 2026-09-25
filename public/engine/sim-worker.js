@@ -305,6 +305,21 @@ if (globalThis.name !== 'em-pthread') {
       if (pending.length >= LOG_FLUSH_LINES || Date.now() - lastFlush >= LOG_FLUSH_MS) flush()
     }
 
+    // stdout byte by byte instead of emscripten's line-buffered print, which passes a line on only at \n: simc's parallel
+    // profileset bar (profileset_work_threads, profileset.cpp:829) ends in \r alone, so print held it until the run's next newline
+    // and the page heard nothing for the whole parallel phase. \r ends a line here too; the empty line of a \r\n is dropped.
+    let stdoutBytes = []
+    const utf8 = new TextDecoder()
+    function stdoutLine() {
+      const line = utf8.decode(new Uint8Array(stdoutBytes))
+      stdoutBytes = []
+      if (line) record('out', line)
+    }
+    function stdout(byte) {
+      if (byte === 10 || byte === 13) stdoutLine()
+      else if (byte !== null) stdoutBytes.push(byte)
+    }
+
     let mod
     try {
       if (typeof createSimc === 'undefined') {
@@ -332,7 +347,7 @@ if (globalThis.name !== 'em-pthread') {
       const moduleArg = {
         // Tell emscripten where fallback wasm is (one level down from script URL).
         locateFile: (path) => ENGINE_DIR + path,
-        print: (line) => record('out', line),
+        stdout,
         printErr: (line) => record('err', line),
       }
 
@@ -388,6 +403,8 @@ if (globalThis.name !== 'em-pthread') {
       executing = true
       try { code = mod.callMain(data.args) }
       finally { executing = false }
+      // A last line without a newline.
+      if (stdoutBytes.length) stdoutLine()
       flush()
       // Reap pool after callMain; completed run must not leave pool resident.
       reapPool()

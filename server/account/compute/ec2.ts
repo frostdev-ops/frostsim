@@ -21,7 +21,10 @@ const MAX_PRICE_MARGIN = 1.2;
 const maxPrice = (spotUsd: number) => Math.ceil(spotUsd * MAX_PRICE_MARGIN * 1e4) / 1e4;
 /** Capacity errors worth trying the next-cheapest pool for. Any other error (a quota, a bad AMI) would repeat, so it is thrown. */
 const TRY_NEXT = new Set(['InsufficientInstanceCapacity', 'SpotMaxPriceTooLow', 'Unsupported', 'InsufficientFreeAddressesInSubnet']);
-const MAX_POOLS = 3;
+/** Pools (type and zone) tried per create: Spot capacity for one type often runs out in every zone at once. */
+const MAX_POOLS = 8;
+/** A pool that answered with no capacity is left out of offers this long. */
+const EXHAUSTED_MS = 10 * 60_000;
 const TAG = { Key: 'frostsim', Value: 'worker' };
 
 export interface Ec2Limits {
@@ -157,24 +160,32 @@ export function ec2(limits: Ec2Limits, fetchFn: typeof fetch) {
 
 export type Ec2 = ReturnType<typeof ec2>;
 
+/** Module state, not per provider: the autoscaler builds its providers afresh every tick. */
+let priceCache: { key: string; until: number; offers: Offer[] } | null = null;
+const exhausted = new Map<string, number>();
+const pool = (o: Pick<Offer, 'size' | 'zone'>) => `${o.size}@${o.zone}`;
+
 export function ec2Provider(limits: Ec2Limits, fetchFn: typeof fetch): Provider {
   const api = ec2(limits, fetchFn);
-  let cache: { until: number; offers: Offer[] } | null = null;
+  const key = `${limits.region}:${limits.types.join(',')}`;
   return {
     name: 'ec2',
     list: () => api.workerInstances(),
     /** One offer per type and configured zone, cheapest first; the expected price includes the IPv4 address and disk. */
     async offers(now) {
-      if (cache && cache.until > now.getTime()) return cache.offers;
+      // Wall clock, as create() records it: capacity is a fact about AWS now, not about the caller's clock.
+      const fresh = (o: Offer) => !((exhausted.get(pool(o)) ?? 0) > Date.now());
+      if (priceCache?.key === key && priceCache.until > now.getTime()) return priceCache.offers.filter(fresh);
       const prices = await api.spotPrices(limits.types, now);
       const offers = prices.filter((p) => limits.subnets.has(p.zone)).map((p): Offer => ({
         provider: 'ec2', size: p.type, cores: vcpus(p.type), hourlyUsd: p.usd + EXTRAS_USD_PER_HOUR,
         maxHourlyUsd: maxPrice(p.usd) + EXTRAS_USD_PER_HOUR, billing: 'second', bootS: BOOT_S, zone: p.zone,
       })).sort((a, b) => a.hourlyUsd - b.hourlyUsd);
-      cache = { until: now.getTime() + PRICE_TTL_MS, offers };
-      return offers;
+      priceCache = { key, until: now.getTime() + PRICE_TTL_MS, offers };
+      return offers.filter(fresh);
     },
-    /** The first offer's pool, then the next-cheapest pools of the same size while AWS has no capacity, up to MAX_POOLS. */
+    /** The first offer's pool, then the next-cheapest pools of the same size (any type) while AWS has no capacity, up to
+     *  MAX_POOLS. A pool without capacity is skipped by offers() for EXHAUSTED_MS. */
     async create(offers, spec) {
       const [first] = offers;
       const pools = offers.filter((o) => o.provider === 'ec2' && o.cores === first.cores).slice(0, MAX_POOLS);
@@ -186,6 +197,7 @@ export function ec2Provider(limits: Ec2Limits, fetchFn: typeof fetch): Provider 
           return { id, offer };
         } catch (err) {
           if (!(err instanceof Ec2Error && TRY_NEXT.has(err.code))) throw err;
+          exhausted.set(pool(offer), Date.now() + EXHAUSTED_MS);
           last = err;
         }
       }

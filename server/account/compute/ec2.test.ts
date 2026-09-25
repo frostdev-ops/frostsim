@@ -89,6 +89,8 @@ describe('ec2Provider', () => {
     expect(offers.map((o) => [o.size, o.zone, o.cores])).toEqual([['c8a.4xlarge', 'us-east-1a', 16], ['c8a.16xlarge', 'us-east-1b', 64], ['c8a.16xlarge', 'us-east-1a', 64]]);
     expect(offers[1]).toMatchObject({ hourlyUsd: 0.906, maxHourlyUsd: 1.086, billing: 'second' });
     await provider.offers(new Date(NOW.getTime() + 60_000));
+    // Cached across providers too: the autoscaler builds a new one every tick.
+    await ec2Provider(LIMITS, fetchFn).offers(new Date(NOW.getTime() + 120_000));
     expect(calls).toHaveLength(1);
   });
 
@@ -102,6 +104,10 @@ describe('ec2Provider', () => {
     const capacity = run('InsufficientInstanceCapacity');
     expect(await ec2Provider(LIMITS, capacity.fetchFn).create(big, { name: 'n', userData: 'u' })).toEqual({ id: 'i-2', offer: big[1] });
     expect(runs.map((f) => [f.get('SubnetId'), f.get('InstanceMarketOptions.SpotOptions.MaxPrice')])).toEqual([['subnet-b', '1.0800'], ['subnet-a', '1.2000']]);
+
+    // The pool that had no capacity is left out of offers for a while, for every provider built from now on.
+    const later = (await ec2Provider(LIMITS, fake(() => xml(prices)).fetchFn).offers(NOW)).filter((o) => o.cores === 64);
+    expect(later.map((o) => `${o.size}@${o.zone}`)).toEqual(['c8a.16xlarge@us-east-1a']);
 
     runs = [];
     const quota = run('MaxSpotInstanceCountExceeded');

@@ -288,3 +288,134 @@ describe('writeNativeStatus', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
+
+describe('EC2 builds', async () => {
+  const { AwsClient } = await import('aws4fetch');
+  const { builderUserData, buildPools, ec2BuildCredentials, engineJobScript, nativeJobScript, presignV4, runOnBuilder, sweepEc2Builders } = await import('./update-engines.mjs');
+  const { execFileSync } = await import('node:child_process');
+  const tmp = mkdtempSync(join(tmpdir(), 'frostsim-ec2-test-'));
+  const env = (name, text, mode = 0o640) => { const file = join(tmp, name); writeFileSync(file, text, { mode }); chmodSync(file, mode); return file; };
+  const ec2 = { region: 'us-east-1', accessKeyId: 'AKID', secretAccessKey: 'secret', securityGroup: 'sg-1',
+    subnets: new Map([['us-east-1a', 'subnet-a'], ['us-east-1b', 'subnet-b']]), types: ['c7a.16xlarge', 'c8a.16xlarge'] };
+  const r2 = { accountId: 'a'.repeat(32), accessKeyId: 'rid', secretAccessKey: 'rsecret', bucket: 'frostsim-engines' };
+  const price = (type, zone, usd) => `<item><instanceType>${type}</instanceType><spotPrice>${usd}</spotPrice><timestamp>2026-09-25T10:00:00Z</timestamp><availabilityZone>${zone}</availabilityZone></item>`;
+  const PRICES = `<r><spotPriceHistorySet>${price('c8a.16xlarge', 'us-east-1a', '0.9')}${price('c7a.16xlarge', 'us-east-1b', '1.2')}${price('c7a.16xlarge', 'us-east-1a', '1.1')}${price('c7a.16xlarge', 'us-east-1c', '0.1')}</spotPriceHistorySet></r>`;
+
+  it('presigns exactly as aws4fetch does', async () => {
+    const url = `https://${r2.accountId}.r2.cloudflarestorage.com/frostsim-engines/builds/x/in.tgz`;
+    const date = new Date('2026-09-25T12:00:00Z');
+    const mine = new URL(presignV4(url, 'PUT', { ...r2, region: 'auto', service: 's3' }, 3600, date));
+    const theirs = new URL((await new AwsClient({ accessKeyId: r2.accessKeyId, secretAccessKey: r2.secretAccessKey, service: 's3', region: 'auto' })
+      .sign(`${url}?X-Amz-Expires=3600`, { method: 'PUT', aws: { signQuery: true, datetime: '20260925T120000Z' } })).url);
+    expect(mine.searchParams.get('X-Amz-Signature')).toBe(theirs.searchParams.get('X-Amz-Signature'));
+  });
+
+  it('reads ec2.env with default build types, is off without it, and refuses a readable or incomplete one', () => {
+    const ok = 'AWS_REGION=us-east-1\nAWS_ACCESS_KEY_ID=id\nAWS_SECRET_ACCESS_KEY=s\nAWS_SECURITY_GROUP_ID=sg-1\nAWS_SUBNETS=us-east-1a:subnet-a, us-east-1b:subnet-b\n';
+    expect(ec2BuildCredentials(join(tmp, 'absent.env'))).toBeNull();
+    expect(ec2BuildCredentials(env('ok.env', ok))).toMatchObject({ region: 'us-east-1', securityGroup: 'sg-1',
+      subnets: new Map([['us-east-1a', 'subnet-a'], ['us-east-1b', 'subnet-b']]), types: ['c7a.16xlarge', 'c8a.16xlarge', 'c7a.8xlarge', 'c8a.8xlarge'] });
+    expect(() => ec2BuildCredentials(env('open.env', ok, 0o644))).toThrow(/readable by other users/);
+    expect(() => ec2BuildCredentials(env('partial.env', 'AWS_REGION=us-east-1\n'))).toThrow(/AWS_ACCESS_KEY_ID/);
+  });
+
+  it('tries the configured types in order, each cheapest zone first, only in zones with a subnet', async () => {
+    const fetchFn = async () => new Response(PRICES);
+    expect((await buildPools(ec2, fetchFn)).map(p => `${p.type}@${p.zone}`)).toEqual(['c7a.16xlarge@us-east-1a', 'c7a.16xlarge@us-east-1b', 'c8a.16xlarge@us-east-1a']);
+  });
+
+  it('writes user data that fetches the job, pushes out/ only on success, then the log and exit code, and shuts down', () => {
+    const ud = builderUserData({ input: 'https://in?a=1&b=2', output: 'https://out', log: 'https://log', exit: "https://exit'q" });
+    expect(ud).toContain("curl -fsSL --retry 5 -o in.tgz 'https://in?a=1&b=2'");
+    expect(ud).toContain(`if [ "$code" = 0 ]; then tar -czf /root/out.tgz out && curl -fsS --retry 5 -T /root/out.tgz 'https://out'`);
+    expect(ud).toContain(`-T /root/exit 'https://exit'\\''q'`);
+    expect(ud.trim().endsWith('shutdown -h now')).toBe(true);
+  });
+
+  it('pins the toolchain and runs every engine check in the engine job; the native job builds from the archive', () => {
+    const script = engineJobScript({ node: '26.8.2', emsdk: { version: '6.0.9' } });
+    for (const step of ['node-v26.8.2-linux-x64.tar.xz', 'sha256sum -c -', '--branch 6.0.9', 'npm ci --ignore-scripts', 'bash scripts/bootstrap-engine.sh',
+      'bash scripts/build-engine.sh\n', 'bash scripts/build-engine.sh --fallback', '--fallback vendor/simc/profiles/MID2/MID2_Mage_Frost.simc',
+      'FROSTSIM_ENGINE=1 npx vitest run src/lib/simc', 'npm run check', 'cp -R public/engine ../out/engine']) expect(script).toContain(step);
+    expect(nativeJobScript()).toContain('tar -xzf simc.tar.gz -C vendor/simc');
+    expect(nativeJobScript()).not.toContain('emsdk');
+  });
+
+  /** Fake AWS and R2: R2 objects in a map, the builder "runs" when polled, RunInstances refuses its first pool. */
+  function cloud({ exitCode = '0', vanish = false } = {}) {
+    const objects = new Map(), calls = [];
+    const out = mkdtempSync(join(tmp, 'job-out-'));
+    mkdirSync(join(out, 'out'), { recursive: true });
+    writeFileSync(join(out, 'out/simc'), 'ELF');
+    const outTgz = execFileSync('tar', ['-czf', '-', '-C', out, 'out']);
+    let polls = 0;
+    const fetchFn = async (url, init) => {
+      const u = new URL(url);
+      if (u.host.endsWith('r2.cloudflarestorage.com')) {
+        const key = u.pathname.split('/').slice(2).join('/');
+        calls.push(`R2 ${init.method} ${key}`);
+        if (init.method === 'PUT') { objects.set(key, Buffer.from(init.body)); return new Response(null); }
+        if (init.method === 'DELETE') { objects.delete(key); return new Response(null, { status: 204 }); }
+        if (key.endsWith('/exit') && ++polls >= 2 && !vanish) {
+          objects.set(key, Buffer.from(`${exitCode}\n`));
+          objects.set(key.replace('/exit', '/out.tgz'), outTgz);
+          objects.set(key.replace('/exit', '/build.log'), Buffer.from('line 1\nerror: something broke\n'));
+        }
+        return objects.has(key) ? new Response(objects.get(key)) : new Response('', { status: 404 });
+      }
+      const body = String(init.body);
+      const action = init.headers['x-amz-target'] ?? new URLSearchParams(body).get('Action');
+      calls.push(`${u.host.split('.')[0]} ${action}`);
+      if (action === 'AmazonSSM.GetParameter') return Response.json({ Parameter: { Value: 'ami-0abc' } });
+      if (action === 'DescribeSpotPriceHistory') return new Response(PRICES);
+      if (action === 'RunInstances') {
+        const zone = new URLSearchParams(body).get('SubnetId');
+        if (zone === 'subnet-a' && !calls.includes('refused')) { calls.push('refused'); return new Response('<Response><Errors><Error><Code>InsufficientInstanceCapacity</Code></Error></Errors></Response>', { status: 500 }); }
+        expect(new URLSearchParams(body).get('TagSpecification.1.Tag.1.Value')).toBe('engine-build');
+        expect(new URLSearchParams(body).get('InstanceMarketOptions.MarketType')).toBe('spot');
+        return new Response('<r><instancesSet><item><instanceId>i-0b</instanceId></item></instancesSet></r>');
+      }
+      if (action === 'DescribeInstances') return new Response(`<r><instanceState><code>48</code><name>${vanish ? 'terminated' : 'running'}</name></instanceState></r>`);
+      if (action === 'TerminateInstances') return new Response('<r/>');
+      throw new Error(`unexpected ${action}`);
+    };
+    return { fetchFn, calls, objects };
+  }
+  const job = () => { const dir = mkdtempSync(join(tmp, 'job-')); writeFileSync(join(dir, 'run.sh'), 'true'); return dir; };
+
+  it('runs a job: uploads it, launches in the next pool on a capacity error, pulls out/ back, terminates, cleans up R2', async () => {
+    const c = cloud();
+    const into = mkdtempSync(join(tmp, 'into-'));
+    await runOnBuilder(ec2, r2, job(), into, { name: 't1', timeoutMs: 60_000, fetchFn: c.fetchFn, sleep: async () => {} });
+    expect(readFileSync(join(into, 'out/simc'), 'utf8')).toBe('ELF');
+    expect(c.calls.filter(x => x.includes('RunInstances'))).toHaveLength(2);
+    expect(c.calls).toContain('ec2 TerminateInstances');
+    expect(c.objects.size).toBe(0);
+    expect(c.calls[0]).toBe('R2 PUT builds/t1/in.tgz');
+  });
+
+  it('fails with the log tail on a nonzero exit, and on an instance gone without reporting; terminates either way', async () => {
+    const failed = cloud({ exitCode: '2' });
+    await expect(runOnBuilder(ec2, r2, job(), mkdtempSync(join(tmp, 'into-')), { name: 't2', timeoutMs: 60_000, fetchFn: failed.fetchFn, sleep: async () => {} }))
+      .rejects.toThrow(/exited with 2: [\s\S]*something broke/);
+    expect(failed.calls).toContain('ec2 TerminateInstances');
+    let clock = 0;
+    const lost = cloud({ vanish: true });
+    await expect(runOnBuilder(ec2, r2, job(), mkdtempSync(join(tmp, 'into-')), { name: 't3', timeoutMs: 3_600_000, fetchFn: lost.fetchFn,
+      sleep: async () => { clock += 20_000; }, now: () => clock })).rejects.toThrow(/terminated without reporting/);
+    expect(lost.objects.size).toBe(0);
+  });
+
+  it('sweeps only builders launched more than two hours ago', async () => {
+    const calls = [];
+    const fetchFn = async (_url, init) => {
+      const action = new URLSearchParams(String(init.body)).get('Action');
+      calls.push(action);
+      return new Response(action === 'DescribeInstances'
+        ? '<r><instanceId>i-old</instanceId><launchTime>2026-09-25T08:00:00Z</launchTime><instanceId>i-new</instanceId><launchTime>2026-09-25T11:30:00Z</launchTime></r>'
+        : '<r/>');
+    };
+    expect(await sweepEc2Builders(ec2, { fetchFn, now: Date.parse('2026-09-25T12:00:00Z') })).toEqual(['i-old']);
+    expect(calls).toEqual(['DescribeInstances', 'TerminateInstances']);
+  });
+});
