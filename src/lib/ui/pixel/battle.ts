@@ -1,5 +1,7 @@
 // The pixel battle behind the running-sim panel. One Battle per mounted canvas: step() advances
 // the world at a fixed 12 Hz, draw() paints it at native 176×56 for nearest-neighbour scaling.
+// A multi-character run fights as a party: every character is a hero in its own lane, with its
+// own look, attack and pets, against the same enemies.
 // Everything the player sees is tied to the run: cast rate follows iterations per second, damage
 // numbers are the running DPS estimate, the boss's health is the run's remaining progress, and the
 // convergence of the estimate is drawn faintly behind the fight.
@@ -9,6 +11,10 @@ export const W = 176
 export const H = 56
 const GROUND = 49
 const HOME = 14
+/** Heroes a party draws; more would not fit the width. */
+export const MAX_PARTY = 6
+/** Each party member's depth offset: alternate rows so heroes side by side do not cover each other. */
+const LANES = [0, -5, 3, -9, 1, -4]
 
 export interface Input {
   speed?: number
@@ -107,13 +113,28 @@ const GLYPH: Record<string, string[]> = {
 // ---- world ----------------------------------------------------------------
 
 interface Mob { kind: MobKind; x: number; y: number; hp: number; max: number; hit: number; kick: number; dying: number; tint: number; seed: number; boss: boolean; gone?: boolean }
-interface Shot { x: number; y: number; target: Mob | null; aoe: boolean; pet?: string }
+interface Shot { x: number; y: number; target: Mob | null; aoe: boolean; by: Member; pet?: string }
 interface Text { x: number; y: number; s: string; life: number; c: string; big: boolean }
 interface Spark { x: number; y: number; vx: number; vy: number; life: number; c: string; g?: number }
 interface Ring { x: number; y: number; r: number; life: number; c: string }
-interface Wave { x: number; life: number; kind: 'slam' | 'orb' }
+/** `struck`: bit per party member it has already hit. */
+interface Wave { x: number; life: number; kind: 'slam' | 'orb'; struck: number }
 interface Pet { kind: PetKind; i: number; x: number; y: number; cd: number; strike: number; spin: number; n: number; life: number; away: number; dive: number; tx: number; ty: number; moving: boolean }
 interface Drop { x: number; y: number; vy: number; life: number; kind: 'gem' | 'coin' }
+interface Hero { x: number; pose: 'idle' | 'windup' | 'strike' | 'spin' | 'hurt'; poseT: number; hurt: number; jump: number }
+/** One character of the party: its hero, attack rhythm and pets. */
+interface Member {
+  i: number
+  style: HeroStyle
+  hero: Hero
+  // Warlocks stand further in so their imps have room behind them.
+  home: number
+  lane: number
+  cooldown: number
+  attacks: number
+  pets: Pet[]
+  lightning: { to: [number, number][]; life: number } | null
+}
 
 export class Battle {
   tick = 0
@@ -124,14 +145,9 @@ export class Battle {
   private rings: Ring[] = []
   private waves: Wave[] = []
   private drops: Drop[] = []
-  private pets: Pet[] = []
+  private party: Member[]
   private beams: { x: number; life: number }[] = []
   private shine = 0
-  // Warlocks stand further in so their imps have room behind them.
-  private home: number
-  private hero = { x: HOME, pose: 'idle' as 'idle' | 'windup' | 'strike' | 'spin' | 'hurt', poseT: 0, hurt: 0, jump: 0 }
-  private cooldown = 8
-  private attacks = 0
   private shake = 0
   private flash = 0
   private bossTimer = 60
@@ -142,13 +158,19 @@ export class Battle {
   private queue: { at: number; fn: () => void }[] = []
   private later(n: number, fn: () => void) { this.queue.push({ at: this.tick + n, fn }) }
 
-  constructor(private style: HeroStyle, private enc: Encounter, public input: Input) {
-    this.home = HOME + (style.pets.some((k) => k === 'imp' || k === 'wildimp') ? 12 : 0)
-    this.hero.x = this.home
-    this.pets = style.pets.map((kind, i) => ({
-      kind, i, x: this.home + 16 + i * 6, y: GROUND - 10, cd: 6 + i * 5, strike: 0, spin: 0, n: 0,
-      life: 60 + i * 37, away: 0, dive: 0, tx: 0, ty: 0, moving: false,
-    }))
+  constructor(party: HeroStyle | readonly HeroStyle[], private enc: Encounter, public input: Input) {
+    const styles = (Array.isArray(party) ? party : [party]).slice(0, MAX_PARTY) as HeroStyle[]
+    this.party = styles.map((style, i) => {
+      const home = HOME + i * 11 + (style.pets.some((k) => k === 'imp' || k === 'wildimp') ? 12 : 0)
+      return {
+        i, style, home, lane: LANES[i], cooldown: 8 + i * 3, attacks: 0, lightning: null,
+        hero: { x: home, pose: 'idle', poseT: 0, hurt: 0, jump: 0 },
+        pets: style.pets.map((kind, k) => ({
+          kind, i: k, x: home + 16 + k * 6, y: GROUND - 10, cd: 6 + k * 5 + i * 2, strike: 0, spin: 0, n: 0,
+          life: 60 + k * 37, away: 0, dive: 0, tx: 0, ty: 0, moving: false,
+        })),
+      }
+    })
     this.spawn()
   }
 
@@ -213,8 +235,7 @@ export class Battle {
     const tenth = Math.floor((inp.progress ?? 0) * 10)
     if (tenth > this.killsAt) { this.killsAt = tenth; const f = this.alive().find((m) => !m.boss); if (f) this.kill(f) }
 
-    this.stepHero(t)
-    this.stepPets(t)
+    for (const m of this.party) { this.stepHero(m, t); this.stepPets(m, t) }
     this.stepBoss()
     this.stepShots()
 
@@ -231,8 +252,8 @@ export class Battle {
     if (this.flash) this.flash--
     if (this.shine) this.shine--
     // A paladin sheds motes of light.
-    if (this.style.holy && t % 2) {
-      this.sparks.push({ x: this.hero.x + 2 + Math.random() * 9, y: GROUND - 2 - Math.random() * 10, vx: 0, vy: -0.3 - Math.random() * 0.3, life: 12, c: Math.random() < 0.5 ? GOLD : '#fff6d0', g: 0 })
+    for (const m of this.party) if (m.style.holy && t % 2) {
+      this.sparks.push({ x: m.hero.x + 2 + Math.random() * 9, y: GROUND + m.lane - 2 - Math.random() * 10, vx: 0, vy: -0.3 - Math.random() * 0.3, life: 12, c: Math.random() < 0.5 ? GOLD : '#fff6d0', g: 0 })
     }
   }
 
@@ -240,54 +261,55 @@ export class Battle {
     return Math.min(1.8, Math.max(0.6, (this.input.speed ?? 0) > 0 ? Math.log10(this.input.speed! + 10) / 1.6 : 1))
   }
 
-  private stepHero(t: number) {
-    const hero = this.hero
+  private stepHero(m: Member, t: number) {
+    const hero = m.hero
     const target = this.front()
-    const melee = this.style.melee
-    // A melee pet takes the front spot; the hero swings from just behind it.
-    const gap = 14 + (this.pets.some((p) => p.kind === 'ghoul' || p.kind === 'felguard' || p.kind === 'wolf') ? 9 : 0)
-    const want = melee && target ? Math.max(this.home, target.x - gap) : this.home
+    const melee = m.style.melee
+    // A melee pet takes the front spot; the hero swings from just behind it. Melee party members queue up behind each other.
+    const gap = 14 + (m.pets.some((p) => p.kind === 'ghoul' || p.kind === 'felguard' || p.kind === 'wolf') ? 9 : 0)
+      + this.party.filter((o) => o.i < m.i && o.style.melee).length * 5
+    const want = melee && target ? Math.max(m.home, target.x - gap) : m.home
     if (hero.x < want - 1) hero.x += 2
     else if (hero.x > want + 1) hero.x -= 2
     if (hero.jump) hero.jump--
-    if (this.enc.moves && t % 70 === 0) hero.jump = 8
+    if (this.enc.moves && (t + m.i * 9) % 70 === 0) hero.jump = 8
     if (hero.hurt) hero.hurt--
     if (hero.poseT && --hero.poseT === 0) hero.pose = 'idle'
 
     // Cadence follows engine throughput, within a calm range.
     const rate = this.rate()
-    if (--this.cooldown > 0 || !target || hero.hurt > 1) return
+    if (--m.cooldown > 0 || !target || hero.hurt > 1) return
     if (melee && Math.abs(hero.x - want) > 3) return
-    this.cooldown = Math.round((melee ? 7 : 9) / rate)
-    this.attacks++
-    const aoe = this.alive().length > 1 && this.attacks % 4 === 0
+    m.cooldown = Math.round((melee ? 7 : 9) / rate)
+    m.attacks++
+    const aoe = this.alive().length > 1 && m.attacks % 4 === 0
     // Wind-up, then the blow lands two ticks later.
     hero.pose = 'windup'; hero.poseT = 2
     this.later(2, () => {
       if (melee) {
         hero.pose = aoe ? 'spin' : 'strike'; hero.poseT = 3
         if (aoe) {
-          this.rings.push({ x: hero.x + 6, y: GROUND - 7, r: 3, life: 6, c: this.style.glow })
-          if (this.style.holy) this.divineStorm()
-          for (const m of this.alive()) if (Math.abs(m.x - hero.x) < 40) this.hit(m, false)
+          this.rings.push({ x: hero.x + 6, y: GROUND + m.lane - 7, r: 3, life: 6, c: m.style.glow })
+          if (m.style.holy) this.divineStorm(m)
+          for (const mob of this.alive()) if (Math.abs(mob.x - hero.x) < 40) this.hit(mob, false, m)
         } else if (this.front()) {
           const f = this.front()!
           // Every third blow calls down a pillar of light.
-          if (this.style.holy && this.attacks % 3 === 0) this.smite(f)
-          this.hit(f, true)
+          if (m.style.holy && m.attacks % 3 === 0) this.smite(f)
+          this.hit(f, true, m)
         }
       } else {
         hero.pose = 'strike'; hero.poseT = 3
         const tgt = this.front()
-        if (this.style.shot === 'lightning' || this.style.shot === 'breath') {
-          if (tgt) this.instantShot(tgt, aoe)
-        } else this.shots.push({ x: hero.x + 12, y: GROUND - 12, target: tgt, aoe })
+        if (m.style.shot === 'lightning' || m.style.shot === 'breath') {
+          if (tgt) this.instantShot(m, tgt, aoe)
+        } else this.shots.push({ x: hero.x + 12, y: GROUND + m.lane - 12, target: tgt, aoe, by: m })
       }
     })
   }
 
-  private divineStorm() {
-    const cx = this.hero.x + 6, cy = GROUND - 7
+  private divineStorm(m: Member) {
+    const cx = m.hero.x + 6, cy = GROUND + m.lane - 7
     this.rings.push({ x: cx, y: cy, r: 6, life: 7, c: GOLD }, { x: cx, y: cy, r: 1, life: 7, c: '#ffffff' })
     for (let k = 0; k < 18; k++) {
       const a = (k / 18) * Math.PI * 2
@@ -304,9 +326,9 @@ export class Battle {
     this.shine = 2
   }
 
-  private stepPets(t: number) {
-    const hero = this.hero, target = this.front(), rate = this.rate()
-    for (const p of this.pets) {
+  private stepPets(m: Member, t: number) {
+    const hero = m.hero, target = this.front(), rate = this.rate()
+    for (const p of m.pets) {
       if (p.strike) p.strike--
       switch (p.kind) {
         case 'felguard': case 'wolf': case 'ghoul': {
@@ -320,7 +342,7 @@ export class Battle {
           if (p.spin) {
             if (--p.spin % 3 === 0) {
               this.rings.push({ x: p.x + 5, y: p.y + 6, r: 4, life: 5, c: FEL })
-              for (const m of this.alive()) if (Math.abs(m.x - p.x) < 26) this.hit(m, false, FEL)
+              for (const mob of this.alive()) if (Math.abs(mob.x - p.x) < 26) this.hit(mob, false, FEL)
             }
             break
           }
@@ -347,7 +369,7 @@ export class Battle {
           if (--p.cd > 0 || !target) break
           p.cd = Math.round((p.kind === 'imp' ? 12 : 16) / rate)
           p.strike = 2
-          this.shots.push({ x: p.x + 8, y: p.y + 3, target, aoe: false, pet: PET_BOLT[p.kind] })
+          this.shots.push({ x: p.x + 8, y: p.y + 3, target, aoe: false, by: m, pet: PET_BOLT[p.kind] })
           break
         }
         case 'hawk': {
@@ -373,18 +395,21 @@ export class Battle {
     if (!boss || !this.enc.bossAttack) return
     if (this.telegraph) {
       if (--this.telegraph === 0) {
-        this.waves.push({ x: boss.x - 2, life: 40, kind: this.enc.bossAttack === 'orb' ? 'orb' : 'slam' })
+        this.waves.push({ x: boss.x - 2, life: 40, kind: this.enc.bossAttack === 'orb' ? 'orb' : 'slam', struck: 0 })
         if (this.enc.bossAttack === 'slam') { this.shake = 3; for (let k = 0; k < 8; k++) this.sparks.push({ x: boss.x + 4 + k * 2, y: GROUND, vx: Math.random() - 0.5, vy: -Math.random() * 1.5, life: 8, c: '#8a7a5a' }) }
       }
     } else if (--this.bossTimer <= 0) { this.bossTimer = 55 + Math.floor(Math.random() * 30); this.telegraph = 9 }
+    const all = (1 << this.party.length) - 1
     this.waves = this.waves.filter((w) => {
       w.x -= w.kind === 'orb' ? 2 : 3
-      if (w.x <= this.hero.x + 9) {
-        if (!this.hero.jump) { this.hero.hurt = 5; this.hero.pose = 'hurt'; this.hero.poseT = 4; this.hero.x -= 3; this.flash = 2 }
-        for (let k = 0; k < 5; k++) this.sparks.push({ x: this.hero.x + 6, y: GROUND - 8, vx: -Math.random() * 1.5, vy: -Math.random() * 1.5, life: 7, c: '#ff6b6b' })
-        return false
+      // It rolls through the party, striking each hero once as it passes.
+      for (const { i, hero, lane } of this.party) {
+        if (w.struck & (1 << i) || w.x > hero.x + 9) continue
+        w.struck |= 1 << i
+        if (!hero.jump) { hero.hurt = 5; hero.pose = 'hurt'; hero.poseT = 4; hero.x -= 3; this.flash = 2 }
+        for (let k = 0; k < 5; k++) this.sparks.push({ x: hero.x + 6, y: GROUND + lane - 8, vx: -Math.random() * 1.5, vy: -Math.random() * 1.5, life: 7, c: '#ff6b6b' })
       }
-      return --w.life > 0
+      return w.struck !== all && --w.life > 0
     })
   }
 
@@ -395,48 +420,50 @@ export class Battle {
       s.target = tgt
       s.x += 5
       s.y += Math.sign(tgt.y + 3 - s.y) * 0.5
-      if (this.style.shot === 'bolt' || s.pet) this.sparks.push({ x: s.x - 2, y: s.y + Math.random() * 2, vx: -0.3, vy: 0, life: 4, c: s.pet ?? this.style.glow, g: 0 })
+      if (s.by.style.shot === 'bolt' || s.pet) this.sparks.push({ x: s.x - 2, y: s.y + Math.random() * 2, vx: -0.3, vy: 0, life: 4, c: s.pet ?? s.by.style.glow, g: 0 })
       if (s.x >= tgt.x) {
         if (s.pet) this.hit(tgt, true, s.pet)
         else if (s.aoe) {
-          this.rings.push({ x: tgt.x + 4, y: tgt.y + 3, r: 2, life: 7, c: this.style.glow })
-          for (const m of this.alive()) if (Math.abs(m.x - tgt.x) < 30) this.hit(m, false)
-        } else this.hit(tgt, true)
+          this.rings.push({ x: tgt.x + 4, y: tgt.y + 3, r: 2, life: 7, c: s.by.style.glow })
+          for (const m of this.alive()) if (Math.abs(m.x - tgt.x) < 30) this.hit(m, false, s.by)
+        } else this.hit(tgt, true, s.by)
         return false
       }
       return s.x < W
     })
   }
 
-  private instantShot(tgt: Mob, aoe: boolean) {
+  private instantShot(by: Member, tgt: Mob, aoe: boolean) {
     const targets = aoe ? this.alive() : [tgt]
+    const st = by.style, hero = by.hero
     for (const m of targets) {
-      if (this.style.shot === 'lightning') this.rings.push({ x: m.x + 4, y: m.y + 3, r: 1, life: 3, c: this.style.glow })
-      else for (let k = 0; k < 10; k++) this.sparks.push({ x: this.hero.x + 12, y: GROUND - 10, vx: 3 + Math.random() * 2, vy: (Math.random() - 0.5) * 1.2, life: Math.max(3, Math.round((m.x - this.hero.x) / 5)), c: k % 2 ? this.style.glow : '#fff1c2', g: 0 })
-      this.hit(m, !aoe)
+      if (st.shot === 'lightning') this.rings.push({ x: m.x + 4, y: m.y + 3, r: 1, life: 3, c: st.glow })
+      else for (let k = 0; k < 10; k++) this.sparks.push({ x: hero.x + 12, y: GROUND + by.lane - 10, vx: 3 + Math.random() * 2, vy: (Math.random() - 0.5) * 1.2, life: Math.max(3, Math.round((m.x - hero.x) / 5)), c: k % 2 ? st.glow : '#fff1c2', g: 0 })
+      this.hit(m, !aoe, by)
     }
-    this.lightning = this.style.shot === 'lightning' ? { to: targets.map((m) => [m.x + 4, m.y + 3] as [number, number]), life: 2 } : null
+    by.lightning = st.shot === 'lightning' ? { to: targets.map((m) => [m.x + 4, m.y + 3] as [number, number]), life: 2 } : null
   }
-  private lightning: { to: [number, number][]; life: number } | null = null
 
-  /** A pet's hit flashes and sparks in its own colour but shows no number: the DPS estimate is the player's. */
-  private hit(m: Mob, single: boolean, pet?: string) {
-    if (pet) {
+  /** A pet's hit (`by` its colour) flashes and sparks in that colour but shows no number: the DPS estimate is the player's. */
+  private hit(m: Mob, single: boolean, by: Member | string) {
+    if (typeof by === 'string') {
+      const pet = by
       m.hit = 1
       if (!m.boss) m.kick = 1
       for (let k = 0; k < 3; k++) this.sparks.push({ x: m.x + 2, y: m.y + 3, vx: Math.random() * 1.6 - 0.3, vy: -Math.random() * 1.4, life: 5, c: pet })
       if (!m.boss) { m.hp -= 0.5; if (m.hp <= 0) this.kill(m) }
       return
     }
-    const crit = this.attacks % 6 === 0 && single
+    const crit = by.attacks % 6 === 0 && single
     const d = this.input.dps
-    const s = (d && d > 0 ? `${Math.max(1, Math.round(d / 1000))}K` : `${2 + (this.attacks % 7)}K`) + (crit ? '!' : '')
+    const s = (d && d > 0 ? `${Math.max(1, Math.round(d / 1000))}K` : `${2 + (by.attacks % 7)}K`) + (crit ? '!' : '')
     const stack = this.texts.filter((t) => t.life > 8).length
-    this.texts.push({ x: Math.min(W - 4 * s.length - 2, m.x - 2 + Math.random() * 8), y: m.y - 6 - (stack % 3) * 6, s, life: crit ? 16 : 12, c: crit ? '#ffd166' : '#eef3f8', big: crit })
+    // A party lands many blows at once: a number only while there is room for it, but a crit always shows.
+    if (stack < 3 || crit) this.texts.push({ x: Math.min(W - 4 * s.length - 2, m.x - 2 + Math.random() * 8), y: m.y - 6 - (stack % 3) * 6, s, life: crit ? 16 : 12, c: crit ? '#ffd166' : '#eef3f8', big: crit })
     m.hit = m.boss ? 1 : 2
     if (!m.boss) m.kick = crit ? 3 : 1
-    for (let k = 0; k < (crit ? 10 : 4); k++) this.sparks.push({ x: m.x + 2, y: m.y + 3, vx: Math.random() * 2 - 0.4, vy: -Math.random() * 1.8, life: 6, c: crit ? '#ffd166' : this.style.glow })
-    if (crit) { this.shake = 2; this.rings.push({ x: m.x + 4, y: m.y + 4, r: 1, life: 5, c: '#ffd166' }); if (this.style.holy) this.shine = 2 }
+    for (let k = 0; k < (crit ? 10 : 4); k++) this.sparks.push({ x: m.x + 2, y: m.y + 3, vx: Math.random() * 2 - 0.4, vy: -Math.random() * 1.8, life: 6, c: crit ? '#ffd166' : by.style.glow })
+    if (crit) { this.shake = 2; this.rings.push({ x: m.x + 4, y: m.y + 4, r: 1, life: 5, c: '#ffd166' }); if (by.style.holy) this.shine = 2 }
     if (!m.boss) { m.hp -= crit ? 2 : 1; if (m.hp <= 0) this.kill(m) }
   }
 
@@ -471,12 +498,14 @@ export class Battle {
       px(ctx, b.x - 1, 0, 2, GROUND + 1, b.life > 2 ? '#fffbe6' : withAlpha(GOLD, 0.6))
     }
     for (const m of [...this.mobs].sort((a, b) => a.y - b.y)) this.drawMob(ctx, m)
-    for (const p of this.pets) if (p.kind === 'imp' || p.kind === 'wildimp' || p.kind === 'hawk') this.drawPet(ctx, p)
-    this.drawHero(ctx)
-    for (const p of this.pets) if (p.kind === 'felguard' || p.kind === 'wolf' || p.kind === 'ghoul') this.drawPet(ctx, p)
+    const pets = this.party.flatMap((m) => m.pets)
+    for (const p of pets) if (p.kind === 'imp' || p.kind === 'wildimp' || p.kind === 'hawk') this.drawPet(ctx, p)
+    // Back row first.
+    for (const m of [...this.party].sort((a, b) => a.lane - b.lane)) this.drawHero(ctx, m)
+    for (const p of pets) if (p.kind === 'felguard' || p.kind === 'wolf' || p.kind === 'ghoul') this.drawPet(ctx, p)
     for (const s of this.shots) this.drawShot(ctx, s)
-    if (this.lightning && this.lightning.life-- > 0) {
-      for (const [tx, ty] of this.lightning.to) zigzag(ctx, this.hero.x + 11, GROUND - 13, tx, ty, this.style.glow)
+    for (const m of this.party) if (m.lightning && m.lightning.life-- > 0) {
+      for (const [tx, ty] of m.lightning.to) zigzag(ctx, m.hero.x + 11, GROUND + m.lane - 13, tx, ty, m.style.glow)
     }
     for (const r of this.rings) ring(ctx, r.x, r.y, r.r, r.c, r.life / 7)
     for (const p of this.sparks) px(ctx, Math.round(p.x), Math.round(p.y), 1, 1, p.c)
@@ -508,18 +537,18 @@ export class Battle {
     }
   }
 
-  private drawHero(ctx: CanvasRenderingContext2D) {
-    const h = this.hero, st = this.style
+  private drawHero(ctx: CanvasRenderingContext2D, m: Member) {
+    const h = m.hero, st = m.style
     const jumpY = h.jump ? -Math.round(Math.sin((h.jump / 8) * Math.PI) * 6) : 0
     const bob = h.pose === 'idle' && Math.floor(this.tick / 6) % 2 ? 1 : 0
     const lean = h.pose === 'strike' ? 2 : h.pose === 'windup' ? -1 : h.pose === 'hurt' ? -2 : 0
-    const x = Math.round(h.x + lean), y = GROUND - 14 + bob + jumpY
+    const x = Math.round(h.x + lean), y = GROUND + m.lane - 14 + bob + jumpY
     const hurt = h.hurt > 0 && h.hurt % 2
     const map: Map = hurt
       ? { A: '#ff8a8a', a: '#d45a5a', T: '#ffd0d0', D: '#ff8a8a', d: '#d45a5a', S: '#ffd0d0', E: '#5a0000', B: '#7a2a2a', h: '#ffb0b0' }
       : { A: st.armor, a: st.shade, T: st.trim, D: st.headColor, d: st.shade, S: '#f1c7a5', E: '#0b0d12', B: '#1e2433', h: '#e0d6b8' }
     // Ground shadow.
-    px(ctx, x + 2, GROUND, 8 - Math.min(4, -jumpY), 1, 'rgb(0 0 0 / 0.35)')
+    px(ctx, x + 2, GROUND + m.lane, 8 - Math.min(4, -jumpY), 1, 'rgb(0 0 0 / 0.35)')
     if (h.pose === 'windup' || h.pose === 'strike') ring(ctx, x + 6, y + 8, h.pose === 'windup' ? 5 : 7, st.glow, 0.25)
     // Paladin: a pulsing halo and a soft golden aura.
     if (st.holy) {
@@ -528,11 +557,11 @@ export class Battle {
     }
     sprite(ctx, HEADS[st.head], x, y, map)
     sprite(ctx, BODY, x, y + 5, map)
-    this.drawWeapon(ctx, x + 10, y + 8)
+    this.drawWeapon(ctx, m, x + 10, y + 8)
   }
 
-  private drawWeapon(ctx: CanvasRenderingContext2D, hx: number, hy: number) {
-    const st = this.style, pose = this.hero.pose
+  private drawWeapon(ctx: CanvasRenderingContext2D, m: Member, hx: number, hy: number) {
+    const st = m.style, pose = m.hero.pose
     const up = pose === 'windup', hit = pose === 'strike' || pose === 'spin'
     const metal = '#d8dde6', wood = '#8a6a44'
     switch (st.weapon) {
@@ -643,9 +672,9 @@ export class Battle {
   }
 
   private drawShot(ctx: CanvasRenderingContext2D, s: Shot) {
-    const c = s.pet ?? this.style.glow
+    const c = s.pet ?? s.by.style.glow
     if (s.pet) { px(ctx, s.x - 1, s.y - 1, 3, 3, withAlpha(c, 0.35)); px(ctx, s.x, s.y, 2, 2, c); px(ctx, s.x, s.y, 1, 1, '#ffffff'); return }
-    if (this.style.shot === 'arrow') { px(ctx, s.x - 5, s.y + 1, 6, 1, '#c8b08a'); px(ctx, s.x + 1, s.y, 2, 3, '#e6e0cf') }
+    if (s.by.style.shot === 'arrow') { px(ctx, s.x - 5, s.y + 1, 6, 1, '#c8b08a'); px(ctx, s.x + 1, s.y, 2, 3, '#e6e0cf') }
     else { px(ctx, s.x - 1, s.y - 1, 4, 4, withAlpha(c, 0.35)); px(ctx, s.x, s.y, 2, 2, '#ffffff'); px(ctx, s.x - 3, s.y + 1, 3, 1, c) }
   }
 

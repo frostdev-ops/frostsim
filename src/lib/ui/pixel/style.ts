@@ -72,6 +72,19 @@ export function heroStyle(className?: string, spec?: string): HeroStyle {
   return { ...merged, shot: merged.shot ?? 'bolt', pets: merged.pets ?? [], holy: merged.holy ?? false }
 }
 
+/** Each character's class and spec in a simc profile, in order: the party of a multi-character run. */
+export function partyOf(profile: string): { className: string; spec?: string }[] {
+  const party: { className: string; spec?: string }[] = []
+  for (const line of profile.split('\n')) {
+    const m = /^\s*(\w+)\s*=\s*"?([^"\r\n]*)"?\s*$/.exec(line)
+    if (!m) continue
+    const cls = CLASS_KEYS[m[1].toLowerCase()] ?? m[1].toLowerCase()
+    if (CLASSES[cls]) party.push({ className: cls })
+    else if (m[1] === 'spec' && party.length) party[party.length - 1].spec = m[2]
+  }
+  return party
+}
+
 export type MobKind = 'slime' | 'imp' | 'skeleton' | 'boss' | 'dummy'
 export type Loot = 'gem' | 'coin' | null
 
