@@ -29,7 +29,7 @@ Code comments cite this file as `DESIGN.md <id>`: `A` architecture, `C` contract
 | A5 | Redis is a cache, never the record: sessions (5 min), rate-limit windows, single-use OAuth states (10 min), job progress lines (the last 500, 1 h), native-build lookups (10 min, 1 min for a miss) and Discord reply tokens (15 min). Every key has a TTL and the `frostsim:` prefix. Without Redis, sessions read Postgres, rate limits fail open, progress lines are dropped and a Discord `/sim` is cancelled because its result could not be posted. |
 | A6 | Job progress reaches the browser by polling about once a second. No SSE. |
 | A7 | One job runs on one worker, at the plan's width capped by the configured server type's cores (`HCLOUD_SERVER_TYPE`, default CPX62: 16 shared AMD vCPU at €0.245/h, which measured faster per run than the dedicated CCX33 (CCX43 and CCX53 were not measurable under the project's core limit); CCX53 once the project may create 32 dedicated cores). Jobs are not split across servers. A Hetzner project's dedicated-core limit bounds both the type and `WORKER_MAX`: set `WORKER_MAX` to at most limit ÷ cores. |
-| A8 | The Discord bot is an HTTP interactions endpoint inside the account server. No gateway process. `/sim` and `/compare` (2-4 cloud or Armory characters, a fight or one of the site's dungeon routes) edit their ephemeral reply with a progress embed every few seconds, then a result embed built from the job's report (`discord-embeds.ts`) with a hosted-report link and a "Post in channel" button (a component interaction that posts the stored result once, for the invoker only, for 24 h). A Dungeon Route compare with tanks or healers enqueues one job per role (`role-share.ts`) and merges them. |
+| A8 | The Discord bot is an HTTP interactions endpoint inside the account server. No gateway process. `/sim` and `/compare` (2-4 cloud or Armory characters, a fight or one of the site's dungeon routes) edit their reply (ephemeral unless `share:true`) with a progress embed every few seconds, then a result embed built from the job's report (`discord-embeds.ts`) with a hosted-report link and a "Post in channel" button (a component interaction that posts the stored result once, for the invoker only, for 24 h). A Dungeon Route compare with tanks or healers enqueues one job per role (`role-share.ts`) and merges them. |
 | A9 | OAuth provider tokens are never stored, only `(provider, subject, display_name)`. |
 
 ## Contracts (C)
@@ -236,8 +236,10 @@ proxy (`WOW_API_ORIGIN`, default `http://127.0.0.1:3011`, the only holder of the
 `/api/wow/character-profile/<region>/<realm>/<name>`, which builds the addon-shaped profile with `src/lib/import/armory.ts`.
 The run has no `character_id`. The `realm` option autocompletes from the proxy's `/api/wow/realms?region=` for the chosen region.
 
-Shared results. Replies are ephemeral, except that `/sim share:true` posts a finished result (DPS, and the hosted link when the
-invoker's plan has one) to the channel as a new follow-up message naming the invoker. Refusals, failures and cancels stay ephemeral.
+Shared results. Replies are ephemeral, except with `share:true` on `/sim` or `/compare`: the reply is public from the start, so the
+channel sees the progress embed and pixel battle, and that same message becomes the result (DPS, and the hosted link when the
+invoker's plan has one) naming the invoker. A refusal, failure or cancel of a shared run is public too, since it replaces the same
+message.
 The page lists the guild's name and roles through the bot token; managed (bot) roles are left out.
 
 **P6 Account API** (all under `/api/v1`): `auth/providers`, `auth/:provider/start|callback`, `auth/logout`;

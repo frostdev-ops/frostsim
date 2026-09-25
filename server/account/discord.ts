@@ -112,8 +112,6 @@ interface Pending {
    *  id, shown there as a mention (allowed_mentions is empty, so it never pings). */
   share?: string;
   message?: Message; after?: number;
-  /** Set with `message`: whether that settled reply is the public one. */
-  public?: boolean;
   /** The progress last shown ("q<position>" or a percentage) and when. */
   shown?: string; shownAt?: number;
   /** The pixel battle shown while it runs: the first character's pre-rendered look (scripts/render-fight-gifs.mjs). */
@@ -298,21 +296,6 @@ async function editReply(app: Pick<AppCtx, 'config' | 'fetch' | 'log'>, token: s
   }
 }
 
-/** A new, public message in the interaction's channel (a follow-up without the ephemeral flag; the original reply was already
- *  edited, so this does not replace it). Same logging and failure shape as editReply. */
-async function publicReply(app: Pick<AppCtx, 'config' | 'fetch' | 'log'>, token: string, message: Message): Promise<Response | null> {
-  const url = `${API}/webhooks/${app.config.env.DISCORD_APPLICATION_ID}/${encodeURIComponent(token)}`;
-  try {
-    const res = await app.fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: body(message), signal: AbortSignal.timeout(10_000) });
-    await res.body?.cancel();
-    if (!res.ok) app.log(`discord: posting a shared result failed with status ${res.status}`);
-    return res;
-  } catch (err) {
-    app.log(`discord: posting a shared result failed (${errorSummary(err)})`);
-    return null;
-  }
-}
-
 /** The run's own edits can reach Discord before the deferral they edit has registered, which it answers with 404: try once more. */
 async function editDeferred(app: Pick<AppCtx, 'config' | 'fetch' | 'log'>, token: string, message: string | Message): Promise<void> {
   if ((await editReply(app, token, message))?.status !== 404) return;
@@ -415,10 +398,9 @@ async function startRun(app: AppCtx, i: Interaction, discordId: string, received
   const pool = refusal ? ` ${refusal} It runs on your own plan.` : fellBack ? " This server's pool is used up, so it runs on your own plan." : '';
   // Before the token is stored: from then on the task may post the result, and a late "Queued" would overwrite it.
   const share = i.data?.options?.find((o) => o.name === 'share')?.value === true;
-  const then = share ? 'The result will be posted in this channel.' : '';
   const look = fightGif(picked[0].character.className, picked[0].character.spec);
   const gif = look ? `${app.config.publicOrigin}/discord/fight/${look}.gif` : undefined;
-  await edit({ content: `${pool.trim()} ${then}`.trim(), embeds: [progressEmbed({ label, fight: fight.fight, image: gif })] });
+  await edit({ content: pool.trim(), embeds: [progressEmbed({ label, fight: fight.fight, image: gif })] });
   const pending: Pending = {
     token, label, presetId: fight.presetId, fight: fight.fight, exp: receivedMs + TOKEN_TTL_S * 1000, kind: compare ? 'compare' : 'sim', owner: discordId,
     ...(gif ? { gif } : {}), accuracy,
@@ -511,12 +493,13 @@ async function interactions(ctx: RequestCtx): Promise<Response> {
   switch (i.data?.name) {
     case 'sim':
     case 'compare':
-      // Discord waits 3 s for this answer; the enqueue (R2, entitlement and capacity checks) happens after it.
+      // Discord waits 3 s for this answer; the enqueue (R2, entitlement and capacity checks) happens after it. share:true makes the
+      // reply public from the start, so the channel watches the run and the same message becomes the result.
       void startRun(ctx, i, discordId, nowMs).catch(async (err) => {
         ctx.log(`discord: /${i.data?.name} failed (${errorSummary(err)})`);
         await editDeferred(ctx, i.token ?? '', 'Something went wrong starting this run. Try again later.');
       });
-      return json({ type: DEFERRED, data: { flags: EPHEMERAL } });
+      return json({ type: DEFERRED, ...(i.data?.options?.find((o) => o.name === 'share')?.value === true ? {} : { data: { flags: EPHEMERAL } }) });
     case 'link':
       return reply(await linkText(ctx, discordId));
     case 'usage':
@@ -634,15 +617,15 @@ const take = (app: AppCtx, key: string) => tryRedis(app.redis, app.log, async (r
 
 /** Posts the settled reply. When Discord may take it later (429, 5xx, unreachable) the token goes back with the message, so the next
  *  tick retries it without a second share or cancel. Anything else is final (401/404: the token is dead). */
-async function post(app: AppCtx, key: string, pending: Pending, message: Message, isPublic = false): Promise<void> {
-  const res = isPublic ? await publicReply(app, pending.token, message) : await editReply(app, pending.token, message);
+async function post(app: AppCtx, key: string, pending: Pending, message: Message): Promise<void> {
+  const res = await editReply(app, pending.token, message);
   if (res && res.status !== 429 && res.status < 500) return;
   const nowMs = app.now().getTime();
   const ttl = pending.exp - nowMs;
   if (ttl <= 0) return;
   const after = nowMs + (Number(res?.headers.get('retry-after')) || 0) * 1000;
   await tryRedis(app.redis, app.log,
-    (r) => r.set(key, JSON.stringify({ ...pending, message, after, ...(isPublic ? { public: true } : {}) }), 'PX', ttl), null);
+    (r) => r.set(key, JSON.stringify({ ...pending, message, after }), 'PX', ttl), null);
 }
 
 /** How far a run is, 0-100, across its phases (one per character under single_actor_batch), from its latest progress line. Runs
@@ -680,7 +663,7 @@ async function followUp(app: AppCtx, id: string, nowMs: number): Promise<void> {
   // `content`: a settled reply stored by the release before embeds.
   const settled = pending.message ?? (pending.content !== undefined ? { content: pending.content } : undefined);
   if (settled) {
-    if (nowMs >= (pending.after ?? 0) && (await take(app, key))) await post(app, key, pending, settled, pending.public);
+    if (nowMs >= (pending.after ?? 0) && (await take(app, key))) await post(app, key, pending, settled);
     return;
   }
   const ids = pending.jobs ?? [id];
@@ -699,8 +682,8 @@ async function followUp(app: AppCtx, id: string, nowMs: number): Promise<void> {
     // It finished between the two reads.
     views = (await Promise.all(ids.map((j) => jobView(app, j)))).filter((v): v is JobView => !!v);
   }
-  // Only a finished result is shared; a failure or cancel stays in the invoker's ephemeral reply.
-  const shared = pending.share !== undefined && views.every((v) => v.status === 'done');
+  // A shared run's reply is already public: its result, or why there is none, replaces the progress there.
+  const shared = pending.share !== undefined;
   const message = await resultMessage(app, views, pending, shared);
   // The button on an ephemeral result posts this same result to the channel later.
   if (!shared && message.embeds?.length && pending.owner) {
@@ -708,7 +691,7 @@ async function followUp(app: AppCtx, id: string, nowMs: number): Promise<void> {
       ?.map((row) => ({ ...row, components: row.components.filter((b) => b.style === 5) })).filter((row) => row.components.length) };
     await tryRedis(app.redis, app.log, (r) => r.set(postKey(id), JSON.stringify({ owner: pending.owner, message: forChannel }), 'EX', POST_TTL_S), null);
   }
-  await post(app, key, pending, message, shared);
+  await post(app, key, pending, message);
 }
 
 /** "Post in channel" on an ephemeral result: the invoker's result as a new public message, once. */

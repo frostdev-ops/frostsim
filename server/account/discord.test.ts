@@ -301,11 +301,13 @@ describe('/sim', () => {
     expect(mocks.enqueueJob).not.toHaveBeenCalled();
   });
 
-  it('with share, says the result will be posted in the channel and remembers who ran it', async () => {
+  it('with share, answers in public from the start and remembers who ran it', async () => {
     const { store, redis } = fakeRedis();
-    await call(redis, sim([{ name: 'character', type: 3, value: CHAR }, { name: 'share', type: 5, value: true }], inGuild(ALICE, GUILD)));
+    const res = await call(redis, sim([{ name: 'character', type: 3, value: CHAR }, { name: 'share', type: 5, value: true }], inGuild(ALICE, GUILD)));
+    expect(res.body).toEqual({ type: 5 });
     await vi.waitFor(() => expect(store.has(`discord:${JOB}`)).toBe(true));
-    expect(edits[0].body.content).toBe('The result will be posted in this channel.');
+    expect(edits[0].body.content).toBe('');
+    expect(edits[0].body.embeds![0].title).toMatch(/^Simulating /);
     expect(JSON.parse(store.get(`discord:${JOB}`)!.value)).toMatchObject({ share: ALICE });
   });
 
@@ -571,7 +573,7 @@ describe('reply task', () => {
     expect(logs.at(-1)).toBe(`discord: hosted share for job ${JOB} failed (Error: R2 PUT failed with status 500)`);
   });
 
-  it('posts a shared result as a new public message naming the invoker, and keeps a failure in the ephemeral reply', async () => {
+  it('replaces a shared run\'s public progress with its result naming the invoker, or with why there is none', async () => {
     world.subscriptions[USER] = [];
     const shared = (exp = NOW + 600_000) => JSON.stringify({ token: TOKEN, label: 'Main_Warlock', presetId: 'patchwerk', exp, share: ALICE });
     const { store, redis } = fakeRedis();
@@ -581,7 +583,7 @@ describe('reply task', () => {
     mocks.resultBytes.mockResolvedValue(new Uint8Array(gzipSync(REPORT_TEXT)));
     await task.run(deps(redis));
     expect(edits).toHaveLength(1);
-    expect(edits[0].url).toBe(`https://discord.com/api/v10/webhooks/${APP_ID}/${TOKEN}`);
+    expect(edits[0].url).toMatch(/\/messages\/@original$/);
     expect(edits[0].body.embeds![0].description).toMatch(new RegExp(`^<@${ALICE}>'s sim\\n\\*\\*223,974 DPS`));
     expect(edits[0].body.components).toEqual([]);
     expect(edits[0].body.allowed_mentions).toEqual({ parse: [] });
@@ -594,7 +596,7 @@ describe('reply task', () => {
     expect(edits[0].url).toMatch(/\/messages\/@original$/);
   });
 
-  it('retries a shared result that Discord refused with a 5xx as the public message again', async () => {
+  it('retries a shared result that Discord refused with a 5xx by editing the reply again', async () => {
     world.subscriptions[USER] = [];
     const { store, redis } = fakeRedis();
     world.discordJobs = [JOB];
@@ -602,9 +604,10 @@ describe('reply task', () => {
     mocks.jobView.mockResolvedValue(done());
     editStatuses = [503];
     await task.run(deps(redis));
-    expect(JSON.parse(store.get(`discord:${JOB}`)!.value)).toMatchObject({ public: true });
+    expect(JSON.parse(store.get(`discord:${JOB}`)!.value).message).toBeDefined();
     await task.run(deps(redis));
-    expect(edits.map((e) => e.url)).toEqual([`https://discord.com/api/v10/webhooks/${APP_ID}/${TOKEN}`, `https://discord.com/api/v10/webhooks/${APP_ID}/${TOKEN}`]);
+    const original = `https://discord.com/api/v10/webhooks/${APP_ID}/${TOKEN}/messages/@original`;
+    expect(edits.map((e) => e.url)).toEqual([original, original]);
     expect(store.size).toBe(0);
   });
 
