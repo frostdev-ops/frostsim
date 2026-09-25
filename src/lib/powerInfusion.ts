@@ -23,10 +23,13 @@ export interface PiSpec {
   runs: PiRun[]
   /** Independent runs combined by scripts/merge_power_infusion.py; absent for a single run. */
   sources?: number
+  /** Set only on a spec carried over from an earlier engine by a partial re-sim; otherwise PiData.engine. */
+  engine?: PiEngine
 }
+export interface PiEngine { commit: string; simcVersion: string; wowVersion: string }
 export interface PiData {
   schemaVersion: 1
-  engine: { commit: string; simcVersion: string; wowVersion: string }
+  engine: PiEngine
   profiles: string
   fightStyle: string
   targetError: number

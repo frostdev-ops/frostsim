@@ -5,6 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import threading  # noqa: E402
+import time  # noqa: E402
 
 from generate_power_infusion import (  # noqa: E402
     PI_POOL, PI_TIMED, Glyphs, Runner, System, Task, bar, check_engine, extract_variant, paint, pick_profiles, run_args,
@@ -118,6 +119,15 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(sorted(specs), [('A', [(1, 'base'), (1, 'pi')]), ('B', [(1, 'base'), (1, 'pi')])])
         self.assertEqual((len(r.done), r.errors, len(r.pending)), (4, [], 0))
         self.assertIsNotNone(r.eta())
+
+
+    def test_idle_workers_exit_when_the_queue_empties(self):
+        # Workers above the job count wait while tasks are pending; the last pop must wake them,
+        # or the run never ends after its final sim (seen on a 2026-09-25 Linux run).
+        r = Runner(self.tasks(), lambda t, jobs: time.sleep(0.05), lambda *a: None, jobs=1, max_jobs=3).start()
+        for w in r.workers:
+            w.join(2)
+        self.assertEqual((len(r.done), r.alive()), (4, False))
 
     def test_a_failed_sim_stops_new_ones_and_is_reported(self):
         def run_one(t, jobs):

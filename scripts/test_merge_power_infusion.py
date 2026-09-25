@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from merge_power_infusion import blend, combine, merge  # noqa: E402
+from merge_power_infusion import blend, carry, combine, merge  # noqa: E402
 
 META = {'schemaVersion': 1, 'engine': {'commit': 'c0ffee'}, 'profiles': 'MID2', 'fightStyle': 'P', 'targetError': 0.1}
 
@@ -63,6 +63,25 @@ class Merge(unittest.TestCase):
         other = ('o', dict(a[1], targetError=0.2), {})
         with self.assertRaisesRegex(SystemExit, 'targetError'):
             merge([a, other])
+
+    def test_carry_keeps_missing_specs_with_their_engine(self):
+        old_summary, old_details, _ = merge([source('old', 900, 10)])
+        fire = dict(old_summary['specs'][0], name='Fire Mage', profile='MID2_Mage_Fire')
+        old = ('old', dict(old_summary, specs=[old_summary['specs'][0], fire]),
+               {'MID2_Mage_Frost': old_details['MID2_Mage_Frost'], 'MID2_Mage_Fire': {'runs': 'fire'}})
+        new = source('new', 1000, 10)
+        new[1]['engine'] = {'commit': 'beef'}
+        summary, details, _ = merge([new])
+        lines = carry(summary, details, old)
+        self.assertEqual([s['name'] for s in summary['specs']], ['Fire Mage', 'Frost Mage'])
+        fire_out, frost_out = summary['specs']
+        self.assertEqual(fire_out['engine'], {'commit': 'c0ffee'})  # carried keeps its engine
+        self.assertNotIn('engine', frost_out)  # fresh spec uses the file's engine
+        self.assertEqual(frost_out['runs'][0]['base']['dps'][0], 1000)  # fresh wins over carried
+        self.assertEqual(details['MID2_Mage_Fire'], {'runs': 'fire'})
+        self.assertEqual((len(lines), summary['carriedFrom']), (1, 'old'))
+        with self.assertRaisesRegex(SystemExit, 'targetError'):
+            carry(summary, details, ('bad', dict(old[1], targetError=0.2), {}))
 
 
 if __name__ == '__main__':
