@@ -3,7 +3,7 @@
   // Application shell: navigation, character summary, active job indicator, route outlet (P03.1, P03.2, P03.7).
   import {
     activeCharacter, activeStored, app, catalogBaseUrl, checkCapability, exportEverything,
-    isBusy, loadLibrary, pollEngineSlot, prepareForReload, type ReloadReadiness,
+    focusScope, isBusy, loadLibrary, PICK_SCOPES, type PickScope, pollEngineSlot, prepareForReload, type ReloadReadiness,
     saveCharacter, storageMessage, toast,
   } from './lib/app.svelte'
   import {
@@ -29,6 +29,7 @@
   import { decodeShare, isShareFragment, stripFragment } from './lib/store/share'
   import type { ImportedCharacter } from './lib/import/character'
   import Banner from './lib/ui/Banner.svelte'
+  import CharacterBar from './lib/ui/CharacterBar.svelte'
   import EngineStatus from './lib/ui/EngineStatus.svelte'
   import Dialog from './lib/ui/Dialog.svelte'
   import SiteLegal from './lib/ui/SiteLegal.svelte'
@@ -169,6 +170,9 @@
     { id: 'reports', label: 'Reports', icon: ChartColumn, routes: ['reports'] },
   ]
   const group = $derived(NAV_GROUPS.find((g) => g.routes.includes(router.name)))
+  // Each screen works on its own character (app.svelte.ts picks); arriving on one focuses its pick.
+  const scope = $derived((PICK_SCOPES as readonly string[]).includes(router.name) && !router.raw.startsWith('r/') ? router.name as PickScope : null)
+  $effect(() => focusScope(scope))
   // A group link returns to the tool last used in that group this session.
   const lastInGroup = $state<Record<string, RouteName>>({})
   $effect(() => { if (group) lastInGroup[group.id] = router.name })
@@ -525,6 +529,7 @@
     so Try again re-renders with the same data and usually reproduces it — which
     is what makes the message worth reading rather than worth hiding.
   -->
+  {#if scope && scope !== 'character'}<CharacterBar />{/if}
   <svelte:boundary onerror={(e) => trace('screen.render-failed', { message: e instanceof Error ? e.message : String(e) })}>
     {#if router.raw.startsWith('r/')}
       <SharedReport />

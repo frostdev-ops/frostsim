@@ -17,8 +17,7 @@
   } from '../lib/catalog/upgradeCosts'
   import type { Candidate, CandidateMeasurement, OptimizationProgress } from '../lib/optimization/types'
   import {
-    activeCharacter, activeStored, app, engineIdentityString, isBusy, maxThreads, pollEngineSlot,
-    profilesetsSupported, saveReport,
+    activeCharacter, activeStored, app, engineIdentityString, isBusy, maxThreads, pollEngineSlot, profilesetsSupported, runCharacter, saveReport,
   } from '../lib/app.svelte'
   import { makeRunBatch } from '../lib/runBatch'
   import { markSettled, markStarted, teardownCancellation } from '../lib/job.svelte'
@@ -176,7 +175,7 @@
     ownedJobId = jobId
     const title = `${stored?.label ?? character.name} — Crest Sim`
     markStarted({ tool: 'crests', title, startedAt: Date.now() })
-    app.job = { id: jobId, tool: 'crests', title, status: 'validating', startedAt: Date.now() }
+    app.job = { id: jobId, tool: 'crests', title, character: runCharacter(), status: 'validating', startedAt: Date.now() }
 
     const controller = new AbortController()
     cancelRun = () => controller.abort()
@@ -280,6 +279,7 @@
       // Screen recommends via dominance tie-break, not highest mean (D11); ranked is raw order, winner is rendered.
       const winningRow = winner
       await saveReport({
+          character: app.job?.character,
         tool: 'crests',
         title,
         completion: finalRun.incomplete ? 'partial' : 'complete',

@@ -11,7 +11,7 @@
     saveCharacter, toast,
   } from '../lib/app.svelte'
   import { fmtDateTime } from '../lib/format'
-  import { href, navigate } from '../lib/router.svelte'
+  import { href, navigate, router } from '../lib/router.svelte'
   import { makePortable, readPortable, redactCharacter } from '../lib/store/records'
   import { encodeShare } from '../lib/store/share'
   import Banner from '../lib/ui/Banner.svelte'
@@ -21,6 +21,7 @@
   import CharacterBanner from '../lib/ui/CharacterBanner.svelte'
   import TierSets from '../lib/ui/TierSets.svelte'
   import TalentPreview from '../lib/ui/TalentPreview.svelte'
+  import Roster from '../lib/ui/Roster.svelte'
   import { rememberTalentDraft } from '../lib/talents.svelte'
   import { clearSetup, sendSetup } from '../lib/handoff.svelte'
   import { RefreshCw, Plus } from '@lucide/svelte'
@@ -80,6 +81,13 @@
     parseError = ''
     importing = true
   }
+
+  // #/character/import (the pickers' "Import a character"): open the import dialog, then drop the suffix.
+  $effect(() => {
+    if (router.rest[0] !== 'import') return
+    navigate('character', true)
+    if (character) openImport(false)
+  })
 
   async function commitImport(parsed: ImportedCharacter, label?: string): Promise<void> {
     if (saving) return
@@ -246,6 +254,7 @@
       <p class="small muted">{draftSaved ? 'Draft saved on this device. ' : ''}Your export and simulations stay in your browser.</p>
     </section>
   {:else}
+    <Roster onimport={() => openImport(false)} />
     <!-- Character workspace (P12.2). -->
     <section class="panel stack">
       <CharacterBanner {character} characterId={stored?.id} embedded />
@@ -328,22 +337,6 @@
       {/if}
     </section>
 
-    {#if app.characters.length > 1}
-      <section class="panel stack-sm">
-        <h2 class="small">Saved characters</h2>
-        <div class="row">
-          {#each app.characters as c (c.id)}
-            <button
-              class="sm"
-              class:primary={c.id === app.activeCharacterId}
-              onclick={() => (app.activeCharacterId = c.id)}
-            >
-              {c.label}
-            </button>
-          {/each}
-        </div>
-      </section>
-    {/if}
   {/if}
 </div>
 

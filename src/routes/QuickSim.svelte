@@ -1,6 +1,9 @@
 <script lang="ts">
   // Quick Sim: setup, run, result header (P06.1-P06.4, P06.9-P06.12).
-  import { activeCharacter, activeStored, app, isBusy, maxThreads, toast } from '../lib/app.svelte'
+  import { activeCharacter, activeStored, app, DRAFT, isBusy, maxThreads, openDraft, toast } from '../lib/app.svelte'
+  import { X } from '@lucide/svelte'
+  import CharacterPicker from '../lib/ui/CharacterPicker.svelte'
+  import { multiActorParts } from '../lib/simc/multi-actor'
   import { run, startRun } from '../lib/job.svelte'
   import { estimateSeconds, iterationsForTarget } from '../lib/estimate'
   import { takeSetup, type SetupHandoff } from '../lib/handoff.svelte'
@@ -26,6 +29,12 @@
   const character = $derived(activeCharacter())
   const stored = $derived(activeStored())
   const busy = $derived(isBusy())
+  /** Other characters in this sim (D2), minus whichever one is now the main pick. */
+  const extras = $derived(app.quickExtras.filter((id) => id !== app.activeCharacterId).flatMap((id) => {
+    if (id === DRAFT) return app.draft ? [{ id, label: `${app.draft.name} (unsaved)`, character: app.draft }] : []
+    const c = app.characters.find((s) => s.id === id)
+    return c ? [{ id, label: c.label, character: c.character }] : []
+  }))
 
   /**
    * How long this run is likely to take, learned from this device's own
@@ -73,16 +82,27 @@
   async function go(): Promise<void> {
     if (!character) return
     // Handed-over delta wins over picked loadout for slots it names; untouched slots already meaning.
-    const profile = buildProfile(character, {
+    const overrides = {
       ...(loadout ? { talents: loadout.talents } : {}),
       ...(setup ? { items: setup.items, talents: setup.talents ?? character.talents } : {}),
-    })
+    }
+    const lines = withPlayerScopedLines(
+      [...(setup?.extraProfileLines ?? []), ...(quickSettings.extraProfileLines() ?? [])],
+      Object.entries(setup?.consumables ?? {}).map(([key, value]) => `${key}=${value}`),
+    )
+    // One character: exactly the single-actor request as before. More: one block each (multi-actor.ts).
+    const parts = extras.length
+      ? multiActorParts([{ character, overrides }, ...extras.map((e) => ({ character: e.character }))], lines)
+      : { profile: buildProfile(character, overrides), extraProfileLines: lines }
+    const main = stored?.label ?? character.name
+    // A new run shows its own result, even when started from the reopened setup.
+    settingsOpen = false
     await startRun({
       tool: 'quick',
-      title: `${stored?.label ?? character.name} — Quick Sim`,
+      title: extras.length ? `${main} and ${extras.length} more — Quick Sim` : `${main} — Quick Sim`,
       request: {
         schemaVersion: 1,
-        profile,
+        profile: parts.profile,
         characterSnapshot: $state.snapshot({ ...character, talents: setup?.talents ?? loadout?.talents ?? character.talents, equipped: setup ? character.equipped.flatMap(item => setup!.items[item.slot] === null ? [] : [setup!.items[item.slot] ?? item]) : character.equipped }),
         settings: {
           fightStyle: quickSettings.fightStyle,
@@ -91,10 +111,7 @@
           threads: Math.min(quickSettings.threads, maxThreads()),
         },
         accuracy: quickSettings.accuracy(),
-        extraProfileLines: withPlayerScopedLines(
-          [...(setup?.extraProfileLines ?? []), ...(quickSettings.extraProfileLines() ?? [])],
-          Object.entries(setup?.consumables ?? {}).map(([key, value]) => `${key}=${value}`),
-        ),
+        extraProfileLines: parts.extraProfileLines,
         htmlReport: quickSettings.htmlReport,
       },
     })
@@ -106,8 +123,7 @@
 
   function editResult(): void {
     if (!outcome || !resultCharacter) return
-    app.draft = resultCharacter
-    app.activeCharacterId = null
+    openDraft(resultCharacter, 'quick')
     const opts = outcome.report.options
     quickSettings.apply({ fightStyle: opts.fightStyle as typeof quickSettings.fightStyle, maxTime: opts.maxTime, targets: opts.desiredTargets })
     setup = { characterId: stored?.id ?? null, label: 'Previous result', items: Object.fromEntries(resultCharacter.equipped.map((item) => [item.slot, item])), talents: resultCharacter.talents, extraProfileLines: outcome.request.extraProfileLines }
@@ -147,9 +163,30 @@
     <div class="spread"><h1>Quick Sim</h1>{#if outcome}<button class="ghost sm" onclick={() => settingsOpen = false}>Back to result</button>{/if}</div>
     <CharacterBanner {character} characterId={stored?.id} loadout={loadout?.name ?? 'Active loadout'} gear={setup ? character.equipped.map((item) => setup?.items[item.slot] ?? item) : character.equipped} />
     {#if setup}<div class="spread"><span class="small">Setup: {setup.label}</span><button class="ghost sm" onclick={() => setup = null}>Use equipped gear</button></div>{/if}
+    <div class="together">
+      <span class="xs muted label">Compare in this sim</span>
+      {#each extras as e (e.id)}
+        <span class="member" data-class={e.character.className}>
+          <span class="truncate">{e.label}</span>
+          <button class="ghost sm" onclick={() => (app.quickExtras = app.quickExtras.filter((id) => id !== e.id))} aria-label="Remove {e.label} from this sim"><X size={14} /></button>
+        </span>
+      {/each}
+      <CharacterPicker add value={null} exclude={[app.activeCharacterId ?? '', ...app.quickExtras]} onpick={(id) => (app.quickExtras = [...app.quickExtras, id])} label="Add a character to this sim" />
+      {#if extras.length}<span class="xs muted">Each character runs in its own batch with these settings, so every one gets its own number.</span>{/if}
+    </div>
     <SettingsForm settings={quickSettings} {character} />
     <div class="action-bar"><button class="primary" onclick={go} disabled={!app.capability?.ok}>Run Quick Sim</button>{#if estimate}<span class="small muted">≈ {fmtSeconds(estimate.seconds)}</span>{/if}</div>
     {#if run.error}<RunPanel />{/if}
   </section>
 {/if}
-<style>.quick-setup { gap: 24px; }</style>
+<style>
+  .quick-setup { gap: 24px; }
+  .together { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+  .label { text-transform: uppercase; letter-spacing: 0.06em; font-weight: 650; margin-right: var(--s1); }
+  .member {
+    display: inline-flex; align-items: center; gap: 2px; max-width: 16rem; padding: 2px 2px 2px 10px; border-radius: 99px; font-size: var(--fs-sm);
+    border: 1px solid color-mix(in oklab, var(--class-color, var(--accent)) 50%, transparent);
+    background: color-mix(in oklab, var(--class-color, var(--accent)) 12%, transparent);
+  }
+  .member button { min-height: 1.5rem; padding: 0 0.3rem; }
+</style>

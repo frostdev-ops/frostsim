@@ -12,9 +12,7 @@
   import type { LootProvenance, LootSource, ResolvedItem } from '../lib/catalog/types'
   import type { OptimizationProgress, OptimizationResult } from '../lib/optimization/types'
   import {
-    activeCharacter, activeStored, app, catalogClient, constraintsFor, engineIdentityString,
-    ensureCatalog, isBusy, maxThreads, pollEngineSlot,
-    planOptions, profilesetsSupported, saveReport, toast,
+    activeCharacter, activeStored, app, catalogClient, constraintsFor, engineIdentityString, ensureCatalog, isBusy, maxThreads, planOptions, pollEngineSlot, profilesetsSupported, runCharacter, saveReport, toast,
   } from '../lib/app.svelte'
   import { makeRunBatch } from '../lib/runBatch'
   import type { SimOutcome } from '../lib/simc/job'
@@ -411,6 +409,7 @@
     // Marker so a run killed by reload is not silent.
     markStarted({ tool: 'droptimizer', title, startedAt: Date.now() })
     app.job = {
+      character: runCharacter(),
       id: jobId, tool: 'droptimizer', title,
       status: 'validating', startedAt: Date.now(),
     }
@@ -483,6 +482,7 @@
       result = r
       app.job.status = r.incomplete ? 'error' : 'complete'
       await saveReport({
+          character: app.job?.character,
         tool: 'droptimizer',
         title: app.job.title,
         completion: r.incomplete ? 'partial' : 'complete',
