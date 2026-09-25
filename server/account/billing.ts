@@ -167,6 +167,16 @@ async function checkout(ctx: RequestCtx): Promise<Response> {
     subscription_data: { metadata: { user_id: userId, guild_id: guildId ?? undefined } },
     success_url: `${origin}/?account=billing-success#/`,
     cancel_url: `${origin}/?account=billing-cancelled#/`,
+    // The Stripe account's own name and logo belong to its owner's other business; Checkout shows Frostsim's instead. The portal and
+    // Stripe's emails have no such override and still show the account's.
+    branding_settings: {
+      display_name: 'Frostsim',
+      icon: { type: 'url', url: `${origin}/brand/icon-512.png` },
+      logo: { type: 'url', url: `${origin}/brand/frostsim-logo-web.png` },
+      background_color: '#0a0c11',
+      button_color: '#17c8f4',
+      border_style: 'rounded',
+    },
   });
   return json({ url: session.url });
 }

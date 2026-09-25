@@ -454,6 +454,14 @@ describe('checkout', () => {
       'subscription_data[metadata][user_id]': USER,
       success_url: `${ORIGIN}/?account=billing-success#/`,
       cancel_url: `${ORIGIN}/?account=billing-cancelled#/`,
+      'branding_settings[display_name]': 'Frostsim',
+      'branding_settings[icon][type]': 'url',
+      'branding_settings[icon][url]': `${ORIGIN}/brand/icon-512.png`,
+      'branding_settings[logo][type]': 'url',
+      'branding_settings[logo][url]': `${ORIGIN}/brand/frostsim-logo-web.png`,
+      'branding_settings[background_color]': '#0a0c11',
+      'branding_settings[button_color]': '#17c8f4',
+      'branding_settings[border_style]': 'rounded',
     });
   });
 

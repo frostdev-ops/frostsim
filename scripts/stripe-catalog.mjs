@@ -14,7 +14,7 @@ export function desiredPrices(plans = PLANS) {
     const usd = plan.usd?.[term];
     if (usd === undefined) return [];
     const { interval, intervalCount } = TERMS[term];
-    return [{ plan: plan.id, name: `Frostsim Cloud ${plan.title}`, lookupKey: lookupKey(plan, term), unitAmount: Math.round(usd * 100), currency: 'usd', interval, intervalCount }];
+    return [{ plan: plan.id, name: plan.kind === 'guild' ? `Frostsim ${plan.title}` : `Frostsim Cloud ${plan.title}`, lookupKey: lookupKey(plan, term), unitAmount: Math.round(usd * 100), currency: 'usd', interval, intervalCount }];
   }));
 }
 
@@ -65,7 +65,8 @@ async function main() {
     if (!apply || step.action === 'keep') continue;
     let product = products.find((p) => p.metadata?.frostsim_plan === step.plan);
     if (!product) {
-      product = await stripe(key, 'POST', '/products', { name: step.name, metadata: { frostsim_plan: step.plan } });
+      // statement_descriptor: what subscription charges show on a card statement, instead of the Stripe account's own name.
+      product = await stripe(key, 'POST', '/products', { name: step.name, statement_descriptor: 'FROSTSIM', metadata: { frostsim_plan: step.plan } });
       products.push(product);
     }
     await stripe(key, 'POST', '/prices', {
