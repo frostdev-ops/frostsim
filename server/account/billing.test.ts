@@ -454,6 +454,7 @@ describe('checkout', () => {
       'subscription_data[metadata][user_id]': USER,
       success_url: `${ORIGIN}/?account=billing-success#/`,
       cancel_url: `${ORIGIN}/?account=billing-cancelled#/`,
+      'custom_text[submit][message]': expect.stringContaining(`Renews automatically each term until you cancel.`),
       'branding_settings[display_name]': 'Frostsim',
       'branding_settings[icon][type]': 'url',
       'branding_settings[icon][url]': `${ORIGIN}/brand/icon-512.png`,

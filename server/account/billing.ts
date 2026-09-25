@@ -167,6 +167,9 @@ async function checkout(ctx: RequestCtx): Promise<Response> {
     subscription_data: { metadata: { user_id: userId, guild_id: guildId ?? undefined } },
     success_url: `${origin}/?account=billing-success#/`,
     cancel_url: `${origin}/?account=billing-cancelled#/`,
+    // Auto-renewal laws want the renewal and cancellation terms beside the button, with the terms one click away.
+    custom_text: { submit: { message: 'Renews automatically each term until you cancel. Cancel any time in Manage billing; the plan '
+      + `stays active to the end of the period you paid for. By subscribing you agree to the [Terms of use](${origin}/legal/terms.html).` } },
     // The Stripe account's own name and logo belong to its owner's other business; Checkout shows Frostsim's instead. The portal and
     // Stripe's emails have no such override and still show the account's.
     branding_settings: {
