@@ -70,7 +70,7 @@
         onpointerleave={() => (hot = null)}
       >
         {#each sorted as r (r.id)}
-          <tr class:funnel={r.funnel}>
+          <tr class:funnel={r.funnel || r.aoe}>
             <th scope="row">{r.label}</th>
             {#each COLS as n}
               {@const c = r.cells.find((x) => x.targets === n)}
