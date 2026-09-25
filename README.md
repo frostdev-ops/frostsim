@@ -3,13 +3,13 @@
 </p>
 
 <p align="center">
-  <strong>SimulationCraft, running entirely in your browser.</strong><br>
-  Gear, upgrade and crest decisions simulated on your own machine. No sim backend, no queue, no waiting behind anyone else.
+  <strong>SimulationCraft in your browser, or on Frostsim Cloud.</strong><br>
+  Gear, upgrade and crest decisions simulated free on your own machine, or on our servers with a plan.
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/engine-SimulationCraft%20%C2%B7%20WebAssembly-89cbd5" alt="SimulationCraft compiled to WebAssembly">
-  <img src="https://img.shields.io/badge/simulation-client--side%20by%20default-89cbd5" alt="Simulation runs in the browser by default">
+  <img src="https://img.shields.io/badge/simulation-browser%20%2B%20cloud-89cbd5" alt="Simulation runs in the browser or on Frostsim Cloud">
   <img src="https://img.shields.io/badge/license-GPL--3.0--only-89cbd5" alt="GPL-3.0-only">
 </p>
 
@@ -17,11 +17,13 @@
   <img src="assets/05-topgear-after-desktop.jpg" alt="Top Gear results with ranked setups and confidence intervals" width="960">
 </p>
 
-## Your CPU, your sim
+## Your CPU, or ours
 
-Frostsim is a browser-only alternative to a hosted simulation service. SimulationCraft is compiled to WebAssembly and runs inside a Web Worker on your machine, using its own iteration split and merge logic across real threads. Nothing about your character is uploaded, no job waits in a queue, and the cost of a thousand sims is your own idle CPU.
+Frostsim is free, and without a plan it runs on your machine. SimulationCraft is compiled to WebAssembly and runs inside a Web Worker, using its own iteration split and merge logic across real threads. Without an account nothing about your character is uploaded, no job waits in a queue, and the cost of a thousand sims is your own idle CPU.
 
-**The browser is the default, not a preference.** On `main` there is no server route that can start a simulation: a static host serves the bytes and a small proxy answers item lookups. This `cloud` branch adds an opt-in, paid alternative (below); a default build of it is the app on `main`.
+With a [Frostsim Cloud](#frostsim-cloud-this-branch) plan, runs go to native SimulationCraft on our servers instead, and Avalanche splits big runs between your browser and a server at once. The browser stays the fallback: when the cloud cannot take a run, the same run finishes on your machine.
+
+This `cloud` branch is the app at [sim.frostdev.io](https://sim.frostdev.io). The [`main`](https://github.com/frostdev-ops/frostsim/tree/main) branch is the browser-only app, with no server route that can start a simulation, and a default build of this branch (without `VITE_FEATURE_ACCOUNTS=1`) is the same.
 
 Paste your `/simc` addon export, pick what you want to know, and run it.
 
@@ -60,7 +62,7 @@ A priest deciding who gets Power Infusion wants two numbers: how much damage it 
 
 Each spec opens a drawer: damage per second over the fight with and without Power Infusion, when it was up, what it added second by second, the gain from 1 to 10 targets, where the damage comes from, and which abilities and pets the extra damage came from. The breakdown is the same one Quick Sim uses, so pets and child spells are counted the same way. Charts and each spec's data load only when a drawer is first opened, and the hashed files are cached by the browser after that.
 
-This is the one place Frostsim shows numbers it did not simulate on your machine. The page ranks every spec on SimulationCraft's default profiles, which is shared reference data rather than anything about you, so it is simulated once, offline, and shipped as static JSON stamped with the engine commit. No server runs a sim for it.
+This is the one place Frostsim shows numbers it did not simulate for you, on your machine or in the cloud. The page ranks every spec on SimulationCraft's default profiles, which is shared reference data rather than anything about you, so it is simulated once, offline, and shipped as static JSON stamped with the engine commit. No server runs a sim for it.
 
 <details>
 <summary><strong>More screens</strong></summary>
