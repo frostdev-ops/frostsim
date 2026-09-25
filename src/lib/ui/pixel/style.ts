@@ -61,8 +61,12 @@ const SPECS: Record<string, Partial<Base>> = {
   'death_knight/blood': { glow: '#ff5c6c' },
 }
 
+/** simc and addon exports write these classes without the underscore. */
+const CLASS_KEYS: Record<string, string> = { deathknight: 'death_knight', demonhunter: 'demon_hunter' }
+
 export function heroStyle(className?: string, spec?: string): HeroStyle {
-  const cls = (className ?? '').toLowerCase().replace(/[\s-]+/g, '_')
+  const key = (className ?? '').toLowerCase().replace(/[\s-]+/g, '_')
+  const cls = CLASS_KEYS[key] ?? key
   const base = CLASSES[cls] ?? CLASSES.mage
   const merged = { ...base, ...SPECS[`${cls}/${(spec ?? '').toLowerCase().replace(/[\s-]+/g, '_')}`] }
   return { ...merged, shot: merged.shot ?? 'bolt', pets: merged.pets ?? [], holy: merged.holy ?? false }

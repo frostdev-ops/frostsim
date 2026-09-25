@@ -15,6 +15,11 @@ describe('pixel battle style', () => {
     expect(heroStyle('paladin', 'retribution')).toMatchObject({ weapon: 'greatsword', holy: true })
   })
 
+  it('reads the class keys exports write', () => {
+    expect(heroStyle('deathknight', 'blood')).toEqual(heroStyle('death knight', 'blood'))
+    expect(heroStyle('demonhunter').weapon).toBe('glaives')
+  })
+
   it('shapes the enemies from fight style, targets and tool', () => {
     expect(encounterFor('Patchwerk', 1, 'quick')).toMatchObject({ boss: 'boss', adds: 0, loot: null })
     expect(encounterFor('ExecutePatchwerk').bossStart).toBe(0.2)
