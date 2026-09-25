@@ -19,6 +19,8 @@ export class SequenceWorker {
   private start: Msg | null = null
   private reports: ArrayBuffer[] = []
   private threads = 0
+  /** The last group whose engine confirmed a clean shutdown; a hybrid group can confirm it before its merged report arrives. */
+  private shut = -1
   private stopped = false
 
   constructor(private readonly starts: readonly { profile: string; args: string[] }[], private readonly make: (i: number) => Worker) {}
@@ -77,12 +79,15 @@ export class SequenceWorker {
         return this.post({ ...rest, report })
       }
       // A cloud run holds no browser engine and sends no shutdown of its own.
-      if (msg.placement === 'cloud') this.next()
+      if (msg.placement === 'cloud' || this.shut === i) this.next()
       return
     }
     if (msg.type === 'shutdown') {
       this.threads += Number(msg.threads) || 0
-      if (!last && msg.reason === 'complete' && !this.stopped) return this.next()
+      if (!last && msg.reason === 'complete' && !this.stopped) {
+        this.shut = i
+        return this.next()
+      }
       return this.post({ ...msg, threads: this.threads })
     }
     if (i > 0 && ONCE.has(msg.type ?? '')) return this.post({ protocol: WORKER_PROTOCOL, jobId: msg.jobId, type: 'heartbeat' })

@@ -58,7 +58,8 @@ class FakeEngine {
   onmessageerror = null
   sent: Record<string, unknown>[] = []
   terminated = false
-  constructor(private readonly name: string, private readonly cloud = false) {}
+  /** `hybrid`: a split group whose cloud share finished last, so its shutdown comes before its merged report. */
+  constructor(private readonly name: string, private readonly cloud = false, private readonly hybrid = false) {}
   postMessage(m: Record<string, unknown>): void {
     this.sent.push(m)
     if (m.type === 'cancel') return
@@ -67,8 +68,9 @@ class FakeEngine {
       out({ type: 'ready' })
       out({ type: 'log', stream: 'out', lines: [`${this.name} running`] })
       const report = new TextEncoder().encode(JSON.stringify({ sim: { players: [{ name: this.name }] } })).buffer
+      if (this.hybrid) out({ type: 'shutdown', reason: 'complete', threads: 2 })
       out({ type: 'done', report, ...(this.cloud ? { placement: 'cloud', effective: { profile: 'x', args: [] } } : {}) })
-      if (!this.cloud) out({ type: 'shutdown', reason: 'complete', threads: 2 })
+      if (!this.cloud && !this.hybrid) out({ type: 'shutdown', reason: 'complete', threads: 2 })
     })
   }
   terminate(): void { this.terminated = true }
@@ -94,6 +96,23 @@ describe('SequenceWorker', () => {
     const done = got.find((m) => m.type === 'done')!
     expect(JSON.parse(new TextDecoder().decode(done.report as ArrayBuffer)).sim.players.map((p: { name: string }) => p.name)).toEqual(['Ann', 'Cy', 'Di'])
     expect(got.at(-1)).toMatchObject({ threads: 4 })
+  })
+
+  it('starts the next group when a hybrid group shuts down before its merged report', async () => {
+    const engines = [new FakeEngine('Ann', false, true), new FakeEngine('Cy')]
+    const w = new SequenceWorker([{ profile: 'a', args: [] }, { profile: 'c', args: [] }], (i) => engines[i] as unknown as Worker)
+    const finished = new Promise<Record<string, unknown>[]>((resolve) => {
+      const got: Record<string, unknown>[] = []
+      w.onmessage = (e) => {
+        got.push(e.data)
+        if (e.data.type === 'shutdown') resolve(got)
+      }
+    })
+    w.postMessage({ protocol: WORKER_PROTOCOL, jobId: 'j1' })
+    const got = await finished
+    expect(engines[1].sent[0].profile).toBe('c')
+    expect(got.at(-1)).toMatchObject({ type: 'shutdown', threads: 4 })
+    expect(JSON.parse(new TextDecoder().decode(got.find((m) => m.type === 'done')!.report as ArrayBuffer)).sim.players).toHaveLength(2)
   })
 
   it('stops after a cancel without starting the next group', async () => {
