@@ -28,7 +28,7 @@ Code comments cite this file as `DESIGN.md <id>`: `A` architecture, `C` contract
 | A4 | Dependencies: `postgres`, `aws4fetch`, `ioredis`. Stripe, Hetzner, OAuth and Discord use `fetch`; HMAC and Ed25519 use `node:crypto`. |
 | A5 | Redis is a cache, never the record: sessions (5 min), rate-limit windows, single-use OAuth states (10 min), job progress lines (the last 500, 1 h), native-build lookups (10 min, 1 min for a miss) and Discord reply tokens (15 min). Every key has a TTL and the `frostsim:` prefix. Without Redis, sessions read Postgres, rate limits fail open, progress lines are dropped and a Discord `/sim` is cancelled because its result could not be posted. |
 | A6 | Job progress reaches the browser by polling about once a second. No SSE. |
-| A7 | One job runs on one worker, up to 32 threads. Jobs are not split across servers. |
+| A7 | One job runs on one worker, at the plan's width capped by the configured server type's cores (`HCLOUD_SERVER_TYPE`; CCX53 for 32 threads, CCX43 for 16). Jobs are not split across servers. A Hetzner project's dedicated-core limit bounds both the type and `WORKER_MAX`: set `WORKER_MAX` to at most limit ÷ cores. |
 | A8 | The Discord bot is an HTTP interactions endpoint inside the account server. No gateway process. |
 | A9 | OAuth provider tokens are never stored, only `(provider, subject, display_name)`. |
 

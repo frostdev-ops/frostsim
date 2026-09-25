@@ -636,14 +636,17 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
       expect((await sql`select status from workers where id = ${w.id}`)[0].status).toBe('deleted');
     });
 
-    it('refuses, and creates no server for, a job wider than the configured server type', async () => {
+    it('caps a job at the configured server type\'s cores, and never counts a wider queued job as demand', async () => {
       const small = { HCLOUD_SERVER_TYPE: 'ccx33' };
+      const wide = await enqueue(await user()); // 32 threads, queued under the default config before any ccx33 price is known
+      expect(wide).toMatchObject({ ok: true });
       await tick(app(small)); // caches ccx33's 8 cores
-      const refused = await enqueueJob(app(small), { userId: await user(), guildId: null, source: 'web', packId: PACK, request: simRequest() });
-      expect(refused).toMatchObject({ ok: false, status: 503, code: 'capacity' });
-      expect(await enqueue(await user())).toMatchObject({ ok: true }); // 32 threads, queued under the default config
-      await tick(app(small));
       expect(hcloudCalls.filter((c) => c.method === 'POST')).toHaveLength(0);
+      const capped = await enqueueJob(app(small), { userId: await user(), guildId: null, source: 'web', packId: PACK, request: simRequest() });
+      expect(capped).toMatchObject({ ok: true });
+      expect(await jobRow((capped as { id: string }).id)).toMatchObject({ threads: 8 });
+      await tick(app(small));
+      expect(hcloudCalls.filter((c) => c.method === 'POST')).toHaveLength(1);
     });
 
     it('creates nothing once this month\'s worker-hours reach the cap', async () => {

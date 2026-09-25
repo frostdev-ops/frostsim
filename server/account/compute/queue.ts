@@ -67,7 +67,7 @@ export function cloudRun(request: SimRequest, threads: number): { run: Assembled
   return unsafe ? { problem: unsafe } : { run };
 }
 
-/** DESIGN.md P3. Threads are the entitlement's, never the request's (C8). */
+/** DESIGN.md P3. Threads are the entitlement's (capped by the server type), never the request's (C8). */
 export async function enqueueJob(
   app: App,
   job: { userId: string | null; guildId: string | null; source: Source; packId: string; request: SimRequest },
@@ -93,7 +93,11 @@ export async function enqueueJob(
   const used = await usedCoreSeconds(app.sql, guildId ? { guildId } : { userId: userId! }, pool.periodStart, pool.periodEnd);
   if (used >= pool.coreSeconds) return refuse(402, 'no-allowance', NO_ALLOWANCE);
 
-  const prepared = cloudRun(request, pool.maxThreads);
+  // The plan's width, capped by the configured server type (DESIGN.md A7): a Hetzner project's dedicated-core limit can
+  // rule out the 32-core type, and a job wider than its servers could never be claimed. Cold (no cached price), the plan's width.
+  const limits = fleetLimits(app.config);
+  const serverCores = limits ? cachedPrice(limits)?.cores : undefined;
+  const prepared = cloudRun(request, serverCores ? Math.min(pool.maxThreads, serverCores) : pool.maxThreads);
   if ('problem' in prepared) return refuse(400, 'invalid', prepared.problem);
   const { run } = prepared;
 
