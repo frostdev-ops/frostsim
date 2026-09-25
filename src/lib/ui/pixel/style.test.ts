@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { encounterFor, heroStyle } from './style'
+import { encounterFor, heroStyle, partyOf } from './style'
+import { Battle, MAX_PARTY } from './battle'
 
 describe('pixel battle style', () => {
   it('picks melee or ranged from class and spec', () => {
@@ -27,5 +28,24 @@ describe('pixel battle style', () => {
     expect(encounterFor('HecticAddCleave', 3, 'gear')).toMatchObject({ boss: 'boss', adds: 3, loot: 'gem' })
     expect(encounterFor('DungeonSlice', 8, 'crests')).toMatchObject({ boss: null, adds: 5, loot: 'coin' })
     expect(encounterFor('TargetDummy').boss).toBe('dummy')
+  })
+
+  it('reads a multi-character profile as a party, in order', () => {
+    const profile = 'mage="Ice"\nspec=frost\nlevel=90\n\ndeathknight="Bones"\nspec=unholy\nhead=,id=1\nwarlock="Fel"\nprofileset."x"+=head=,id=2'
+    expect(partyOf(profile)).toEqual([{ className: 'mage', spec: 'frost' }, { className: 'death_knight', spec: 'unholy' }, { className: 'warlock' }])
+    expect(partyOf('')).toEqual([])
+  })
+
+  it('fights as a party, capped at the heroes that fit', () => {
+    const party = ['warrior', 'mage', 'warlock/demonology', 'hunter/beast_mastery', 'paladin/retribution', 'shaman', 'priest']
+      .map((k) => heroStyle(...(k.split('/') as [string, string])))
+    const battle = new Battle(party, encounterFor('Patchwerk', 3, 'quick'), { speed: 2400, dps: 250_000, progress: 0.5, samples: [] })
+    let fills = 0
+    const ctx = {
+      fillStyle: '', globalAlpha: 1, save() {}, restore() {}, translate() {}, clearRect() {}, fillRect() { fills++ },
+    } as unknown as CanvasRenderingContext2D
+    for (let i = 0; i < 400; i++) { battle.step(); battle.draw(ctx) }
+    expect(fills).toBeGreaterThan(0)
+    expect((battle as unknown as { party: unknown[] }).party).toHaveLength(MAX_PARTY)
   })
 })

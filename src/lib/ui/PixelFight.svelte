@@ -1,14 +1,15 @@
 <script lang="ts">
   // Mounts the pixel battle (lib/ui/pixel) for a running sim. The hero comes from the character's
-  // class and spec, the enemies from the fight style, targets and tool; the engine's running
-  // metrics drive it frame to frame. Reduced motion draws one still frame.
+  // class and spec (a multi-character run's `party`: one hero each), the enemies from the fight
+  // style, targets and tool; the engine's running metrics drive it frame to frame. Reduced motion
+  // draws one still frame.
   import { onMount } from 'svelte'
   import { reducedMotion } from '../theme.svelte'
   import { Battle, H, W, type Input } from './pixel/battle'
   import { encounterFor, heroStyle } from './pixel/style'
 
-  let { className, spec, fightStyle, targets = 1, tool, speed, dps, progress, errorPct }: {
-    className?: string; spec?: string; fightStyle?: string; targets?: number; tool?: string
+  let { className, spec, party = [], fightStyle, targets = 1, tool, speed, dps, progress, errorPct }: {
+    className?: string; spec?: string; party?: { className: string; spec?: string }[]; fightStyle?: string; targets?: number; tool?: string
     speed?: number; dps?: number; progress?: number; errorPct?: number
   } = $props()
 
@@ -27,7 +28,8 @@
   onMount(() => {
     const ctx = canvas.getContext('2d')
     if (!ctx) return
-    const battle = new Battle(heroStyle(className, spec), encounterFor(fightStyle, targets, tool), input)
+    const heroes = party.length > 1 ? party.map((c) => heroStyle(c.className, c.spec)) : heroStyle(className, spec)
+    const battle = new Battle(heroes, encounterFor(fightStyle, targets, tool), input)
     if (reducedMotion()) {
       for (let i = 0; i < 30; i++) battle.step()
       battle.draw(ctx)

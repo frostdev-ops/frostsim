@@ -12,7 +12,7 @@
   import { activeCharacter, app } from '../app.svelte'
   import { advancedSettings, compareSettings, crestSettings, dropSettings, gearSettings, quickSettings } from '../settings.svelte'
   import type { ToolId } from '../store/records'
-  let { title, stage, summary = '', statusDetail = '', fraction, elapsed = 0, log = [], metrics, tool, oncancel }: { title: string; stage: string; summary?: string; statusDetail?: string; fraction?: number; elapsed?: number; log?: string[]; metrics?: EngineProgress | null; tool?: ToolId; oncancel: () => void } = $props()
+  let { title, stage, summary = '', statusDetail = '', fraction, elapsed = 0, log = [], metrics, tool, party, oncancel }: { title: string; stage: string; summary?: string; statusDetail?: string; fraction?: number; elapsed?: number; log?: string[]; metrics?: EngineProgress | null; tool?: ToolId; party?: { className: string; spec?: string }[]; oncancel: () => void } = $props()
   let showLog = $state(false)
   const pct = $derived(fraction === undefined ? undefined : Math.min(99, fraction * 100))
   const shownPct = new Tween(0, { easing: cubicOut })
@@ -39,7 +39,7 @@
     </div>
     <div class="output">
       <p class="stage" aria-live="polite">{stage}</p>
-      <PixelFight className={character?.className} spec={character?.spec} fightStyle={toolSettings.fightStyle} targets={toolSettings.targets} tool={runTool} speed={metrics?.iterationsPerSecond} dps={metrics?.mean} errorPct={metrics?.errorPct} progress={fraction} />
+      <PixelFight className={character?.className} spec={character?.spec} {party} fightStyle={toolSettings.fightStyle} targets={toolSettings.targets} tool={runTool} speed={metrics?.iterationsPerSecond} dps={metrics?.mean} errorPct={metrics?.errorPct} progress={fraction} />
       {#if metrics?.mean !== undefined}
         <dl class="stats">
           <div><dt>DPS so far</dt><dd>{fmtInt(metrics.mean)}</dd></div>
