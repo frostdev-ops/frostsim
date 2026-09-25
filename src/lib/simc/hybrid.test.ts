@@ -102,8 +102,9 @@ class CloudServer {
     }
     if (url.endsWith('/result')) {
       const job = this.jobs.get(url.split('/').at(-2)!)!
-      const body = new Blob([reportFor((job.profilesets ?? []).map((p) => p.id), namesIn(job.profile))]).stream().pipeThrough(new CompressionStream('gzip'))
-      return new Response(body)
+      // Plain bytes through an identity DecompressionStream (beforeEach): real zlib finishes on wall-clock time, which
+      // races the fake timers, so under load the local side drained every chunk first. remote.test.ts covers gzip.
+      return new Response(reportFor((job.profilesets ?? []).map((p) => p.id), namesIn(job.profile)))
     }
     return Response.json({ status: this.status, lines: this.lines, next: this.lines.length })
   }) as typeof fetch
@@ -135,6 +136,7 @@ function hybridRun(s: CloudServer, req: SimRequest, speedStore: ReturnType<typeo
 beforeEach(() => {
   vi.useFakeTimers()
   vi.stubGlobal('Worker', LocalEngine)
+  vi.stubGlobal('DecompressionStream', class { constructor() { return new TransformStream() } })
 })
 
 afterEach(async () => {
