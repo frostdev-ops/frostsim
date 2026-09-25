@@ -10,7 +10,7 @@ Code comments cite this file as `DESIGN.md <id>`: `A` architecture, `C` contract
 
 ## Guarantees
 
-- The browser stays the default and the fallback. Anonymous, browser-only use, the local IndexedDB library,
+- The browser is the default for everyone without a compute plan, and always the fallback. Anonymous, browser-only use, the local IndexedDB library,
   fragment share links (`#/r/`, `#/share/`) and the GET-only `/api/wow` proxy are unchanged.
 - Everything new is opt-in and off by default: `VITE_FEATURE_ACCOUNTS` at build time, `FEATURES` on the server.
   A flag-off build contains no account code, no quoted `"/api/v1` literal and no `frostsim.account` string, and
@@ -68,7 +68,8 @@ Data bucket: `shares/<id>.json.gz`, `results/<jobId>.json.gz` (a 1-day lifecycle
 (unique per provider per user), `sessions` (sha256 of the cookie only), `subscriptions` (items with lookup key,
 quantity and `core_hours` from the Price metadata), `stripe_events` (idempotency), `compute_jobs` (the usage
 ledger), `workers`, `cloud_characters` (the addon export text, not a parsed record, plus `who`: name, class, spec,
-realm and region at save time), `character_snapshots`, `character_sims`, `shares`, `integration_grants`, `audit_log`.
+realm and region at save time), `character_snapshots`, `character_sims`, `shares`, `integration_grants`, `audit_log`, `guild_role_limits` (migration 005: per-role
+allowances inside a Discord server's pool, P5).
 
 Character history (migration 003). A save whose equipped set differs from the newest snapshot adds one to
 `character_snapshots`: the addon's own item names and levels, and the game's 16-slot average. The Character page uploads
@@ -132,6 +133,14 @@ when no server claims the job within 150 s (again after a requeue), when the job
 when the result download fails or takes over 150 s. Closing the page cancels the cloud job. Cloud runs carry
 `placement: 'cloud'` and the arguments the worker actually ran.
 
+Placement (`src/lib/account/placement.svelte.ts`): with a compute plan, runs go to the cloud by default, and a "Run on" switch beside
+the character picker on every tool screen keeps an explicit choice. Avalanche (`compute_l`) adds Hybrid, its default
+(`src/lib/simc/hybrid.ts`): a run with two or more profileset candidates splits them by thread share between this browser and one
+cloud job, both running at once, and concatenates the profileset results into one report. Candidates are independent sims, so
+nothing statistical is merged; a single-actor run is never split and goes to the cloud whole. A declined cloud share replays here
+only after the local share's engine has shut down, because one engine run needs about 2 GB. Progress counts candidates finished on
+both sides.
+
 **C10 Account UI.** Code under `src/lib/account/` is loaded only by dynamic import behind the flag. Hosted links are
 `#/s/<id>` with a 22-character base62 id. Hosted share payload: `gzip(JSON(makePortable('report', { shared, rawReport })))`, at most 16 MiB compressed and 32 MiB
 inflated, validated with `validateReport` on both ends. Blobs are served as `application/gzip` with
@@ -181,13 +190,20 @@ token for that guild and that Discord user, and links to `#/account/guild/<token
 guild id travels in the subscription metadata. A `/sim` whose guild pool is used up for the period runs on the
 member's own allowance instead, and the reply says so.
 
+Role allowances (`guild-roles.ts`). The payer of a guild subscription sets, at `#/discord`, each Discord role's monthly share of
+the pool in core-seconds, or no limit, or none. A role set explicitly overrides @everyone (role id = guild id); among a member's
+explicit roles the largest wins; with nothing set a member may use the whole pool. `/sim` reads the member's role ids from the
+signed interaction, and a member past their share runs on their own plan, as when the pool is used up. `/usage` shows the share.
+The page lists the guild's name and roles through the bot token; managed (bot) roles are left out.
+
 **P6 Account API** (all under `/api/v1`): `auth/providers`, `auth/:provider/start|callback`, `auth/logout`;
 `me` (GET, PATCH, DELETE), `me/export`, `me/identities/:provider` (DELETE), `me/integrations/loothing` (PUT,
 DELETE); `admin/users` (GET), `admin/users/:id` (GET, PATCH, DELETE);
 `billing`, `billing/checkout`, `billing/portal`, `stripe/webhook`; `characters` (GET, POST, and GET, PUT, DELETE
-by id); `shares` (GET, POST), `shares/:id` (public GET, owner DELETE), `shares/:id/blob` (owner PUT, public GET);
+by id), `characters/:id/history` (GET), `characters/:id/sims` (POST); `shares` (GET, POST), `shares/:id` (public GET, owner DELETE), `shares/:id/blob` (owner PUT, public GET);
 `compute/jobs` (POST), `compute/jobs/:id` (GET, DELETE), `compute/jobs/:id/result`; `worker/*` (P1);
-`discord/interactions`; `integrations/loothing/resolve`, `integrations/loothing/jobs` (POST, GET: the last 24 h),
+`discord/interactions`, `discord/install` (302 to Discord's add-to-server page), `discord/guilds` (GET: the guilds the
+user pays for), `discord/guilds/:id` (PUT: role allowances); `integrations/loothing/resolve`, `integrations/loothing/jobs` (POST, GET: the last 24 h),
 `integrations/loothing/jobs/:id` (GET, DELETE) (bearer token, a linked Discord identity and a grant); `health` (always on, 503 while Postgres is down with any
 feature enabled).
 

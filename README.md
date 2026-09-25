@@ -139,11 +139,23 @@ Trusted HTTPS is part of the same requirement rather than a separate nicety. A s
 
 ## Frostsim Cloud (this branch)
 
-This long-lived branch adds optional online features on top of the browser app: sign-in with Battle.net or Discord, cloud character slots, hosted full-detail report links, paid cloud runs on native SimulationCraft, and a Discord bot with a Loothing integration. Everything is public, the account server and the cloud worker agent included. `main` is merged into this branch, never the reverse.
+This long-lived branch is the app live at [sim.frostdev.io](https://sim.frostdev.io): the browser app plus optional online features. Everything is public, the account server and the cloud worker agent included. `main` is merged into this branch, never the reverse.
 
-- **The browser stays the default and the fallback.** Cloud runs are opt-in per user. When the account server refuses a run, is unreachable, or a job fails, the same run replays in the browser and the report says so. Native SimulationCraft on the workers is built from the same engine pack as the browser build, and each result records where it ran.
+| | |
+| --- | --- |
+| **Accounts** | Sign in with Discord or Battle.net. No password, no email; export or delete everything from the account dialog. |
+| **Character slots** | Your characters on every device, with gear history, DPS history and a re-sim of each slot when a new game build lands. |
+| **Cloud runs** | Native SimulationCraft on 16-core servers, metered in core-hours. With a plan, runs go to the cloud by default; a "Run on" switch beside the character picker sends them back to the browser. |
+| **Hybrid runs** | On Avalanche, a Top Gear, Droptimizer or compare run splits its candidates between your browser and a cloud server at once and comes back as one report. |
+| **Report links** | Full-detail hosted reports behind a short link. |
+| **Discord bot** | `/sim`, `/link`, `/usage` and `/frostsim subscribe`. A Guild Cloud plan gives a server one shared pool, and its payer sets each role's monthly share at `#/discord`. |
+| **Loothing** | Loothing's own Discord bot can sim your saved characters on your plan once you allow it. |
+
+Plans are Frostbite, Glacier and Avalanche for players and Guild Cloud for a Discord server, sold through Stripe; the table lives in `src/lib/account/plans.ts` and the [plans page](https://sim.frostdev.io/#/plans) shows it.
+
+- **The browser is still the fallback.** When the cloud refuses a run, is unreachable, or a job fails, the same run replays in the browser and the report says so. Without a plan nothing leaves the browser. Native SimulationCraft on the workers is built from the same engine pack as the browser build, on a temporary Hetzner server, and each result records where it ran.
 - **Off unless switched on.** The UI compiles in only with `VITE_FEATURE_ACCOUNTS=1`; the server enables groups with `FEATURES=accounts,billing,compute,shares,discord`. A default build of this branch makes no request to the account server, and CI checks that.
-- **Where it lives.** `server/account-server.mjs` and `server/account/**` (one Node service behind `/api/v1/`, Postgres and Redis), `cloud/worker/**` (the worker agent, its sandbox and the snapshot build), `src/lib/account/**` and `src/lib/simc/remote.ts` (the browser side). The design, contracts, protocols and risks are in [`server/account/DESIGN.md`](server/account/DESIGN.md).
+- **Where it lives.** `server/account-server.mjs` and `server/account/**` (one Node service behind `/api/v1/`, Postgres and Redis), `cloud/worker/**` (the worker agent, its sandbox and the snapshot build), `src/lib/account/**`, `src/lib/simc/remote.ts` and `src/lib/simc/hybrid.ts` (the browser side). The design, contracts, protocols and risks are in [`server/account/DESIGN.md`](server/account/DESIGN.md).
 
 Running it locally needs Postgres and Redis:
 
