@@ -67,27 +67,37 @@ Data bucket: `shares/<id>.json.gz`, `results/<jobId>.json.gz` (a 1-day lifecycle
 **C5 Data model** (`migrations/`): `users` (role, suspension, Stripe customer, comped allowance), `identities`
 (unique per provider per user), `sessions` (sha256 of the cookie only), `subscriptions` (items with lookup key,
 quantity and `core_hours` from the Price metadata), `stripe_events` (idempotency), `compute_jobs` (the usage
-ledger), `workers`, `cloud_characters` (the addon export text, not a parsed record), `shares`,
-`integration_grants`, `audit_log`.
+ledger), `workers`, `cloud_characters` (the addon export text, not a parsed record, plus `who`: name, class, spec,
+realm and region at save time), `character_snapshots`, `character_sims`, `shares`, `integration_grants`, `audit_log`.
+
+Character history (migration 003). A save whose equipped set differs from the newest snapshot adds one to
+`character_snapshots`: the addon's own item names and levels, and the game's 16-slot average. The Character page uploads
+this device's finished Quick Sims of a slotted character to `character_sims` (`POST /characters/:id/sims`, deduped on the
+browser's report id). The `patch-resims` task (compute feature, every 10 minutes) compares each character's `patch_build`
+with the game build of the newest native pack: a character with none takes the current build without a run, and one
+behind queues a Patchwerk Quick Sim as a `patch` job on the owner's allowance. A plan refusal skips that build; a full
+queue or no capacity retries it. Finished patch jobs become `character_sims` rows. At most 200 snapshots and 500 sims are
+kept per character, and all of it is deleted with the character and included in the account export.
 
 **C6 Entitlements.** One plan table, `src/lib/account/plans.ts`, feeds the server catalog, the account dialog and
 `scripts/stripe-catalog.mjs`, which creates the Stripe Prices. Lookup keys are `<plan>_<term>`, with terms `monthly`,
 `semiannual` and `yearly`:
 
-| Plan | Core-hours a month | Threads | Monthly | 6 months | Yearly |
-| --- | --- | --- | --- | --- | --- |
-| `compute_s` | 20 (≈ 6,400 standard sims) | 8 | $3 | $16 | $29 |
-| `compute_m` | 50 (≈ 16,000) | 16 | $5 | $27 | $48 |
-| `compute_l` | 120 (≈ 38,000) | 16 (32 once the Hetzner project allows it) | $10 | $54 | $96 |
-| `discord_guild` (one Discord server's pool) | 80 (≈ 25,000) | 8 | $10 | $54 | $96 |
-| `slots_5` (5 slots per unit), `shares_plus` | - | - | set on Stripe | - | - |
+| Plan (shown as) | Core-hours a month | Threads | Character slots | Hosted links | Monthly | 6 months | Yearly |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| No plan (Free) | - (runs stay in the browser) | - | 1 | no | free | - | - |
+| `compute_s` (Frostbite) | 20 (≈ 6,400 standard sims) | 8 | 2 | yes | $3 | $16 | $29 |
+| `compute_m` (Glacier) | 50 (≈ 16,000) | 16 | 3 | yes | $5 | $27 | $48 |
+| `compute_l` (Avalanche) | 120 (≈ 38,000) | 16 (32 once the Hetzner project allows it) | unlimited (fair use: 100) | yes | $10 | $54 | $96 |
+| `discord_guild` (Guild Cloud, one Discord server's pool) | 80 (≈ 25,000) | 8 | - | - | $10 | $54 | $96 |
 
-Compute plans include hosted shares. A Price's `core_hours` metadata overrides the table's hours, so a promotion needs no
+Slots do not stack across plans: an account has 1 plus its best plan's extra, up to the fair-use ceiling. Characters over
+the limit after a downgrade stay (download, replace, delete), and a new save waits for a free slot. A Price's `core_hours` metadata overrides the table's hours, so a promotion needs no
 deploy. `entitlementsFor` is pure. Active statuses are `active`, `trialing`, `past_due`; a subscription stops granting 3
 days after its stored period ends (a missed renewal webhook), and an hourly task re-reads such rows from Stripe. Usage is
 `SUM(core_seconds)` over the current period, and 6-month and yearly periods are metered in monthly slices from their start
 (the day clamped to short months), so the allowance is monthly on every term. Guild jobs count only against the guild.
-Admins can comp core-hours and threads. The free tier grants no compute, slots or hosted shares. "Standard sim" is 4,000
+Admins can comp core-hours and threads. Without a plan an account has 1 slot and no compute or hosted shares. "Standard sim" is 4,000
 iterations of a typical profile, about 11.2 CPU seconds (Phase 0); the dialog shows allowances and remainders in it.
 
 **C7 Auth.** `__Host-fs_sid`: 32 random bytes, only its sha256 stored, `HttpOnly; Secure; SameSite=Lax; Path=/`,

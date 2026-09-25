@@ -1,26 +1,30 @@
 <script lang="ts">
-  // Account dialog (CLAUDE.md D15; DESIGN.md C10, P4-P6): sign-in, profile, sign-in methods, plan and usage, cloud characters,
-  // hosted links, the Loothing permission, export and deletion. Sign-in, checkout and the billing portal are top-level navigations
-  // (CSP form-action 'none', COOP), and forms only ever run fetch from onsubmit.
+  // Account dialog (CLAUDE.md D15; DESIGN.md C10, P4-P6): sign-in, then three tabs: plan and usage, hosted links, settings. Plans are
+  // sold on #/plans and cloud characters live on the Character page. Sign-in, checkout and the billing portal are top-level
+  // navigations (CSP form-action 'none', COOP), and forms only ever run fetch from onsubmit.
   import { untrack } from 'svelte'
+  import { Cloud, Link2, Settings, Sparkles } from '@lucide/svelte'
   import Dialog from '../ui/Dialog.svelte'
-  import { activeCharacter, activeStored, app, saveCharacter, toast } from '../app.svelte'
-  import { fmtBytes, fmtDateTime } from '../format'
+  import { toast } from '../app.svelte'
+  import { fmtDateTime } from '../format'
+  import { navigate } from '../router.svelte'
   import { api, AccountError } from './api'
-  import { account, cloudDownload, go, guildOf, refresh, signedOut, startUrl, type Me } from './state.svelte'
-  import { PLANS, TERMS, approxSims, discountPercent, lookupKey, termsOf, type Plan, type Term } from './plans'
+  import { account, checkout, currentPlans, guildOf, portal, refresh, signedOut, startUrl, type Me } from './state.svelte'
+  import { FREE_SLOTS, PLANS, TERMS, approxSims, discountPercent, lookupKey, slotsLabel, termsOf, type Term } from './plans'
 
   interface Provider { id: string; label: string }
-  interface CloudCharacter { id: string; label: string; bytes: number; updatedAt: string }
   interface Share { id: string; title: string; bytes: number | null; createdAt: string; expiresAt: string | null }
 
-  // The shared plan table (plans.ts, DESIGN.md C6) is what the server grants; Stripe checkout shows the price actually charged.
-  const SOLD = PLANS.filter((p) => p.kind !== 'guild')
   const GUILD = PLANS.find((p) => p.kind === 'guild')!
-  let term = $state<Term>('monthly')
+  const TABS = [
+    { id: 'plan', label: 'Plan', icon: Cloud },
+    { id: 'links', label: 'Links', icon: Link2 },
+    { id: 'settings', label: 'Settings', icon: Settings },
+  ] as const
 
+  let tab = $state<(typeof TABS)[number]['id']>('plan')
+  let term = $state<Term>('monthly')
   let providers = $state<Provider[]>([])
-  let cloud = $state<{ slots: number; characters: CloudCharacter[] } | null>(null)
   let shares = $state<Share[] | null>(null)
   let busy = $state('')
   let error = $state('')
@@ -29,27 +33,17 @@
 
   const me = $derived(account.me)
   const billing = $derived(account.billing)
-  const character = $derived(activeCharacter())
+  const ent = $derived(billing?.entitlements)
+  const current = $derived(currentPlans(billing))
+  const plan = $derived(PLANS.find((p) => current.has(p.id)))
+  const sub = $derived(billing?.subscriptions.find((s) => !s.guildId && s.lookupKeys.some((k) => plan && k.startsWith(`${plan.id}_`))))
+  const left = $derived(ent && billing ? Math.max(0, ent.coreSeconds - billing.usage.usedCoreSeconds) : 0)
+  const usedPct = $derived(ent?.coreSeconds ? Math.min(100, (100 * (billing?.usage.usedCoreSeconds ?? 0)) / ent.coreSeconds) : 0)
   const linked = $derived(new Set(me?.identities.map((i) => i.provider)))
-  const hours = (s: number) => (s / 3600).toFixed(1)
-  const when = (iso: string | null) => fmtDateTime(iso ? Date.parse(iso) : undefined)
-  const providerLabel = (id: string) => providers.find((p) => p.id === id)?.label ?? id
   const guildId = $derived(account.guildToken ? guildOf(account.guildToken) : null)
-  const planName = (key: string) => {
-    for (const p of PLANS) for (const t of termsOf(p)) if (lookupKey(p, t) === key) return t === 'monthly' ? p.title : `${p.title} (${TERMS[t].label.toLowerCase()})`
-    return key
-  }
-  /** The chosen term when the plan is sold on it, else monthly (slots and hosted links). */
-  const termFor = (p: Plan): Term => (termsOf(p).includes(term) ? term : 'monthly')
-  const offer = (p: Plan) => {
-    const t = termFor(p)
-    const price = p.usd?.[t]
-    const off = discountPercent(p, t)
-    return price === undefined ? 'Price at checkout' : `$${price} ${t === 'monthly' ? 'a month' : `per ${TERMS[t].months} months`}${off ? ` · save ${off}%` : ''}`
-  }
-  const allowance = (p: Plan) => p.coreHoursPerMonth
-    ? `${p.coreHoursPerMonth} core-hours a month (≈ ${approxSims(p.coreHoursPerMonth * 3600).toLocaleString()} standard sims) · up to ${p.maxThreads} threads`
-    : p.blurb
+  const date = (iso: string | null | undefined) => (iso ? new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '')
+  const providerLabel = (id: string) => providers.find((p) => p.id === id)?.label ?? id
+  const termOf = (key: string | undefined) => (Object.keys(TERMS) as Term[]).find((t) => key?.endsWith(`_${t}`))
 
   // Opening the dialog always asks who is signed in: the marker can be missing (blocked or cleared storage) while the session works.
   $effect(() => {
@@ -74,19 +68,14 @@
     const [list] = await Promise.all([api<{ providers: Provider[] }>('/auth/providers'), refresh()])
     providers = list.providers
     name = account.me?.user.displayName ?? ''
-    if (account.me) await lists()
+    // Hosted links are a server feature; switched off, the tab says so.
+    if (account.me) shares = (await api<{ shares: Share[] }>('/shares').catch(() => null))?.shares ?? null
   })
 
-  /** Characters and hosted links are one server feature; switched off, their sections are left out. */
-  async function lists(): Promise<void> {
-    const [c, s] = await Promise.all([
-      api<{ slots: number; characters: CloudCharacter[] }>('/characters').catch(() => null),
-      api<{ shares: Share[] }>('/shares').catch(() => null),
-    ])
-    cloud = c
-    shares = s?.shares ?? null
+  const plans = () => {
+    account.open = false
+    navigate('plans')
   }
-
   const rename = () => run('rename', async () => {
     account.me = await api<Me>('/me', 'PATCH', { displayName: name.trim() })
     toast('good', 'Name saved.')
@@ -100,35 +89,10 @@
     await api('/me/integrations/loothing', on ? 'PUT' : 'DELETE')
     await refresh()
   })
-  const checkout = (lookupKey: string, guildToken?: string) => run('checkout', async () => {
-    go((await api<{ url: string }>('/billing/checkout', 'POST', { lookupKey, guildToken })).url)
-  })
-  const portal = () => run('portal', async () => go((await api<{ url: string }>('/billing/portal', 'POST')).url))
-
-  /** POST adds a slot; `replace` overwrites that cloud character in place (PUT), so re-saving after a gear change needs no free slot. */
-  const saveToCloud = (replace?: CloudCharacter) => run('save', async () => {
-    const c = activeCharacter()
-    if (!c) return
-    const label = ((app.draft ? '' : activeStored()?.label) || c.name || 'Character').slice(0, 100)
-    await api(replace ? `/characters/${replace.id}` : '/characters', replace ? 'PUT' : 'POST', { label, raw: c.raw })
-    await lists()
-    toast('good', replace ? `Replaced ${replace.label} with ${label} in the cloud.` : `Saved ${label} to the cloud.`)
-  })
-  const download = (id: string) => run('download', async () => {
-    const saved = await api<{ label: string; raw: string }>(`/characters/${id}`)
-    const { parsed, match } = cloudDownload(saved.raw, app.characters)
-    await saveCharacter(parsed, match?.label ?? saved.label, match?.id)
-    toast('good', `${match ? 'Updated' : 'Added'} ${saved.label} on this device.`)
-  })
-  const removeCloud = (id: string) => run('remove', async () => {
-    await api(`/characters/${id}`, 'DELETE')
-    await lists()
-  })
   const revoke = (id: string) => run('revoke', async () => {
     await api(`/shares/${id}`, 'DELETE')
-    await lists()
+    shares = shares?.filter((s) => s.id !== id) ?? null
   })
-
   const exportData = () => run('export', async () => {
     const data = await api('/me/export')
     const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }))
@@ -152,210 +116,206 @@
   })
 </script>
 
-{#snippet terms()}
-  <div class="segmented" role="radiogroup" aria-label="Billing term">
-    {#each Object.entries(TERMS) as [value, spec] (value)}
-      <label>
-        <input type="radio" name="acct-term" {value} checked={term === value} onchange={() => (term = value as Term)} />
-        {spec.label}
-      </label>
-    {/each}
-  </div>
-{/snippet}
-
-<Dialog bind:open={account.open} title={me ? 'Account' : 'Sign in'} width="36rem" onclose={() => (account.open = false)}>
+<Dialog bind:open={account.open} title={account.guildToken ? 'Discord server plan' : me ? 'Account' : 'Sign in'} width="30rem" onclose={() => (account.open = false)}>
   <div class="stack">
     {#if account.notice}<p class="small err" role="alert">{account.notice}</p>{/if}
     {#if error}<p class="small err" role="alert">{error}</p>{/if}
-    {#if busy}<p class="xs muted" role="status">Working…</p>{/if}
-
-    {#if account.guildToken}
-      <section class="stack-sm" aria-labelledby="acct-guild">
-        <h3 id="acct-guild">Discord server plan</h3>
-        {#if me}
-          <p class="small">
-            Subscribes the Discord server with ID {guildId ?? 'unknown'} to its own pool of cloud runs, billed to you. The link works
-            only for the Frostsim account linked to the Discord account that ran /frostsim subscribe.
-          </p>
-          <p class="small">{allowance(GUILD)} · {offer(GUILD)}</p>
-          {@render terms()}
-          <div class="row">
-            <button class="primary" disabled={!!busy} onclick={() => checkout(lookupKey(GUILD, termFor(GUILD)), account.guildToken ?? undefined)}>Continue to checkout</button>
-            <button class="ghost" onclick={() => (account.guildToken = null)}>Not now</button>
-          </div>
-        {:else}
-          <p class="small">Sign in first. You come back here afterwards.</p>
-        {/if}
-      </section>
-    {/if}
 
     {#if !me}
-      <p class="small">
-        Frostsim works without an account. Signing in adds cloud character slots, hosted report links and cloud runs.
-      </p>
-      {#if providers.length}
-        <div class="row">
-          {#each providers as p (p.id)}
-            <button onclick={() => location.assign(startUrl(p.id, 'login'))}>Sign in with {p.label}</button>
+      <div class="hello">
+        <span class="mark" aria-hidden="true"><Sparkles size={22} /></span>
+        <p>Keep your characters on every device, share reports as links and run sims in the cloud.</p>
+      </div>
+      {#if account.guildToken}<p class="small">Sign in to subscribe your Discord server. You come back here afterwards.</p>{/if}
+      <div class="providers">
+        {#each providers as p (p.id)}
+          <button class="provider" data-provider={p.id} onclick={() => location.assign(startUrl(p.id, 'login'))}>Continue with {p.label}</button>
+        {:else}
+          {#if !busy && !error}<p class="small muted">No sign-in method is set up on this server.</p>{/if}
+        {/each}
+      </div>
+      <p class="xs muted center">Frostsim is free without an account. <button class="linkish" onclick={plans}>See plans</button></p>
+    {:else if account.guildToken}
+      <div class="card stack-sm">
+        <p class="small">Gives the Discord server <span class="mono">{guildId ?? 'unknown'}</span> its own pool for /sim, billed to you.</p>
+        <p class="big">≈ {approxSims((GUILD.coreHoursPerMonth ?? 0) * 3600).toLocaleString()} <span class="small muted">sims a month, shared</span></p>
+        <div class="segmented" role="radiogroup" aria-label="Billing term">
+          {#each termsOf(GUILD) as t (t)}
+            <label><input type="radio" name="guild-term" value={t} checked={term === t} onchange={() => (term = t)} />
+              {TERMS[t].label}{#if discountPercent(GUILD, t)}<span class="save">−{discountPercent(GUILD, t)}%</span>{/if}</label>
           {/each}
         </div>
-      {:else if !busy && !error}
-        <p class="small muted">No sign-in method is set up on this server.</p>
-      {/if}
+        <p class="xs muted">Only works for the account linked to the Discord user who ran /frostsim subscribe.</p>
+      </div>
+      <div class="row">
+        <button class="primary" disabled={!!busy} onclick={() => run('checkout', () => checkout(lookupKey(GUILD, term), account.guildToken ?? undefined))}>
+          Continue · ${GUILD.usd?.[term]}{term === 'monthly' ? '/month' : ` for ${TERMS[term].months} months`}
+        </button>
+        <button class="ghost" onclick={() => (account.guildToken = null)}>Not now</button>
+      </div>
     {:else}
-      <section class="stack-sm" aria-labelledby="acct-profile">
-        <h3 id="acct-profile">Profile</h3>
-        <form class="row" onsubmit={(e) => { e.preventDefault(); void rename() }}>
-          <label class="field grow"><span>Display name</span><input type="text" bind:value={name} maxlength="64" required /></label>
-          <button type="submit" disabled={!!busy || !name.trim() || name.trim() === me.user.displayName}>Save</button>
-        </form>
-      </section>
+      <div class="who">
+        <span class="avatar" aria-hidden="true">{me.user.displayName.slice(0, 1).toUpperCase()}</span>
+        <span class="grow">
+          <strong class="truncate">{me.user.displayName}</strong>
+          <span class="xs muted">{me.identities.map((i) => providerLabel(i.provider)).join(' · ')}</span>
+        </span>
+        <span class="chip" class:accent={!!plan}>{plan?.title ?? 'Free'}</span>
+      </div>
 
-      <section class="stack-sm" aria-labelledby="acct-ids">
-        <h3 id="acct-ids">Sign-in methods</h3>
-        <ul>
-          {#each me.identities as id (id.provider)}
-            <li class="spread">
-              <span>{providerLabel(id.provider)}{id.displayName ? ` · ${id.displayName}` : ''}</span>
-              <button class="sm ghost" disabled={!!busy || me.identities.length < 2} onclick={() => unlink(id.provider)} aria-label="Unlink {providerLabel(id.provider)}">Unlink</button>
-            </li>
-          {/each}
-        </ul>
-        {#if providers.some((p) => !linked.has(p.id))}
-          <div class="row">
-            {#each providers.filter((p) => !linked.has(p.id)) as p (p.id)}
-              <button class="sm" onclick={() => location.assign(startUrl(p.id, 'link'))}>Link {p.label}</button>
-            {/each}
-          </div>
-        {/if}
-        <p class="xs muted">Removing a sign-in method signs out your other devices. The last one cannot be removed.</p>
-      </section>
+      <div class="tabs" role="tablist" aria-label="Account">
+        {#each TABS as t (t.id)}
+          <button role="tab" id="acct-tab-{t.id}" aria-selected={tab === t.id} aria-controls="acct-panel" class:on={tab === t.id} onclick={() => (tab = t.id)}>
+            <t.icon size={15} aria-hidden="true" />{t.label}
+          </button>
+        {/each}
+      </div>
 
-      {#if billing}
-        <section class="stack-sm" aria-labelledby="acct-plan">
-          <h3 id="acct-plan">Plan and usage</h3>
-          {#if billing.entitlements.maxThreads >= 1}
-            <p class="small">
-              Cloud runs on up to {billing.entitlements.maxThreads} threads. {hours(billing.usage.usedCoreSeconds)} of
-              {hours(billing.entitlements.coreSeconds)} core-hours used this period, which ends {when(billing.usage.periodEnd)}:
-              ≈ {approxSims(billing.entitlements.coreSeconds - billing.usage.usedCoreSeconds).toLocaleString()} standard sims left.
-            </p>
+      <div id="acct-panel" role="tabpanel" aria-labelledby="acct-tab-{tab}" class="stack-sm">
+        {#if tab === 'plan'}
+          {#if ent && ent.maxThreads >= 1}
+            <div class="card">
+              <p class="big">≈ {approxSims(left).toLocaleString()} <span class="small muted">sims left</span></p>
+              <div class="meter" role="meter" aria-label="Cloud allowance used" aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(usedPct)}><span style="width: {usedPct}%"></span></div>
+              <p class="xs muted">{((billing?.usage.usedCoreSeconds ?? 0) / 3600).toFixed(1)} of {(ent.coreSeconds / 3600).toFixed(0)} core-hours used · resets {date(billing?.usage.periodEnd)}</p>
+            </div>
           {:else}
-            <p class="small">No cloud runs on this account. Simulations run in this browser.</p>
+            <div class="card">
+              <p><strong>Free</strong> <span class="small muted">· sims run in this browser</span></p>
+              <p class="xs muted">Cloud runs, more character slots and report links come with a plan, from $3 a month.</p>
+            </div>
           {/if}
-          <p class="small">
-            {billing.entitlements.slots} cloud character slots · hosted links {billing.entitlements.hostedShares ? 'included' : 'not included'}
-          </p>
-          {#if billing.subscriptions.length}
-            <ul class="small">
-              {#each billing.subscriptions as s (s.id)}
-                <li>{s.lookupKeys.map(planName).join(', ')} · {s.status}{s.periodEnd ? ` · period ends ${when(s.periodEnd)}` : ''}</li>
-              {/each}
-            </ul>
-          {/if}
-          {@render terms()}
-          <ul>
-            {#each SOLD as p (p.id)}
-              <li class="spread">
-                <span><strong>{p.title}</strong> <span class="xs muted">{allowance(p)} · {offer(p)}</span></span>
-                <button class="sm" disabled={!!busy} onclick={() => checkout(lookupKey(p, termFor(p)))} aria-label="Subscribe to {p.title}">Subscribe</button>
-              </li>
-            {/each}
+          <ul class="facts">
+            {#if ent && ent.maxThreads >= 1}<li><strong>{ent.maxThreads}</strong> threads</li>{/if}
+            <li><strong>{slotsLabel(ent?.slots ?? FREE_SLOTS)}</strong> character slot{(ent?.slots ?? FREE_SLOTS) === 1 ? '' : 's'}</li>
+            <li><strong>{ent?.hostedShares ? 'Yes' : 'No'}</strong> report links</li>
           </ul>
-          <div class="row">
-            <button class="sm" disabled={!!busy} onclick={portal}>Manage billing</button>
-            <span class="xs muted">A standard sim is 4,000 iterations of a typical profile; heavier specs and fights use more. Checkout shows the price charged.</span>
-          </div>
-        </section>
-      {/if}
-
-      {#if cloud}
-        <section class="stack-sm" aria-labelledby="acct-chars">
-          <h3 id="acct-chars">Cloud characters <span class="xs muted">{cloud.characters.length} of {cloud.slots} slots</span></h3>
-          {#if cloud.characters.length}
-            <ul>
-              {#each cloud.characters as c (c.id)}
-                <li class="spread">
-                  <span>{c.label} <span class="xs muted">{fmtBytes(c.bytes)} · {when(c.updatedAt)}</span></span>
-                  <span class="row-tight">
-                    <button class="sm" disabled={!!busy} onclick={() => download(c.id)} aria-label="Download {c.label} to this device">Download to this device</button>
-                    <button class="sm" disabled={!!busy || !character} onclick={() => saveToCloud(c)} aria-label="Replace {c.label} with the current character">Replace with current</button>
-                    <button class="sm ghost" disabled={!!busy} onclick={() => removeCloud(c.id)} aria-label="Delete {c.label} from the cloud">Delete</button>
-                  </span>
-                </li>
-              {/each}
-            </ul>
+          {#if sub}
+            <p class="xs muted">
+              {plan?.title}, {TERMS[termOf(sub.lookupKeys[0]) ?? 'monthly'].label.toLowerCase()}{sub.status === 'past_due' ? ' · payment failed, update your card' : sub.periodEnd ? ` · renews ${date(sub.periodEnd)}` : ''}
+            </p>
           {/if}
-          <div>
-            <button class="sm" disabled={!!busy || !character || cloud.characters.length >= cloud.slots} onclick={() => saveToCloud()}>Save current character to cloud</button>
+          <div class="row">
+            {#if plan}
+              <button class="sm" disabled={!!busy} onclick={() => run('portal', portal)}>Manage billing</button>
+              <button class="sm ghost" onclick={plans}>Compare plans</button>
+            {:else}
+              <button class="primary" onclick={plans}><Sparkles size={16} /> See plans</button>
+              {#if billing?.subscriptions.length}<button class="sm ghost" disabled={!!busy} onclick={() => run('portal', portal)}>Billing history</button>{/if}
+            {/if}
           </div>
-        </section>
-      {/if}
-
-      {#if shares}
-        <section class="stack-sm" aria-labelledby="acct-shares">
-          <h3 id="acct-shares">Hosted report links</h3>
-          {#if shares.length}
-            <ul>
+        {:else if tab === 'links'}
+          {#if shares?.length}
+            <ul class="list">
               {#each shares as s (s.id)}
-                <li class="spread">
-                  <span>
-                    <a href="#/s/{s.id}" onclick={() => (account.open = false)}>{s.title}</a>
-                    <span class="xs muted">{when(s.createdAt)}{s.expiresAt ? ` · expires ${when(s.expiresAt)}` : ''}</span>
-                  </span>
+                <li>
+                  <a class="grow truncate" href="#/s/{s.id}" onclick={() => (account.open = false)}>{s.title}</a>
+                  <span class="xs muted nowrap">{date(s.createdAt)}{s.expiresAt ? ` → ${date(s.expiresAt)}` : ''}</span>
                   <button class="sm ghost" disabled={!!busy} onclick={() => revoke(s.id)} aria-label="Revoke {s.title}">Revoke</button>
                 </li>
               {/each}
             </ul>
+          {:else if ent?.hostedShares}
+            <p class="small muted">No links yet. Use Share on any report to make one.</p>
           {:else}
-            <p class="small muted">None yet. Create one from a report's Share button.</p>
+            <p class="small muted">Share a report as a short link. <button class="linkish" onclick={plans}>Comes with every plan.</button></p>
           {/if}
-        </section>
-      {/if}
-
-      <section class="stack-sm" aria-labelledby="acct-apps">
-        <h3 id="acct-apps">Connected apps</h3>
-        <label class="row-tight">
-          <input
-            type="checkbox"
-            checked={me.integrations.includes('loothing')}
-            disabled={!!busy}
-            onchange={(e) => {
-              // One-way `checked`: after a failed request `me` is unchanged, so put the box back to what the server has.
-              const box = e.currentTarget
-              void loothing(box.checked).then(() => (box.checked = !!account.me?.integrations.includes('loothing')))
-            }}
-          />
-          Allow Loothing
-        </label>
-        <p class="xs muted">Lets Loothing's Discord bot run simulations of your cloud characters on your plan. Needs a linked Discord sign-in.</p>
-      </section>
-
-      <section class="stack-sm" aria-labelledby="acct-data">
-        <h3 id="acct-data">Your data</h3>
-        <div><button class="sm" disabled={!!busy} onclick={exportData}>Export account data</button></div>
-        <details class="disclosure">
-          <summary>Delete account</summary>
-          <form class="stack-sm" onsubmit={(e) => { e.preventDefault(); void deleteAccount() }}>
-            <p class="small">
-              Deletes the account, its cloud characters and hosted links, and cancels its subscriptions. Characters and reports saved
-              on this device stay.
-            </p>
-            <label class="field"><span>Type DELETE to confirm</span><input type="text" bind:value={confirm} autocomplete="off" /></label>
-            <div><button type="submit" class="danger" disabled={!!busy || confirm !== 'DELETE'}>Delete account</button></div>
+        {:else}
+          <form class="row" onsubmit={(e) => { e.preventDefault(); void rename() }}>
+            <label class="field grow"><span>Display name</span><input type="text" bind:value={name} maxlength="64" required /></label>
+            <button type="submit" class="sm end" disabled={!!busy || !name.trim() || name.trim() === me.user.displayName}>Save</button>
           </form>
-        </details>
-      </section>
+          <div class="stack-sm">
+            <span class="label">Sign-in methods</span>
+            <ul class="list">
+              {#each me.identities as id (id.provider)}
+                <li>
+                  <span class="grow">{providerLabel(id.provider)} <span class="xs muted">{id.displayName ?? ''}</span></span>
+                  <button class="sm ghost" disabled={!!busy || me.identities.length < 2} title={me.identities.length < 2 ? 'Your only sign-in method' : 'Unlinking signs out your other devices'} onclick={() => unlink(id.provider)}>Unlink</button>
+                </li>
+              {/each}
+              {#each providers.filter((p) => !linked.has(p.id)) as p (p.id)}
+                <li><span class="grow muted">{p.label}</span><button class="sm" onclick={() => location.assign(startUrl(p.id, 'link'))}>Link</button></li>
+              {/each}
+            </ul>
+          </div>
+          <label class="check small" title="Lets Loothing's Discord bot sim your cloud characters on your plan. Needs a linked Discord sign-in.">
+            <input
+              type="checkbox"
+              checked={me.integrations.includes('loothing')}
+              disabled={!!busy}
+              onchange={(e) => {
+                // One-way `checked`: after a failed request `me` is unchanged, so put the box back to what the server has.
+                const box = e.currentTarget
+                void loothing(box.checked).then(() => (box.checked = !!account.me?.integrations.includes('loothing')))
+              }}
+            />
+            Allow Loothing's Discord bot to sim my cloud characters
+          </label>
+          <div class="row">
+            <button class="sm" disabled={!!busy} onclick={exportData}>Export my data</button>
+            <details class="disclosure grow">
+              <summary class="small">Delete account</summary>
+              <form class="stack-sm" onsubmit={(e) => { e.preventDefault(); void deleteAccount() }}>
+                <p class="xs muted">Removes cloud characters and links and cancels plans. This device keeps its own data.</p>
+                <label class="field"><span>Type DELETE to confirm</span><input type="text" bind:value={confirm} autocomplete="off" /></label>
+                <div><button type="submit" class="sm danger" disabled={!!busy || confirm !== 'DELETE'}>Delete account</button></div>
+              </form>
+            </details>
+          </div>
+        {/if}
+      </div>
     {/if}
   </div>
   {#snippet footer()}
-    {#if me}<button class="ghost" disabled={!!busy} onclick={signOut}>Sign out</button>{/if}
+    {#if me}<button class="ghost" disabled={!!busy} onclick={signOut}>Sign out</button><span class="grow"></span>{/if}
     <button onclick={() => (account.open = false)}>Close</button>
   {/snippet}
 </Dialog>
 
 <style>
-  h3 { font-size: 15px; }
-  ul { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s2); }
+  ul { list-style: none; margin: 0; padding: 0; }
   .err { color: var(--bad); }
+  .center { text-align: center; }
+  .label { font-weight: 550; font-size: var(--fs-sm); }
+  .end { align-self: flex-end; }
+  .hello { display: grid; justify-items: center; gap: var(--s3); text-align: center; padding: var(--s3) var(--s4) 0; }
+  .hello p { margin: 0; color: var(--text-muted); max-width: 22rem; }
+  .mark {
+    display: grid; place-items: center; width: 3rem; height: 3rem; border-radius: 50%;
+    background: var(--grad); color: #04121f; box-shadow: 0 0 40px -8px var(--accent-glow);
+  }
+  .providers { display: grid; gap: var(--s2); }
+  .provider { width: 100%; min-height: 2.75rem; font-weight: 600; }
+  .provider[data-provider='discord'] { background: #5865f2; border-color: #5865f2; color: #fff; }
+  .provider[data-provider='battlenet'] { background: #148eff; border-color: #148eff; color: #fff; }
+  .linkish { all: unset; color: var(--accent); cursor: pointer; }
+  .linkish:hover { text-decoration: underline; }
+  .linkish:focus-visible { box-shadow: var(--focus); border-radius: 2px; }
+  .who { display: flex; align-items: center; gap: var(--s3); }
+  .who > .grow { display: grid; min-width: 0; }
+  .avatar {
+    flex: none; display: grid; place-items: center; width: 2.5rem; height: 2.5rem; border-radius: 50%;
+    font: 700 18px var(--font-display); background: var(--grad); color: #04121f;
+  }
+  .tabs { display: flex; gap: var(--s1); border-bottom: 1px solid var(--border); }
+  .tabs button {
+    all: unset; display: inline-flex; align-items: center; gap: 6px; padding: 8px 12px; margin-bottom: -1px;
+    font-size: var(--fs-sm); color: var(--text-muted); cursor: pointer; border-bottom: 2px solid transparent;
+  }
+  .tabs button:hover { color: var(--text); }
+  .tabs button.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+  .tabs button:focus-visible { box-shadow: var(--focus); border-radius: 4px; }
+  .card { display: grid; gap: var(--s2); padding: var(--s4); border-radius: var(--r3); background: var(--well); border: 1px solid var(--border); }
+  .card p { margin: 0; }
+  .big { font: 700 26px var(--font-display); letter-spacing: -0.01em; }
+  .meter { height: 8px; border-radius: 99px; background: var(--bar-track); overflow: hidden; }
+  .meter span { display: block; height: 100%; min-width: 3px; border-radius: inherit; background: var(--grad); }
+  .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr)); gap: var(--s2); }
+  .facts li { display: grid; padding: var(--s2) var(--s3); border: 1px solid var(--border); border-radius: var(--r2); font-size: var(--fs-xs); color: var(--text-muted); }
+  .facts strong { color: var(--text); font-family: var(--font-display); font-size: 18px; }
+  .list { display: grid; }
+  .list li { display: flex; align-items: center; gap: var(--s2); padding: 6px 0; border-bottom: 1px solid var(--border); min-width: 0; }
+  .list li:last-child { border-bottom: 0; }
+  .save { margin-left: 4px; font-size: var(--fs-xs); color: var(--good); font-weight: 600; }
 </style>

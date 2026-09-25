@@ -14,7 +14,7 @@ export function desiredPrices(plans = PLANS) {
     const usd = plan.usd?.[term];
     if (usd === undefined) return [];
     const { interval, intervalCount } = TERMS[term];
-    return [{ plan: plan.id, name: `Frostsim ${plan.title}`, lookupKey: lookupKey(plan, term), unitAmount: Math.round(usd * 100), currency: 'usd', interval, intervalCount }];
+    return [{ plan: plan.id, name: `Frostsim Cloud ${plan.title}`, lookupKey: lookupKey(plan, term), unitAmount: Math.round(usd * 100), currency: 'usd', interval, intervalCount }];
   }));
 }
 

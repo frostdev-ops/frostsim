@@ -18,7 +18,6 @@ export const GUILD_CHECKOUT_PURPOSE = 'guild-checkout';
 /** stripe-node's DEFAULT_TOLERANCE. */
 const SIGNATURE_TOLERANCE_S = 300;
 // ponytail: a sanity bound on slot packs (100 slots), not a pricing decision.
-const MAX_QUANTITY = 20;
 const SUB_ID = /^sub_[A-Za-z0-9]+$/;
 const USER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const GUILD_ID = /^\d{17,20}$/;
@@ -133,11 +132,9 @@ async function checkout(ctx: RequestCtx): Promise<Response> {
   const plan = product(lookupKey);
   if (!plan) throw new HttpError(400, 'invalid', 'Unknown plan.');
 
-  const quantity = body.quantity === undefined ? 1 : body.quantity;
-  if (body.quantity !== undefined && plan.kind !== 'slots') throw new HttpError(400, 'invalid', 'This plan has no quantity.');
-  if (!Number.isInteger(quantity) || (quantity as number) < 1 || (quantity as number) > MAX_QUANTITY) {
-    throw new HttpError(400, 'invalid', `Quantity must be a whole number from 1 to ${MAX_QUANTITY}.`);
-  }
+  // Every plan is one per subscription; slots come with the compute tiers (plans.ts).
+  if (body.quantity !== undefined && body.quantity !== 1) throw new HttpError(400, 'invalid', 'Plans have no quantity.');
+  const quantity = 1;
 
   let guildId: string | null = null;
   if (plan.kind === 'guild') {

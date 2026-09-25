@@ -430,7 +430,7 @@ describe('reply task', () => {
     expect(edits[0].body.content).toBe('**Main\\_Warlock** on Patchwerk: **223,974 DPS** ± 2,138 (95%)');
 
     edits = [];
-    world.subscriptions[USER] = [sub('shares_plus_monthly')];
+    world.subscriptions[USER] = [sub('compute_s_monthly')];
     mocks.resultBytes.mockResolvedValue(new Uint8Array(gzipSync(REPORT_TEXT)));
     mocks.storeShare.mockRejectedValue(new Error('R2 PUT failed with status 500'));
     await run(done());

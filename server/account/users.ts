@@ -61,6 +61,11 @@ export async function exportAccount(db: Db, userId: string) {
       order by created_at`,
     cloudCharacters: await db`select id, label, raw, bytes, created_at, updated_at from cloud_characters where user_id = ${userId}
       order by created_at`,
+    characterSnapshots: await db`select s.character_id, s.created_at, s.item_level, s.gear from character_snapshots s
+      join cloud_characters c on c.id = s.character_id where c.user_id = ${userId} order by s.created_at`,
+    characterSims: await db`select s.character_id, s.created_at, s.source, s.dps, s.dps_error, s.fight_style, s.targets, s.game_build,
+      s.report_id, s.job_id from character_sims s join cloud_characters c on c.id = s.character_id where c.user_id = ${userId}
+      order by s.created_at`,
     shares: await db`select id, title, bytes, created_at, expires_at, revoked_at from shares where user_id = ${userId} order by created_at`,
     integrationGrants: await db`select integration, created_at from integration_grants where user_id = ${userId} order by integration`,
     auditLog: await db`select at, actor, action, detail from audit_log where user_id = ${userId} order by at, id`,

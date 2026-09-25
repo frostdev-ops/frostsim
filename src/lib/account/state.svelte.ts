@@ -3,6 +3,7 @@
 
 import { api, AccountError } from './api'
 import { applyPlacement } from './placement.svelte'
+import { PLANS } from './plans'
 import { isSameCharacter, parseAddonExport, type ImportedCharacter } from '../import/character'
 import type { StoredCharacter } from '../store/records'
 
@@ -66,6 +67,21 @@ export function signedOut(): void {
   account.me = null
   account.billing = null
   applyPlacement(false)
+}
+
+/** Plan ids of live personal subscriptions. A subscriber changes plan in the billing portal, not with a second checkout. */
+export function currentPlans(billing: Billing | null): Set<string> {
+  const live = (billing?.subscriptions ?? []).filter((s) => !s.guildId && ['active', 'trialing', 'past_due'].includes(s.status))
+  return new Set(live.flatMap((s) => s.lookupKeys).flatMap((k) => PLANS.filter((p) => k.startsWith(`${p.id}_`)).map((p) => p.id)))
+}
+
+/** Stripe checkout for a plan (DESIGN.md P5), or for a Discord server with its checkout link token. */
+export async function checkout(lookupKey: string, guildToken?: string): Promise<void> {
+  go((await api<{ url: string }>('/billing/checkout', 'POST', { lookupKey, guildToken })).url)
+}
+
+export async function portal(): Promise<void> {
+  go((await api<{ url: string }>('/billing/portal', 'POST')).url)
 }
 
 /** OAuth must start as a same-origin top-level navigation (the server refuses cross-site starts), back to where the user was. */

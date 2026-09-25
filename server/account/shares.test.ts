@@ -82,7 +82,7 @@ function fakeSql(state: State, calls: Call[]): Sql {
     }
     if (q.includes('from subscriptions')) {
       const period = { current_period_start: new Date(Date.now() - 86_400_000), current_period_end: new Date(Date.now() + 86_400_000) };
-      return state.entitled ? [{ status: 'active', ...period, guild_id: null, items: [{ lookupKey: 'shares_plus_monthly', quantity: 1 }] }] : [];
+      return state.entitled ? [{ status: 'active', ...period, guild_id: null, items: [{ lookupKey: 'compute_s_monthly', quantity: 1 }] }] : [];
     }
     if (q.includes('comp_core_seconds')) return [{ core_seconds: 0, max_threads: null }];
     if (q.includes('select suspended_at from users')) return state.user ? [state.user] : [];
@@ -388,7 +388,7 @@ describe.skipIf(!PG)('hosted shares postgres integration (needs FROSTSIM_TEST_PG
     if (entitled) {
       await sql`insert into subscriptions (stripe_subscription_id, user_id, status, current_period_start, current_period_end, items)
         values (${sub}, ${row.id}, 'active', ${new Date(Date.now() - 86_400_000)}, ${new Date(Date.now() + 86_400_000)},
-          ${sql.json([{ lookupKey: 'shares_plus_monthly', quantity: 1 }])})`;
+          ${sql.json([{ lookupKey: 'compute_s_monthly', quantity: 1 }])})`;
     }
     const { cookie } = await createSession(app, row.id);
     const send = (method: string, path: string, init: { body?: BodyInit; type?: string } = {}) => createApp(app, routes)(new Request(ORIGIN + path, {

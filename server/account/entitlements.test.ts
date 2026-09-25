@@ -15,15 +15,17 @@ function sub(over: Partial<Subscription>): Subscription {
 
 describe('catalog', () => {
   it('maps every plan and term to its lookup key, and grants nothing for unknown or prototype keys', () => {
-    expect(product('compute_l_monthly')).toEqual({ kind: 'compute', term: 'monthly', maxThreads: 16, coreHoursPerMonth: 120, hostedShares: true });
-    expect(product('compute_s_yearly')).toMatchObject({ kind: 'compute', term: 'yearly', coreHoursPerMonth: 20 });
-    expect(product('discord_guild_semiannual')).toMatchObject({ kind: 'guild', term: 'semiannual', coreHoursPerMonth: 80, maxThreads: 8 });
-    expect(product('slots_5_monthly')).toMatchObject({ kind: 'slots', slotsPerUnit: 5 });
-    expect(product('slots_5_yearly')).toBeNull();
+    expect(product('compute_l_monthly')).toEqual({ kind: 'compute', term: 'monthly', maxThreads: 16, coreHoursPerMonth: 120, extraSlots: 100, hostedShares: true });
+    expect(product('compute_s_yearly')).toMatchObject({ kind: 'compute', term: 'yearly', coreHoursPerMonth: 20, extraSlots: 1, hostedShares: true });
+    expect(product('compute_m_semiannual')).toMatchObject({ kind: 'compute', term: 'semiannual', coreHoursPerMonth: 50, extraSlots: 2, hostedShares: true });
+    expect(product('discord_guild_semiannual')).toEqual({ kind: 'guild', term: 'semiannual', coreHoursPerMonth: 80, maxThreads: 8 });
+    // The separately sold slot packs and hosted-shares add-on are gone.
+    expect(product('slots_5_monthly')).toBeNull();
+    expect(product('shares_plus_monthly')).toBeNull();
     expect(Object.keys(CATALOG).sort()).toEqual([
       'compute_l_monthly', 'compute_l_semiannual', 'compute_l_yearly', 'compute_m_monthly', 'compute_m_semiannual', 'compute_m_yearly',
       'compute_s_monthly', 'compute_s_semiannual', 'compute_s_yearly', 'discord_guild_monthly', 'discord_guild_semiannual',
-      'discord_guild_yearly', 'shares_plus_monthly', 'slots_5_monthly']);
+      'discord_guild_yearly']);
     expect(product('nope')).toBeNull();
     expect(product('toString')).toBeNull();
   });
@@ -57,16 +59,16 @@ describe('plan hours and long terms', () => {
 });
 
 describe('entitlementsFor', () => {
-  it('free tier: nothing, metered over the UTC calendar month', () => {
+  it('free tier: one character slot and nothing else, metered over the UTC calendar month', () => {
     expect(entitlementsFor([], NONE, NOW)).toEqual({
-      coreSeconds: 0, maxThreads: 0, slots: 0, hostedShares: false, guilds: [],
+      coreSeconds: 0, maxThreads: 0, slots: 1, hostedShares: false, guilds: [],
       periodStart: new Date('2026-09-01T00:00:00Z'), periodEnd: new Date('2026-10-01T00:00:00Z'),
     });
   });
 
-  it('a compute tier grants its hours, threads, hosted shares and its own billing period', () => {
+  it('a compute tier grants its hours, threads, slots, hosted shares and its own billing period', () => {
     const ent = entitlementsFor([sub({ items: [{ lookupKey: 'compute_m_monthly', quantity: 1, coreHours: 50 }] })], NONE, NOW);
-    expect(ent).toMatchObject({ coreSeconds: 180_000, maxThreads: 16, hostedShares: true, periodStart: START, periodEnd: END });
+    expect(ent).toMatchObject({ coreSeconds: 180_000, maxThreads: 16, slots: 3, hostedShares: true, periodStart: START, periodEnd: END });
   });
 
   it('counts active, trialing and past_due; ignores canceled, incomplete and unpaid', () => {
@@ -79,13 +81,26 @@ describe('entitlementsFor', () => {
     }
   });
 
-  it('multiplies slots by quantity and stacks add-ons with a tier', () => {
-    const ent = entitlementsFor([
-      sub({ items: [{ lookupKey: 'slots_5_monthly', quantity: 3 }, { lookupKey: 'shares_plus_monthly', quantity: 1 }] }),
-      sub({ items: [{ lookupKey: 'slots_5_monthly', quantity: 1 }, { lookupKey: 'unknown_key', quantity: 9 }] }),
-    ], NONE, NOW);
-    expect(ent).toMatchObject({ slots: 20, hostedShares: true, coreSeconds: 0, maxThreads: 0 });
-    expect(entitlementsFor([sub({ items: [{ lookupKey: 'slots_5_monthly', quantity: -2 }] })], NONE, NOW).slots).toBe(0);
+  it('slots are the free slot plus the best live plan\'s extra: plans and quantities do not stack, and the ceiling is 100', () => {
+    const slotsOf = (...keys: string[]) => entitlementsFor(keys.map((lookupKey) => sub({ items: [{ lookupKey, quantity: 1 }] })), NONE, NOW).slots;
+    expect(slotsOf('compute_s_monthly')).toBe(2);
+    expect(slotsOf('compute_m_yearly')).toBe(3);
+    expect(slotsOf('compute_l_semiannual')).toBe(100);
+    expect(slotsOf('compute_s_monthly', 'compute_m_monthly')).toBe(3);
+    expect(slotsOf('compute_l_monthly', 'compute_m_monthly', 'compute_s_monthly')).toBe(100);
+    expect(slotsOf('unknown_key', 'slots_5_monthly', 'shares_plus_monthly')).toBe(1);
+    expect(entitlementsFor([sub({ items: [{ lookupKey: 'compute_s_monthly', quantity: 3 }] })], NONE, NOW).slots).toBe(2);
+    expect(entitlementsFor([sub({ items: [{ lookupKey: 'compute_s_monthly', quantity: 1 }, { lookupKey: 'compute_m_monthly', quantity: 1 }] })], NONE, NOW).slots).toBe(3);
+  });
+
+  it('hosted shares come only with a compute tier: not free, not from a guild pool or retired add-on', () => {
+    for (const key of ['compute_s_monthly', 'compute_m_semiannual', 'compute_l_yearly']) {
+      expect(entitlementsFor([sub({ items: [{ lookupKey: key, quantity: 1 }] })], NONE, NOW).hostedShares).toBe(true);
+    }
+    expect(entitlementsFor([], NONE, NOW).hostedShares).toBe(false);
+    expect(entitlementsFor([sub({ items: [{ lookupKey: 'shares_plus_monthly', quantity: 1 }] })], NONE, NOW).hostedShares).toBe(false);
+    const pool = entitlementsFor([sub({ guildId: 'g1', items: [{ lookupKey: 'discord_guild_monthly', quantity: 1 }] })], NONE, NOW);
+    expect(pool).toMatchObject({ slots: 1, hostedShares: false });
   });
 
   it('adds comped seconds and takes the larger thread ceiling', () => {
@@ -105,7 +120,7 @@ describe('entitlementsFor', () => {
       sub({ guildId: 'g1', currentPeriodStart: null, items: [{ lookupKey: 'discord_guild_monthly', quantity: 2, coreHours: 1 }] }),
       sub({ guildId: 'g2', status: 'canceled', items: [{ lookupKey: 'discord_guild_monthly', quantity: 1, coreHours: 5 }] }),
     ], NONE, NOW);
-    expect(ent).toMatchObject({ coreSeconds: 0, maxThreads: 0, hostedShares: false });
+    expect(ent).toMatchObject({ coreSeconds: 0, maxThreads: 0, slots: 1, hostedShares: false });
     expect(ent.guilds).toEqual([{ guildId: 'g1', coreSeconds: 43_200, maxThreads: 8, periodStart: START, periodEnd: END }]);
   });
 
@@ -123,14 +138,14 @@ describe('a missed renewal webhook (stored current_period_end has passed)', () =
   // The next period of the stored one's length (30 days), not the calendar month.
   const NEXT = { periodStart: END, periodEnd: new Date(END.getTime() + 30 * DAY) };
   const paid = sub({ status: 'past_due', items: [
-    { lookupKey: 'compute_m_monthly', quantity: 1, coreHours: 10 }, { lookupKey: 'slots_5_monthly', quantity: 2 },
+    { lookupKey: 'compute_m_monthly', quantity: 1, coreHours: 10 },
   ] });
   const guild = sub({ guildId: 'g1', items: [{ lookupKey: 'discord_guild_monthly', quantity: 1, coreHours: 5 }] });
-  const shares = sub({ items: [{ lookupKey: 'shares_plus_monthly', quantity: 1 }] });
+  const shares = sub({ items: [{ lookupKey: 'compute_s_monthly', quantity: 1 }] });
 
   it('grants the stored period up to its last millisecond', () => {
     expect(entitlementsFor([paid, guild], NONE, at(-1))).toMatchObject({
-      coreSeconds: 36_000, maxThreads: 16, slots: 10, hostedShares: true, periodStart: START, periodEnd: END,
+      coreSeconds: 36_000, maxThreads: 16, slots: 3, hostedShares: true, periodStart: START, periodEnd: END,
       guilds: [{ guildId: 'g1', coreSeconds: 18_000, maxThreads: 8, periodStart: START, periodEnd: END }],
     });
   });
@@ -139,19 +154,19 @@ describe('a missed renewal webhook (stored current_period_end has passed)', () =
     expect(RENEWAL_GRACE_MS).toBe(3 * DAY);
     for (const now of [at(0), at(RENEWAL_GRACE_MS - 1)]) {
       expect(entitlementsFor([paid, guild], NONE, now)).toMatchObject({
-        coreSeconds: 36_000, maxThreads: 16, slots: 10, hostedShares: true, ...NEXT,
+        coreSeconds: 36_000, maxThreads: 16, slots: 3, hostedShares: true, ...NEXT,
         guilds: [{ guildId: 'g1', coreSeconds: 18_000, maxThreads: 8, ...NEXT }],
       });
-      expect(entitlementsFor([shares], NONE, now).hostedShares).toBe(true);
+      expect(entitlementsFor([shares], NONE, now)).toMatchObject({ slots: 2, hostedShares: true });
     }
   });
 
-  it('lapses at period end + 3 days: no hours, threads, slots, hosted shares or guild pool; free-tier calendar month', () => {
+  it('lapses at period end + 3 days to the free tier: no hours, threads, extra slots, hosted shares or guild pool; calendar month', () => {
     const now = at(RENEWAL_GRACE_MS);
     expect(entitlementsFor([paid, guild], NONE, now)).toEqual({
-      coreSeconds: 0, maxThreads: 0, slots: 0, hostedShares: false, guilds: [], ...calendarMonth(now),
+      coreSeconds: 0, maxThreads: 0, slots: 1, hostedShares: false, guilds: [], ...calendarMonth(now),
     });
-    expect(entitlementsFor([shares], NONE, now).hostedShares).toBe(false);
+    expect(entitlementsFor([shares], NONE, now)).toMatchObject({ slots: 1, hostedShares: false });
     // Comped hours are not a subscription and do not lapse.
     expect(entitlementsFor([paid], { coreSeconds: 500, maxThreads: null }, now)).toMatchObject({ coreSeconds: 500, maxThreads: 8 });
   });

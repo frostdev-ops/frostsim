@@ -343,7 +343,7 @@ describe('stripe webhook', () => {
       metadata: { guild_id: GUILD },
       items: [
         { quantity: 1, current_period_start: START_S, current_period_end: END_S, price: { lookup_key: 'discord_guild_monthly', metadata: { core_hours: '5' } } },
-        { quantity: 3, current_period_start: START_S, current_period_end: END_S, price: { lookup_key: 'slots_5_monthly', metadata: {} } },
+        { quantity: 1, current_period_start: START_S, current_period_end: END_S, price: { lookup_key: 'compute_s_monthly', metadata: {} } },
         { quantity: 1, price: { lookup_key: null, metadata: { core_hours: '99' } } },
       ],
     });
@@ -351,7 +351,7 @@ describe('stripe webhook', () => {
     expect([...h.subs.values()]).toEqual([{
       stripe_subscription_id: 'sub_1', user_id: USER, status: 'active', guild_id: GUILD, stripe_updated: clock.ms,
       current_period_start: new Date(START_S * 1000), current_period_end: new Date(END_S * 1000),
-      items: [{ lookupKey: 'discord_guild_monthly', quantity: 1, coreHours: 5 }, { lookupKey: 'slots_5_monthly', quantity: 3 }],
+      items: [{ lookupKey: 'discord_guild_monthly', quantity: 1, coreHours: 5 }, { lookupKey: 'compute_s_monthly', quantity: 1 }],
     }]);
     expect(entitlementsOf([...h.subs.values()]).guilds).toEqual([{ guildId: GUILD, coreSeconds: 18_000, maxThreads: 8,
       periodStart: new Date(START_S * 1000), periodEnd: new Date(END_S * 1000) }]);
@@ -457,13 +457,20 @@ describe('checkout', () => {
     });
   });
 
-  it('reuses a stored customer and passes a quantity for slot packs only', async () => {
+  it('reuses a stored customer, accepts quantity 1, refuses any other quantity, and sells no slot packs or add-ons', async () => {
     const h = harness([{ id: USER, stripe_customer_id: 'cus_1' }]);
-    await h.send(post('/api/v1/billing/checkout', { lookupKey: 'slots_5_monthly', quantity: 3 }));
+    const res = await h.send(post('/api/v1/billing/checkout', { lookupKey: 'compute_s_monthly', quantity: 1 }));
+    expect(res.status).toBe(200);
     expect(h.state.calls.map((c) => c.path)).toEqual(['/prices', '/checkout/sessions']);
-    expect([h.state.calls[1].form.get('customer'), h.state.calls[1].form.get('line_items[0][quantity]')]).toEqual(['cus_1', '3']);
-    for (const quantity of [0, 1.5, 21, '3', null]) expect(await refused(h, { lookupKey: 'slots_5_monthly', quantity })).toEqual([400, 'invalid']);
-    expect(await refused(h, { lookupKey: 'compute_s_monthly', quantity: 1 })).toEqual([400, 'invalid']);
+    expect([h.state.calls[1].form.get('customer'), h.state.calls[1].form.get('line_items[0][quantity]')]).toEqual(['cus_1', '1']);
+    for (const quantity of [0, 2, 3, 1.5, 21, -1, '1', '3', null]) {
+      const bad = await h.send(post('/api/v1/billing/checkout', { lookupKey: 'compute_s_monthly', quantity }));
+      expect([quantity, bad.status, await bad.json()]).toEqual([quantity, 400, { error: 'invalid', message: 'Plans have no quantity.' }]);
+    }
+    for (const lookupKey of ['slots_5_monthly', 'shares_plus_monthly']) {
+      expect(await refused(h, { lookupKey })).toEqual([400, 'invalid']);
+      expect(await refused(h, { lookupKey, quantity: 3 })).toEqual([400, 'invalid']);
+    }
     expect(h.state.calls).toHaveLength(2);
   });
 
@@ -550,7 +557,7 @@ describe('checkout', () => {
   it('503s a catalog plan that has no Stripe price', async () => {
     const h = harness([{ id: USER, stripe_customer_id: 'cus_1' }]);
     h.state.prices = false;
-    expect(await refused(h, { lookupKey: 'shares_plus_monthly' })).toEqual([503, 'unconfigured']);
+    expect(await refused(h, { lookupKey: 'compute_l_yearly' })).toEqual([503, 'unconfigured']);
   });
 });
 
@@ -569,7 +576,7 @@ describe('portal and summary', () => {
     const res = await h.send(new Request(`${ORIGIN}/api/v1/billing`, { headers: { cookie } }));
     const period = { periodStart: new Date(START_S * 1000).toISOString(), periodEnd: new Date(END_S * 1000).toISOString() };
     expect(await res.json()).toEqual({
-      entitlements: { coreSeconds: 36_000, maxThreads: 16, slots: 0, hostedShares: true, guilds: [], ...period },
+      entitlements: { coreSeconds: 36_000, maxThreads: 16, slots: 3, hostedShares: true, guilds: [], ...period },
       usage: { usedCoreSeconds: 1234, ...period },
       subscriptions: [{ id: 'sub_1', status: 'active', lookupKeys: ['compute_m_monthly'], periodEnd: period.periodEnd, guildId: null }],
     });

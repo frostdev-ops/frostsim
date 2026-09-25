@@ -9,13 +9,13 @@ export interface Product {
   maxThreads?: number;
   /** Per month; a Price's `core_hours` metadata overrides it (a promotion), see entitlements.ts. */
   coreHoursPerMonth?: number;
-  slotsPerUnit?: number;
+  extraSlots?: number;
   hostedShares?: boolean;
 }
 
 export const CATALOG: Readonly<Record<string, Product>> = Object.fromEntries(PLANS.flatMap((plan) => termsOf(plan).map((term) => [
   lookupKey(plan, term),
-  { kind: plan.kind, term, maxThreads: plan.maxThreads, coreHoursPerMonth: plan.coreHoursPerMonth, slotsPerUnit: plan.slotsPerUnit, hostedShares: plan.hostedShares },
+  { kind: plan.kind, term, maxThreads: plan.maxThreads, coreHoursPerMonth: plan.coreHoursPerMonth, extraSlots: plan.extraSlots, hostedShares: plan.hostedShares },
 ])));
 
 /** Unknown keys (and prototype names like "toString") grant nothing. */

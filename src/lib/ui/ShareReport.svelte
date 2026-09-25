@@ -41,7 +41,7 @@
     <div class="segmented">
       <button class:active={mode === 'detailed'} aria-pressed={mode === 'detailed'} onclick={() => { mode = 'detailed'; void generate() }}>Detailed link</button>
       <button class:active={mode === 'compact'} aria-pressed={mode === 'compact'} onclick={() => { mode = 'compact'; void generate() }}>Chat link · 2,000 max</button>
-      {#if import.meta.env.VITE_FEATURE_ACCOUNTS === true && hostedOk}<button class:active={mode === 'hosted'} aria-pressed={mode === 'hosted'} onclick={() => { mode = 'hosted'; void generate() }}>Hosted link</button>{/if}
+      {#if import.meta.env.VITE_FEATURE_ACCOUNTS === true && hostedOk}<button class:active={mode === 'hosted'} aria-pressed={mode === 'hosted'} onclick={() => { mode = 'hosted'; void generate() }}>Hosted link</button>{:else if import.meta.env.VITE_FEATURE_ACCOUNTS === true}{#await import('../account/PremiumPill.svelte') then m}<span class="hosted-pill"><m.default text="Hosted link" title="Short report links come with every Frostsim Cloud plan" onclick={() => { open = false }} /></span>{/await}{/if}
     </div>
     {#if import.meta.env.VITE_FEATURE_ACCOUNTS === true && mode === 'hosted'}
       <p class="small muted">Uploads the full report, with the engine's own report file of the last run, to Frostsim. Anyone with the link can open it until you revoke it under Account.</p>
@@ -63,4 +63,4 @@
   </div>
   {#snippet footer()}<button onclick={() => open = false}>Close</button><button class="primary" disabled={!link || working} onclick={copy}>{copied ? 'Copied' : 'Copy link'}</button>{/snippet}
 </Dialog>
-<style>textarea { width: 100%; margin-top: 8px; overflow-wrap: anywhere; font-size: 12px; } .active { background: var(--accent-soft); color: var(--accent); }</style>
+<style>textarea { width: 100%; margin-top: 8px; overflow-wrap: anywhere; font-size: 12px; } .active { background: var(--accent-soft); color: var(--accent); } .hosted-pill { display: inline-flex; align-items: center; padding: 0 8px; }</style>

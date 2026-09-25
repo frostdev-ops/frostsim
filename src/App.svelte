@@ -170,7 +170,9 @@
     { id: 'gear', label: 'Gear', icon: Gem, routes: ['gear', 'droptimizer', 'crests'] },
     { id: 'reports', label: 'Reports', icon: ChartColumn, routes: ['reports'] },
   ]
-  const group = $derived(NAV_GROUPS.find((g) => g.routes.includes(router.name)))
+  /** #/plans (CLAUDE.md D15) is a page outside the tool groups, like the `s/` alias; compiled out without VITE_FEATURE_ACCOUNTS. */
+  const onPlans = $derived(import.meta.env.VITE_FEATURE_ACCOUNTS === true && router.raw === 'plans')
+  const group = $derived(onPlans ? undefined : NAV_GROUPS.find((g) => g.routes.includes(router.name)))
   // A group link returns to the tool last used in that group this session.
   const lastInGroup = $state<Record<string, RouteName>>({})
   $effect(() => { if (group) lastInGroup[group.id] = router.name })
@@ -298,7 +300,7 @@
       {#if navOpen}<X size={18} />{:else}<Menu size={18} />{/if}
     </button>
 
-    <nav id="main-nav" class="groups" class:open={navOpen} aria-label="Tools" use:navIndicator={router.name}>
+    <nav id="main-nav" class="groups" class:open={navOpen} aria-label="Tools" use:navIndicator={onPlans ? router.raw : router.name}>
       {#each NAV_GROUPS as g (g.id)}
         {@const target = lastInGroup[g.id] ?? g.routes[0]}
         <div class="group" class:multi={g.routes.length > 1}>
@@ -307,7 +309,7 @@
             href={href(target)}
             data-track
             data-on={group === g ? '' : undefined}
-            aria-current={router.name === target ? 'page' : undefined}
+            aria-current={!onPlans && router.name === target ? 'page' : undefined}
           >
             <g.icon size={16} strokeWidth={2.1} aria-hidden="true" />
             <span>{g.label}</span>
@@ -337,7 +339,12 @@
         </a>
       {/if}
       {#if character}
-        <a class="who" href={href('character')} data-class={character.className}>
+        <!-- Account builds: the chip opens the account dialog (Character stays one click away in the nav). -->
+        <a class="who" href={href('character')} data-class={character.className} onclick={(e) => {
+          if (import.meta.env.VITE_FEATURE_ACCOUNTS !== true) return
+          e.preventDefault()
+          void import('./lib/account/state.svelte').then((m) => (m.account.open = true))
+        }}>
           <span class="who-mark" aria-hidden="true">{(stored?.label ?? character.name).slice(0, 1).toUpperCase()}</span>
           <span class="who-text">
             <span class="truncate">{stored?.label ?? character.name}</span>
@@ -531,6 +538,8 @@
   <svelte:boundary onerror={(e) => trace('screen.render-failed', { message: e instanceof Error ? e.message : String(e) })}>
     {#if router.raw.startsWith('r/') || (import.meta.env.VITE_FEATURE_ACCOUNTS === true && router.raw.startsWith('s/'))}
       <SharedReport />
+    {:else if import.meta.env.VITE_FEATURE_ACCOUNTS === true && onPlans}
+      {#await import('./lib/account/Plans.svelte') then m}<m.default />{/await}
     {:else if lazyLoader}
       {#await lazyLoader()}
         <p class="muted small">Loading&hellip;</p>
@@ -547,6 +556,9 @@
       {/await}
     {:else}
       <Screen />
+      {#if import.meta.env.VITE_FEATURE_ACCOUNTS === true && router.name === 'character'}
+        {#await import('./lib/account/CharacterSlots.svelte') then m}<m.default />{/await}
+      {/if}
     {/if}
 
     {#snippet failed(error, reset)}
@@ -583,6 +595,7 @@
   <p>
     Frostsim is free software under the <a href="https://www.gnu.org/licenses/gpl-3.0.html" rel="license">GPL-3.0</a>:
     <a href={SOURCE_URL} target="_blank" rel="noopener noreferrer">source code on GitHub</a>
+    {#if import.meta.env.VITE_FEATURE_ACCOUNTS === true}· <a href="#/plans">Frostsim Cloud</a>{/if}
     · <a href="https://github.com/simulationcraft/simc" target="_blank" rel="noopener noreferrer">SimulationCraft source</a>
   </p>
 </footer>
@@ -731,7 +744,13 @@
 
     {#if import.meta.env.VITE_FEATURE_ACCOUNTS === true}
       {#await import('./lib/account/placement.svelte') then p}
-        {#if p.placement.entitled}
+        {#if !p.placement.entitled}
+          <fieldset class="stack-sm">
+            <legend class="small">Run on</legend>
+            <p class="xs muted row-tight">Sims run in this browser. Cloud plans run them on our servers.
+              {#await import('./lib/account/PremiumPill.svelte') then m}<m.default text="See plans" />{/await}</p>
+          </fieldset>
+        {:else}
           <fieldset class="stack-sm">
             <legend class="small">Run on</legend>
             <div class="segmented" role="radiogroup" aria-label="Run on">

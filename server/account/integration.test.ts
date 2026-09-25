@@ -23,8 +23,8 @@ import { usedCoreSeconds } from './usage';
 const PG = process.env.FROSTSIM_TEST_PG;
 const REDIS = process.env.FROSTSIM_TEST_REDIS;
 const MIGRATIONS = new URL('./migrations/', import.meta.url);
-const VERSIONS = ['001_init', '002_indexes'];
-const TABLES = ['audit_log', 'cloud_characters', 'compute_jobs', 'identities', 'integration_grants', 'schema_migrations',
+const VERSIONS = ['001_init', '002_indexes', '003_character_history'];
+const TABLES = ['audit_log', 'character_sims', 'character_snapshots', 'cloud_characters', 'compute_jobs', 'identities', 'integration_grants', 'schema_migrations',
   'sessions', 'shares', 'stripe_events', 'subscriptions', 'users', 'workers'];
 
 // Commands fail fast until the connection is up (enableOfflineQueue false), so wait for it before asserting.
@@ -68,7 +68,7 @@ describe.skipIf(!PG)('postgres integration (needs FROSTSIM_TEST_PG)', () => {
     expect(await sql`select version from schema_migrations order by 1`).toEqual(VERSIONS.map((version) => ({ version })));
   });
 
-  it('applies 002 on top of a 001 database: the sweep index, one identity per provider, the stripe_updated comment', async () => {
+  it('applies 002 and 003 on top of a 001 database: the sweep index, one identity per provider, the stripe_updated comment, history', async () => {
     const v1 = `${schema}_v1`;
     const only001 = mkdtempSync(join(tmpdir(), 'frostsim-001-'));
     copyFileSync(new URL('001_init.sql', MIGRATIONS), join(only001, '001_init.sql'));
@@ -80,7 +80,14 @@ describe.skipIf(!PG)('postgres integration (needs FROSTSIM_TEST_PG)', () => {
       const [u1] = await db`insert into users (display_name) values ('A') returning id`;
       const [u2] = await db`insert into users (display_name) values ('B') returning id`;
       await db`insert into identities (provider, subject, user_id) values ('battlenet', '1', ${u1.id}), ('discord', '2', ${u1.id}), ('discord', '3', ${u2.id})`;
-      expect(await migrate(db, MIGRATIONS)).toEqual(['002_indexes']);
+      expect(await migrate(db, MIGRATIONS)).toEqual(['002_indexes', '003_character_history']);
+      // 003: a 001 character gains history columns, and jobs accept the patch source beside the old ones.
+      const [c] = await db`insert into cloud_characters (user_id, label, raw, bytes) values (${u1.id}, 'Main', 'x', 1) returning id, patch_build, who`;
+      expect(c).toMatchObject({ patch_build: null, who: null });
+      for (const source of ['web', 'patch']) {
+        await db`insert into compute_jobs (user_id, source, pack_id, threads, character_id) values (${u1.id}, ${source}, 'p', 1, ${c.id})`;
+      }
+      await expect(db`insert into compute_jobs (user_id, source, pack_id, threads) values (${u1.id}, 'other', 'p', 1)`).rejects.toThrow();
 
       const indexes = await db`select indexname, indexdef from pg_indexes where schemaname = ${v1} and indexname in ('compute_jobs_running', 'identities_user_provider') order by 1`;
       expect(indexes.map((r) => r.indexname)).toEqual(['compute_jobs_running', 'identities_user_provider']);

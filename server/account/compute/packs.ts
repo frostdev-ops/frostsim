@@ -8,7 +8,7 @@ import { PACK_ID, nativeEngine } from './native';
 
 const DEFAULT_INDEX = '/opt/frostsim/engine-updates/engine-versions.json';
 
-interface PackEntry { id?: unknown; compat?: unknown; commitDate?: unknown; publishedAt?: unknown }
+interface PackEntry { id?: unknown; compat?: unknown; commitDate?: unknown; publishedAt?: unknown; clientDataVersion?: unknown }
 
 const text = (v: unknown) => (typeof v === 'string' ? v : '');
 // Same order as scripts/update-engines.mjs and the browser's pickEngine.
@@ -28,6 +28,13 @@ function releaseCompat(env: Record<string, string | undefined>): string | null {
 /** ENGINE_INDEX_PATH and ENGINE_COMPAT are read from `env` (the process environment by default). config.ts lists them only so the
  *  startup report names them. Null when the index is unreadable or no pack of this compat has a native build. */
 export async function defaultPack(app: Pick<AppCtx, 'config' | 'r2' | 'redis' | 'log'>, env: Record<string, string | undefined> = process.env): Promise<string | null> {
+  return (await defaultPackInfo(app, env))?.id ?? null;
+}
+
+/** defaultPack with the game build its data comes from (the index's clientDataVersion), for patch re-sims. */
+export async function defaultPackInfo(
+  app: Pick<AppCtx, 'config' | 'r2' | 'redis' | 'log'>, env: Record<string, string | undefined> = process.env,
+): Promise<{ id: string; build: string | null } | null> {
   const compat = releaseCompat(env);
   if (!compat) return null;
   let index: { packs?: unknown };
@@ -39,6 +46,6 @@ export async function defaultPack(app: Pick<AppCtx, 'config' | 'r2' | 'redis' | 
   const packs = (Array.isArray(index?.packs) ? (index.packs as PackEntry[]) : [])
     .filter((p) => p?.compat === compat && typeof p.id === 'string' && PACK_ID.test(p.id))
     .sort(newestFirst);
-  for (const pack of packs) if (await nativeEngine(app, pack.id as string)) return pack.id as string;
+  for (const pack of packs) if (await nativeEngine(app, pack.id as string)) return { id: pack.id as string, build: text(pack.clientDataVersion) || null };
   return null;
 }

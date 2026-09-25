@@ -35,7 +35,7 @@ const RESTARTED = 'Frostsim Cloud: the server running this job stopped; restarti
 export const SCOPE_LOCK = 0x636d7075;
 
 type App = Pick<AppCtx, 'config' | 'sql' | 'redis' | 'r2' | 'log' | 'now'>;
-export type Source = 'web' | 'discord' | 'loothing';
+export type Source = 'web' | 'discord' | 'loothing' | 'patch';
 export type Refusal = { ok: false; status: 400 | 402 | 403 | 409 | 429 | 503; code: string; message: string };
 
 export const resultKey = (id: string) => `results/${id}.json.gz`;

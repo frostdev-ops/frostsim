@@ -3,6 +3,7 @@
 
 import type { Db } from './db';
 import { CATALOG, product } from './catalog';
+import { FREE_SLOTS, UNLIMITED_SLOTS } from '../../src/lib/account/plans';
 
 export interface SubscriptionItem {
   lookupKey: string;
@@ -97,7 +98,7 @@ const units = (quantity: number) => (Number.isFinite(quantity) && quantity > 0 ?
 export function entitlementsFor(subs: readonly Subscription[], comp: Comp, now: Date): Entitlements {
   let coreSeconds = comp.coreSeconds;
   let maxThreads = comp.maxThreads ?? 0;
-  let slots = 0;
+  let extraSlots = 0;
   let hostedShares = false;
   // ponytail: with two compute subscriptions the first one's period meters both; add per-subscription windows if that case appears.
   let computePeriod: Period | null = null;
@@ -107,7 +108,8 @@ export function entitlementsFor(subs: readonly Subscription[], comp: Comp, now: 
     if (!live(sub, now)) continue;
     for (const item of sub.items) {
       const p = product(item.lookupKey);
-      if (!p) continue;
+      // A zero or negative quantity grants nothing at all, slots and hosted links included.
+      if (!p || !units(item.quantity)) continue;
       const hours = Number(item.coreHours) > 0 ? Number(item.coreHours) : (p.coreHoursPerMonth ?? 0);
       const seconds = hours * 3600 * units(item.quantity);
       if (sub.guildId) {
@@ -124,11 +126,13 @@ export function entitlementsFor(subs: readonly Subscription[], comp: Comp, now: 
         maxThreads = Math.max(maxThreads, p.maxThreads ?? 0);
         computePeriod ??= periodOf(sub, now);
       }
-      if (p.kind === 'slots') slots += (p.slotsPerUnit ?? 0) * units(item.quantity);
+      extraSlots = Math.max(extraSlots, p.extraSlots ?? 0);
       if (p.hostedShares) hostedShares = true;
     }
   }
   if (coreSeconds > 0 && maxThreads < 1) maxThreads = SMALLEST_COMPUTE_THREADS;
+  // Every account has FREE_SLOTS; the best plan adds its extra, up to the unlimited ceiling (plans do not stack).
+  const slots = Math.min(UNLIMITED_SLOTS, FREE_SLOTS + extraSlots);
   return { coreSeconds, maxThreads, slots, hostedShares, ...(computePeriod ?? calendarMonth(now)), guilds: [...guilds.values()] };
 }
 

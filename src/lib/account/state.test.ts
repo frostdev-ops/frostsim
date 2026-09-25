@@ -8,7 +8,7 @@ import type { StoredCharacter } from '../store/records'
 vi.mock('../simc/job', () => ({ setRemoteEngine: vi.fn() }))
 vi.mock('../simc/remote', () => ({ createRemoteEngine: vi.fn() }))
 vi.stubGlobal('localStorage', { getItem: () => null })
-const { cloudDownload, go, guildOf } = await import('./state.svelte')
+const { cloudDownload, currentPlans, go, guildOf } = await import('./state.svelte')
 const { parseAddonExport } = await import('../import/character')
 
 const RAW = readFileSync(new URL('../../../tests/fixtures/addon-export-demonology.simc', import.meta.url), 'utf8')
@@ -16,6 +16,15 @@ const stored = (id: string, raw = RAW): StoredCharacter => ({ id, label: `local 
 const token = (payload: unknown) => `${Buffer.from(JSON.stringify(payload)).toString('base64url')}.${'m'.repeat(43)}`
 
 afterEach(() => vi.unstubAllGlobals())
+
+describe('currentPlans', () => {
+  it('names the plans of live personal subscriptions only', () => {
+    const sub = (status: string, lookupKeys: string[], guildId: string | null = null) => ({ id: status, status, lookupKeys, periodEnd: null, guildId })
+    const billing = { subscriptions: [sub('active', ['compute_m_yearly']), sub('canceled', ['compute_l_monthly']), sub('active', ['discord_guild_monthly'], '1'.repeat(18))] }
+    expect([...currentPlans(billing as never)]).toEqual(['compute_m'])
+    expect(currentPlans(null).size).toBe(0)
+  })
+})
 
 describe('go', () => {
   it('navigates only to https Stripe checkout and billing portal addresses', () => {

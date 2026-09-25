@@ -19,30 +19,48 @@ export const TERMS: Readonly<Record<Term, TermSpec>> = {
 
 export interface Plan {
   id: string
+  /** Tier name. Every compute tier is shown with its cores and hours, so the name can be flavour. */
   title: string
   blurb: string
-  kind: 'compute' | 'slots' | 'shares' | 'guild'
+  kind: 'compute' | 'guild'
   maxThreads?: number
   /** Allowance per month, whatever the term: a yearly plan is metered in monthly slices (entitlements.ts). */
   coreHoursPerMonth?: number
-  slotsPerUnit?: number
+  /** Cloud character slots on top of FREE_SLOTS; UNLIMITED_SLOTS means unlimited (a fair-use ceiling). */
+  extraSlots?: number
   hostedShares?: boolean
   /** US dollars per term. Absent: the price is set on Stripe only and shows at checkout. */
   usd?: Partial<Record<Term, number>>
 }
 
+/** Cloud character slots every signed-in account has, paid or not. */
+export const FREE_SLOTS = 1
+
+/** "Unlimited" slots: a fair-use ceiling, because each save stores up to 64 KiB and a truly unlimited count lets one account fill
+ *  the database. Shown as unlimited (slotsLabel). */
+export const UNLIMITED_SLOTS = 100
+
+export const slotsLabel = (slots: number) => (slots >= UNLIMITED_SLOTS ? 'Unlimited' : String(slots))
+
+/** Whether another character fits, and what to tell the user when it does not. Characters over the limit (after a downgrade)
+ *  stay; they can be downloaded, replaced or deleted, and adding waits for a free slot. */
+export function slotStatus(used: number, slots: number): { canAdd: boolean; note: string } {
+  if (used < slots) return { canAdd: true, note: slots >= UNLIMITED_SLOTS ? '' : `${slots - used} of ${slots} slot${slots === 1 ? '' : 's'} free.` }
+  const more = slots >= UNLIMITED_SLOTS ? '' : ' or choose a plan with more slots'
+  if (used === slots) return { canAdd: false, note: `All ${slots} slot${slots === 1 ? ' is' : 's are'} in use. Replace or delete a character to save another${more}.` }
+  return { canAdd: false, note: `You have ${used} characters and ${slots} slot${slots === 1 ? '' : 's'}. They stay, and you can download, replace or delete them; delete ${used - slots + 1} to save a new one${more}.` }
+}
+
 export const PLANS: readonly Plan[] = [
   // ponytail: L runs 16 threads while the Hetzner project cannot create 32 dedicated cores; raise it with HCLOUD_SERVER_TYPE.
-  { id: 'compute_s', title: 'Compute S', blurb: 'Cloud runs, hosted links included', kind: 'compute', maxThreads: 8, coreHoursPerMonth: 20, hostedShares: true,
+  { id: 'compute_s', title: 'Frostbite', blurb: 'For your main', kind: 'compute', maxThreads: 8, coreHoursPerMonth: 20, extraSlots: 1, hostedShares: true,
     usd: { monthly: 3, semiannual: 16, yearly: 29 } },
-  { id: 'compute_m', title: 'Compute M', blurb: 'Cloud runs, hosted links included', kind: 'compute', maxThreads: 16, coreHoursPerMonth: 50, hostedShares: true,
+  { id: 'compute_m', title: 'Glacier', blurb: 'For your main and alts', kind: 'compute', maxThreads: 16, coreHoursPerMonth: 50, extraSlots: 2, hostedShares: true,
     usd: { monthly: 5, semiannual: 27, yearly: 48 } },
-  { id: 'compute_l', title: 'Compute L', blurb: 'Cloud runs, hosted links included', kind: 'compute', maxThreads: 16, coreHoursPerMonth: 120, hostedShares: true,
+  { id: 'compute_l', title: 'Avalanche', blurb: 'For the whole roster', kind: 'compute', maxThreads: 16, coreHoursPerMonth: 120, extraSlots: UNLIMITED_SLOTS, hostedShares: true,
     usd: { monthly: 10, semiannual: 54, yearly: 96 } },
-  { id: 'discord_guild', title: 'Discord server', blurb: 'A shared pool for /sim in one Discord server', kind: 'guild', maxThreads: 8, coreHoursPerMonth: 80,
+  { id: 'discord_guild', title: 'Guild Cloud', blurb: '/sim for everyone in your Discord server', kind: 'guild', maxThreads: 8, coreHoursPerMonth: 80,
     usd: { monthly: 10, semiannual: 54, yearly: 96 } },
-  { id: 'slots_5', title: 'Character slots', blurb: 'Five cloud character slots', kind: 'slots', slotsPerUnit: 5, usd: {} },
-  { id: 'shares_plus', title: 'Hosted links', blurb: 'Full-detail report links without cloud runs', kind: 'shares', hostedShares: true, usd: {} },
 ]
 
 /** Terms a plan is sold on: every term with a price, and always monthly (priced on Stripe when absent here). */
@@ -63,6 +81,12 @@ export function approxSims(coreSeconds: number): number {
   if (n < 10) return Math.floor(n)
   const step = 10 ** (Math.floor(Math.log10(n)) - 1)
   return Math.floor(n / step) * step
+}
+
+/** What a term costs per month, for comparing terms: $29 a year is $2.42 a month. */
+export function perMonth(plan: Plan, term: Term): number | undefined {
+  const price = plan.usd?.[term]
+  return price === undefined ? undefined : Math.round((price / TERMS[term].months) * 100) / 100
 }
 
 /** Percent saved against paying monthly for the same months, or 0. */
