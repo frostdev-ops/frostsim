@@ -83,6 +83,18 @@ class Merge(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, 'targetError'):
             carry(summary, details, ('bad', dict(old[1], targetError=0.2), {}))
 
+    def test_an_older_run_without_aoe_rows_still_merges(self):
+        old, new = source('old', 1000, 10), source('new', 1100, 10)
+        spec = new[1]['specs'][0]
+        spec['aoe'] = True
+        spec['runs'][0]['aoe'] = {'dps': [1500, 10], 'prio': [900, 10]}
+        new[2]['MID2_Mage_Frost']['runs'][0]['aoe'] = player(1500, [1500], [])
+        summary, details, _ = merge([old, new])
+        out = summary['specs'][0]
+        self.assertEqual((out['aoe'], out['runs'][0]['aoe']['dps'], out['runs'][0]['base']['dps'][0]),
+                         (True, [1500, 10], 1050))
+        self.assertEqual(details['MID2_Mage_Frost']['runs'][0]['aoe']['collected_data']['dps']['mean'], 1500)
+
 
 if __name__ == '__main__':
     unittest.main()

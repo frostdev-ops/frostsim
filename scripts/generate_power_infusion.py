@@ -70,6 +70,8 @@ PI_TIMED = 'external_buffs.power_infusion=0/120/240/360'
 # sc_hunter.cpp:9011 (default on), sc_rogue.cpp:11308 (default off). No generic equivalent
 # exists: simc cannot make an arbitrary APL ignore extra targets.
 FUNNEL_TOGGLES = ['max_prio_damage', 'priority_rotation']
+# Second-row AoE talent builds for specs whose upstream profile is a single-target build.
+AOE_BUILDS = json.loads((ROOT / 'scripts/pi-aoe-builds.json').read_text())['builds']
 # Buffs the drawer draws as bands over the damage timeline.
 BANDS = ('power_infusion', 'bloodlust')
 
@@ -103,13 +105,16 @@ def pick_profiles(files: list[tuple[str, str]]) -> list[dict]:
             'profile': s['profile'],
             'piTiming': 'apl' if 'invoke_external_buff,name=power_infusion' in text else 'cooldown',
             'funnel': next((t for t in FUNNEL_TOGGLES if re.search(rf'\b{t}\b', text)), None),
+            'aoe': s['profile'] in AOE_BUILDS,
         })
     return out
 
 
 def variants(spec: dict, targets: int) -> list[str]:
-    """base and pi always; funnel specs add their funnel-on pair above one target."""
-    return ['base', 'pi'] + (['funnel', 'funnelPi'] if spec['funnel'] and targets > 1 else [])
+    """base and pi always; above one target, funnel specs add their funnel-on pair and AoE-build specs their AoE pair."""
+    multi = targets > 1
+    return (['base', 'pi'] + (['funnel', 'funnelPi'] if spec['funnel'] and multi else [])
+            + (['aoe', 'aoePi'] if spec.get('aoe') and multi else []))
 
 
 def run_args(spec: dict, targets: int, variant: str, *, target_error: float, threads: int,
@@ -120,7 +125,10 @@ def run_args(spec: dict, targets: int, variant: str, *, target_error: float, thr
     # Explicit off, so a default-on toggle (hunters) still gets a spread baseline.
     if toggle:
         args.append(f"{toggle}={1 if variant in ('funnel', 'funnelPi') else 0}")
-    if variant in ('pi', 'funnelPi'):
+    if variant in ('aoe', 'aoePi'):
+        build = AOE_BUILDS[spec['profile']]['3' if targets < 5 else '5']
+        args += [f'{k}={v}' for k, v in build.items()]  # after the profile, so they replace its lines
+    if variant in ('pi', 'funnelPi', 'aoePi'):
         args.append(PI_POOL if spec['piTiming'] == 'apl' else PI_TIMED)
     return args + [
         f'fight_style={FIGHT_STYLE}',
@@ -490,7 +498,8 @@ class System:
 
 COLOR = 'NO_COLOR' not in os.environ
 TRACK = '38;5;237'  # empty bar cells
-VARIANT_LABEL = {'base': 'no PI', 'pi': 'PI', 'funnel': 'funnel', 'funnelPi': 'funnel + PI'}
+VARIANT_LABEL = {'base': 'no PI', 'pi': 'PI', 'funnel': 'funnel', 'funnelPi': 'funnel + PI',
+                 'aoe': 'AoE build', 'aoePi': 'AoE build + PI'}
 
 
 def clock(secs: float) -> str:

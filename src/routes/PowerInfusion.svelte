@@ -38,6 +38,10 @@
     funnel:
       "SimulationCraft's priority-target option (max_prio_damage for hunters, priority_rotation for " +
       'Subtlety) switched on. The "(funnel option off)" row is the same spec with it off. No other spec has one.',
+    aoe:
+      "The same character with an AoE talent build instead of the upstream profile's single-target build. " +
+      "The builds are bloodmallet's (bloodytools, 3-target build at 2 to 4 targets, 5-target build from 5); " +
+      'gear and action list are unchanged. The "(default build)" row is the upstream profile.',
     total: "Power Infusion's extra damage summed over every target, with its 95% margin of error.",
     main: "Power Infusion's extra damage on the main target only, with its 95% margin of error.",
     toMain: "Share of Power Infusion's extra damage that lands on the main target. 100% is a perfect funnel.",
@@ -137,8 +141,8 @@
                 type="button" class="expand" aria-expanded={open.has(r.id)} aria-controls="pi-drawer-{r.id}"
                 aria-label="{open.has(r.id) ? 'Hide' : 'Show'} details for {r.label}" onclick={() => toggle(r.id)}
               ><ChevronRight size={14} aria-hidden="true" /></button>
-              {#if r.funnel}
-                <Tip text={EXPLAIN.funnel}><span class="name hint">{r.label}</span></Tip>
+              {#if r.funnel || r.aoe}
+                <Tip text={r.funnel ? EXPLAIN.funnel : EXPLAIN.aoe}><span class="name hint">{r.label}</span></Tip>
               {:else}
                 <span class="name">{r.label}</span>
               {/if}
@@ -233,6 +237,8 @@
       <dd>{EXPLAIN.noise}</dd>
       <dt><span class="term">(funnel option on)</span></dt>
       <dd>{EXPLAIN.funnel}</dd>
+      <dt><span class="term">(AoE build)</span></dt>
+      <dd>{EXPLAIN.aoe}</dd>
       <dt>
         <span class="track sample" aria-hidden="true">
           <span class="fill"><span class="to-main"></span><span class="others"></span></span>

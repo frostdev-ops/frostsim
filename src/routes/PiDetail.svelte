@@ -80,7 +80,7 @@
     {#if !run}
       <p class="muted small">No detail at {targets} targets.</p>
     {:else}
-      {@const v = piDetailView(run, row.funnel)}
+      {@const v = piDetailView(run, row.funnel ? 'funnel' : row.aoe ? 'aoe' : 'base')}
       {@const pie = donut(v.abilities)}
       {@const bars = gains(v.abilities, allGains)}
       <div class="tiles">

@@ -42,7 +42,7 @@ from pathlib import Path
 from generate_power_infusion import DETAIL, OUT, ROOT, _num
 
 META = ('schemaVersion', 'engine', 'profiles', 'fightStyle', 'targetError')
-VARIANTS = ('base', 'pi', 'funnel', 'funnelPi')
+VARIANTS = ('base', 'pi', 'funnel', 'funnelPi', 'aoe', 'aoePi')
 
 
 def read(source: str, rel: str | None = None):
@@ -157,13 +157,15 @@ def merge(sources: list) -> tuple[dict, dict, list]:
                 if not got:
                     continue
                 run[v] = {m: combine([g[m] for g in got]) for m in ('dps', 'prio')}
-                reports = [(e[2]['runs'][i][v], e[1]['runs'][i][v]['dps'][1]) for e in with_detail]
+                reports = [(e[2]['runs'][i][v], e[1]['runs'][i][v]['dps'][1]) for e in with_detail
+                           if v in e[1]['runs'][i] and v in e[2]['runs'][i]]
                 if reports:
                     drun[v] = blend([p for p, _ in reports], [1 / sd ** 2 if sd > 0 else 1 for _, sd in reports])
             runs.append(run)
             detail_runs.append(drun)
+        # A run from before AoE builds existed lacks 'aoe'; it still counts for base and pi.
         out_specs.append(dict({k: head[k] for k in ('name', 'profile', 'piTiming', 'funnel')},
-                              runs=runs, sources=len(entries)))
+                              aoe=any(e[1].get('aoe') for e in entries), runs=runs, sources=len(entries)))
         if with_detail:
             out_details[head['profile']] = dict(meta, profile=head['profile'], runs=detail_runs,
                                                 sources=len(with_detail))
