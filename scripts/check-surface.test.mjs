@@ -54,7 +54,7 @@ describe('checkSurface', () => {
   it('passes on the current tree', () => {
     const { failures, notes } = checkSurface({ root: repo, dist: fixtureDist() });
     expect(failures).toEqual([]);
-    expect(notes).toContain(`${hasDeploy ? 8 : 6} guarded files match the baseline`);
+    expect(notes).toContain(`${hasDeploy ? 10 : 8} guarded files match the baseline`);
   });
 
   it('fails on a changed, missing or new guarded file', () => {

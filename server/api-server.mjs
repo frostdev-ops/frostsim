@@ -3,8 +3,9 @@
 // Credentials come from the process environment, never from argv, logs or the webroot. Startup prints NAMES ONLY.
 // Binds to loopback; the fronting web server is the only caller.
 
+import { readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { onRequest } from '../functions/api/[[path]].ts';
+import { characterIndex, onRequest } from '../functions/api/[[path]].ts';
 
 const PORT = Number(process.env.FROSTSIM_API_PORT || 3011);
 const HOST = process.env.FROSTSIM_API_HOST || '127.0.0.1';
@@ -22,6 +23,29 @@ const env = {};
 for (const key of ENV_KEYS) {
   if (process.env[key] !== undefined) env[key] = process.env[key];
 }
+
+// The shared character search index survives restarts as one JSON file (the unit's StateDirectory). Unset: memory only.
+const INDEX_PATH = process.env.CHARACTER_INDEX_PATH;
+if (INDEX_PATH) {
+  try {
+    characterIndex.load(JSON.parse(readFileSync(INDEX_PATH, 'utf8')));
+  } catch (err) {
+    if (err?.code !== 'ENOENT') console.error(`api: character index not loaded (${err?.name ?? 'Error'})`);
+  }
+}
+
+/** Writes the index when it changed: temp file, then rename, so a crash mid-write keeps the last good file. */
+function saveIndex() {
+  if (!INDEX_PATH || !characterIndex.dirty) return;
+  try {
+    writeFileSync(`${INDEX_PATH}.tmp`, JSON.stringify(characterIndex));
+    renameSync(`${INDEX_PATH}.tmp`, INDEX_PATH);
+    characterIndex.dirty = false;
+  } catch (err) {
+    console.error(`api: character index not saved (${err?.code ?? err?.name ?? 'Error'})`);
+  }
+}
+setInterval(saveIndex, 5 * 60_000).unref();
 
 /** node:http request -> WHATWG Request; origin is a placeholder, so a spoofed Host header cannot affect URL parsing. */
 function toRequest(req) {
@@ -70,6 +94,7 @@ server.listen(PORT, HOST, () => {
   const present = ENV_KEYS.filter((k) => env[k] !== undefined);
   const missing = ['BLIZZARD_CLIENT_ID', 'BLIZZARD_CLIENT_SECRET'].filter((k) => env[k] === undefined);
   console.log(`frostsim api on http://${HOST}:${PORT}`);
+  console.log(`  character index: ${INDEX_PATH ? `${characterIndex.size} entries, saved to ${INDEX_PATH}` : 'memory only'}`);
   console.log(`  credentials present: ${present.join(', ') || '(none)'} — names only, values never printed`);
   if (missing.length) {
     console.log(`  WARNING: ${missing.join(' and ')} missing — /api/wow/health will report unconfigured`);
@@ -78,6 +103,7 @@ server.listen(PORT, HOST, () => {
 
 for (const signal of ['SIGTERM', 'SIGINT']) {
   process.on(signal, () => {
+    saveIndex();
     server.close(() => process.exit(0));
     // Don't let hung upstream keep unit alive through restart.
     setTimeout(() => process.exit(0), 5000).unref();

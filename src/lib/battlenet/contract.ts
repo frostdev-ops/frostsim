@@ -268,6 +268,29 @@ export function characterProfilePath(region: Region, realm: string, name: string
   return `${API_BASE}/character-profile/${region}/${encodeURIComponent(realm)}/${encodeURIComponent(name)}`;
 }
 
+/** A character the Armory confirmed, as the search index keeps it: public profile fields only. */
+export interface CharacterMatch {
+  region: Region;
+  name: string;
+  /** Display name (en_US) and official slug. */
+  realm: string;
+  realmSlug: string;
+  /** simc class option key, e.g. `deathknight`. */
+  className: string;
+  spec: string | null;
+  level: number | null;
+  itemLevel: number | null;
+  /** When the Armory last confirmed it, epoch ms. */
+  seenAt: number;
+}
+
+/** `{ matches: CharacterMatch[] }`: characters in `region` whose name starts with `q`, in `realm` when given. */
+export function characterSearchPath(region: Region, q: string, realm = ''): string {
+  const params = new URLSearchParams({ region, q });
+  if (realm) params.set('realm', realm);
+  return `${API_BASE}/character-search?${params}`;
+}
+
 /** `{ realms: { name, slug }[] }`, the region's realms sorted by display name. */
 export function realmsPath(region: Region): string {
   return `${API_BASE}/realms${query({ region })}`;

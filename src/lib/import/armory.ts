@@ -7,7 +7,7 @@
 // item's own secondary split. The addon export stays the exact path; add stats= per item if armory results drift.
 
 /** Blizzard class id -> simc class option key (util.cpp translate_class_id). */
-const CLASSES: Record<number, string> = {
+export const CLASSES: Record<number, string> = {
   1: 'warrior', 2: 'paladin', 3: 'hunter', 4: 'rogue', 5: 'priest', 6: 'deathknight', 7: 'shaman',
   8: 'mage', 9: 'warlock', 10: 'monk', 11: 'druid', 12: 'demonhunter', 13: 'evoker',
 }

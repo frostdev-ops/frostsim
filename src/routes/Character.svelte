@@ -25,7 +25,7 @@
   import { rememberTalentDraft } from '../lib/talents.svelte'
   import { clearSetup, sendSetup } from '../lib/handoff.svelte'
   import { RefreshCw, Plus } from '@lucide/svelte'
-  import { ALLOWED_REGIONS, characterProfilePath, type Region } from '../lib/battlenet/contract'
+  import { ALLOWED_REGIONS, type Region } from '../lib/battlenet/contract'
 
   const DRAFT_KEY = 'frostsim.draft'
 
@@ -41,7 +41,6 @@
   let updateId = $state<string | null>(null)
   let saving = $state(false)
   let lookup = $state({ region: 'us' as Region, realm: '', name: '' })
-  let lookingUp = $state(false)
 
   const character = $derived(activeCharacter())
   const stored = $derived(activeStored())
@@ -87,25 +86,6 @@
     if (c?.server && c.name) {
       const region = (ALLOWED_REGIONS as readonly string[]).includes(c.region ?? '') ? c.region as Region : lookup.region
       lookup = { region, realm: c.server, name: c.name }
-    }
-  }
-
-  /** Armory lookup: the proxy answers with profile text in the addon's shape, which then imports like a paste. */
-  async function lookUp(): Promise<void> {
-    const realm = lookup.realm.trim()
-    const name = lookup.name.trim()
-    if (!realm || !name) { parseError = 'Enter the realm and the character name.'; return }
-    lookingUp = true
-    parseError = ''
-    try {
-      const res = await fetch(characterProfilePath(lookup.region, realm, name))
-      const body = await res.json().catch(() => null) as { profile?: string; message?: string } | null
-      if (!res.ok || !body?.profile) { parseError = body?.message ?? 'The Armory lookup failed. Try again shortly.'; return }
-      pasted = body.profile
-    } catch {
-      parseError = 'The Armory lookup failed. Check your connection and try again.'
-    } finally {
-      lookingUp = false
     }
   }
 
@@ -241,17 +221,10 @@
 </script>
 
 {#snippet exportField()}
-  <form class="lookup" onsubmit={(e) => { e.preventDefault(); void lookUp() }}>
-    <label class="field"><span>Region</span>
-      <select bind:value={lookup.region} disabled={lookingUp || saving}>
-        {#each ALLOWED_REGIONS as r}<option value={r}>{r.toUpperCase()}</option>{/each}
-      </select>
-    </label>
-    <label class="field"><span>Realm</span><input type="text" bind:value={lookup.realm} placeholder="Area 52" autocomplete="off" disabled={lookingUp || saving} /></label>
-    <label class="field"><span>Character</span><input type="text" bind:value={lookup.name} placeholder="Name" autocomplete="off" disabled={lookingUp || saving} /></label>
-    <button type="submit" disabled={lookingUp || saving || !lookup.realm.trim() || !lookup.name.trim()}>{lookingUp ? 'Looking up…' : 'Look up'}</button>
-  </form>
-  <p class="xs muted">From the Armory: equipped gear and active talents, as of the character's last logout. Paste a <kbd>/simc</kbd> export instead for bags, Great Vault and exact catalyst stats.</p>
+  <!-- Lazy: the lookup is the import dialog's alone, and the entry set stays as it was. -->
+  {#await import('../lib/ui/ArmoryLookup.svelte') then m}
+    <m.default bind:lookup disabled={saving} onprofile={(text: string) => (pasted = text)} onerror={(message: string) => (parseError = message)} />
+  {/await}
   <label class="field">
     <span>SimC output</span>
     <textarea rows="10" aria-label="SimC output" bind:value={pasted} oninput={() => parseError = ''} spellcheck="false" disabled={saving}
@@ -417,8 +390,6 @@
   .equipment-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 20px; }
   .loadout-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
   @media (max-width: 760px) { .equipment-grid, .loadout-grid { grid-template-columns: 1fr; } }
-  .lookup { display: grid; grid-template-columns: 5rem minmax(0, 1fr) minmax(0, 1fr) auto; gap: 8px; align-items: end; }
-  @media (max-width: 560px) { .lookup { grid-template-columns: 5rem minmax(0, 1fr); } }
   .import-preview { display: grid; gap: 4px; padding: 12px 16px; border-left: 3px solid var(--accent); background: var(--surface-2); border-radius: 4px; }
   footer { border-top: 1px solid var(--border); padding-top: var(--s3); }
 </style>
