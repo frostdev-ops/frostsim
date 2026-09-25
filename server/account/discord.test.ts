@@ -18,7 +18,8 @@ import type { JobView } from './compute/queue';
 import { findPreset } from '../../src/lib/simc/presets';
 import { validateReport } from '../../src/lib/store/report-share';
 import { report as REPORT } from '../../src/lib/simc/__fixtures__/protocol.mjs';
-import { ACCURACIES, COMMANDS, FIGHTS, register } from '../../scripts/discord-register-commands.mjs';
+import { ACCURACIES, COMMANDS, FIGHTS, REGIONS, register } from '../../scripts/discord-register-commands.mjs';
+import { ALLOWED_REGIONS } from '../../src/lib/battlenet/contract';
 
 const mocks = vi.hoisted(() => ({
   enqueueJob: vi.fn(), cancelJob: vi.fn(), jobView: vi.fn(), resultBytes: vi.fn(), defaultPack: vi.fn(), storeShare: vi.fn(),
@@ -116,7 +117,14 @@ let edits: { url: string; body: { content: string; allowed_mentions: unknown } }
 /** Discord's answer to each edit in turn, then 200. 0 = unreachable; 429 carries Retry-After: 5. */
 let editStatuses: number[];
 let logs: string[];
+/** The Battle.net proxy's answer to /sim's Armory lookups, and the URLs it was asked for. */
+let armory: { status: number; body: unknown };
+let armoryCalls: string[];
 const fakeFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  if (String(input).startsWith('http://127.0.0.1:3011/')) {
+    armoryCalls.push(String(input));
+    return new Response(JSON.stringify(armory.body), { status: armory.status });
+  }
   edits.push({ url: String(input), body: JSON.parse(String(init?.body)) });
   const status = editStatuses.shift() ?? 200;
   if (status === 0) throw new TypeError('fetch failed');
@@ -164,6 +172,8 @@ beforeEach(() => {
   edits = [];
   editStatuses = [];
   logs = [];
+  armory = { status: 200, body: { profile: RAW, name: 'Testlock', realmSlug: 'area-52' } };
+  armoryCalls = [];
   mocks.defaultPack.mockResolvedValue(PACK);
   mocks.enqueueJob.mockResolvedValue({ ok: true, id: JOB });
   mocks.cancelJob.mockResolvedValue(true);
@@ -246,6 +256,34 @@ describe('/sim', () => {
     expect(edits[0].body).toEqual({ content: expect.stringContaining('Queued **Main\\_Warlock** on Hectic Add Cleave'), allowed_mentions: { parse: [] } });
   });
 
+  it('looks up an Armory character by name, realm and region through the Battle.net proxy', async () => {
+    const { redis } = fakeRedis();
+    await call(redis, sim([
+      { name: 'name', type: 3, value: 'Testlock' }, { name: 'realm', type: 3, value: 'Area 52' }, { name: 'region', type: 3, value: 'eu' },
+    ]));
+    await vi.waitFor(() => expect(edits).toHaveLength(1));
+    expect(armoryCalls).toEqual(['http://127.0.0.1:3011/api/wow/character-profile/eu/Area%2052/Testlock']);
+    const [, job] = mocks.enqueueJob.mock.calls[0];
+    expect(job).toMatchObject({ userId: USER, source: 'discord', characterId: undefined });
+    expect(job.request.profile).toContain('warlock=');
+    expect(edits[0].body.content).toContain('Queued **Testlock-area-52** on Patchwerk');
+  });
+
+  it('refuses a half-given or failed Armory lookup, and a /sim with no character at all, without enqueueing', async () => {
+    const { redis } = fakeRedis();
+    armory = { status: 404, body: { ok: false, message: 'No character by that name was found on that realm.' } };
+    await call(redis, sim([{ name: 'name', type: 3, value: 'Testlock' }]));
+    await call(redis, sim([{ name: 'name', type: 3, value: 'Nobody' }, { name: 'realm', type: 3, value: 'Area 52' }]));
+    await call(redis, sim([]));
+    await vi.waitFor(() => expect(edits).toHaveLength(3));
+    const said = edits.map((e) => e.body.content).sort();
+    expect(said[0]).toBe('An Armory lookup needs both the character name and the realm.');
+    expect(said[1]).toBe('No character by that name was found on that realm.');
+    expect(said[2]).toMatch(/^Pick one of your cloud characters, or give a name and realm/);
+    expect(armoryCalls).toEqual(['http://127.0.0.1:3011/api/wow/character-profile/us/Area%2052/Nobody']);
+    expect(mocks.enqueueJob).not.toHaveBeenCalled();
+  });
+
   it('accepts a typed label, defaults to Patchwerk at standard accuracy, and uses a guild pool only when the guild has one', async () => {
     const { redis } = fakeRedis();
     await call(redis, sim([{ name: 'character', type: 3, value: 'alt priest' }], inGuild(ALICE, POOL_GUILD)));
@@ -301,7 +339,7 @@ describe('/sim', () => {
     ['an accuracy /sim does not offer', () => {}, [{ name: 'character', value: CHAR }, { name: 'accuracy', value: 'constructor' }], /Pick a fight/],
     ['an inherited accuracy key', () => {}, [{ name: 'character', value: CHAR }, { name: 'accuracy', value: '__proto__' }], /Pick a fight/],
     ['another user\'s character', () => {}, [{ name: 'character', value: 'Main Rogue' }], /No cloud character.*\/#\/account/],
-    ['no character given', () => {}, [], /No cloud character/],
+    ['no character given', () => {}, [], /^Pick one of your cloud characters, or give a name and realm/],
     ['a fight /sim does not offer', () => {}, [{ name: 'character', value: CHAR }, { name: 'fight', value: 'dungeon-route' }], /Pick a fight/],
     ['no engine pack', () => mocks.defaultPack.mockResolvedValue(null), [{ name: 'character', value: CHAR }], /no engine build ready/],
     ...([
@@ -620,13 +658,15 @@ describe('command registration (scripts/discord-register-commands.mjs)', () => {
   });
 
   it('names the options the handler reads and keeps within Discord\'s limits', () => {
-    const sim = COMMANDS[0] as { options: { name: string; choices?: unknown[] }[] };
-    expect(sim.options.map((o: { name: string }) => o.name)).toEqual(['character', 'fight', 'accuracy']);
-    expect(sim.options[0]).toMatchObject({ required: true, autocomplete: true });
+    const sim = COMMANDS[0] as { options: { name: string; required?: boolean; choices?: unknown[] }[] };
+    expect(sim.options.map((o: { name: string }) => o.name)).toEqual(['character', 'name', 'realm', 'region', 'fight', 'accuracy']);
+    expect(sim.options[0]).toMatchObject({ autocomplete: true });
+    expect(sim.options.some((o) => o.required)).toBe(false);
+    expect(REGIONS.map(([r]: string[]) => r)).toEqual([...ALLOWED_REGIONS]);
     expect(COMMANDS.find((c: { name: string }) => c.name === 'frostsim')).toMatchObject({ default_member_permissions: '32', options: [{ type: 1, name: 'subscribe' }] });
     const texts = JSON.stringify(COMMANDS).match(/"(description|name)":"[^"]*"/g) ?? [];
     for (const t of texts) expect(t.length).toBeLessThan(120);
-    expect(sim.options[1].choices?.length).toBeLessThanOrEqual(25);
+    expect(sim.options[4].choices?.length).toBeLessThanOrEqual(25);
   });
 
   it('registers only commands the handler answers', async () => {

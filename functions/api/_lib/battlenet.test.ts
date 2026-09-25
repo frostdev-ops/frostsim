@@ -634,4 +634,37 @@ describe('character media', () => {
     const res = await call(`/api/wow/character-render/us/grizzly-hills/${uniqueName()}/avatar`);
     expect(res.status).toBe(502);
   });
+
+  it('answers an Armory lookup with profile text, resolving a realm typed without spaces', async () => {
+    const seen: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      seen.push(url);
+      if (url.includes('oauth.battle.net')) return new Response(JSON.stringify({ access_token: 't', expires_in: 3600 }));
+      if (url.includes('/data/wow/realm/index')) return new Response(JSON.stringify(REALMS));
+      const path = new URL(url).pathname;
+      if (path.endsWith('/equipment')) {
+        return new Response(JSON.stringify({ equipped_items: [{ slot: { type: 'HEAD' }, item: { id: 5 }, bonus_list: [1, 2] }] }));
+      }
+      if (path.endsWith('/specializations')) return new Response(JSON.stringify({ specializations: [] }));
+      if (path.endsWith('/profile/wow/character/grizzly-hills/armorytest')) {
+        return new Response(JSON.stringify({ name: 'Armorytest', level: 90, character_class: { id: 8 }, race: { id: 1 },
+          active_spec: { id: 64, name: 'Frost' }, realm: { name: 'Grizzly Hills', slug: 'grizzly-hills' } }));
+      }
+      return new Response('{}', { status: 404 });
+    }));
+    const res = await call('/api/wow/character-profile/us/grizzlyhills/Armorytest');
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.profile).toMatch(/^mage="Armorytest"$/m);
+    expect(body.profile).toMatch(/^head=,id=5,bonus_id=1\/2$/m);
+    expect(seen.filter((u) => u.includes('/profile/')).every((u) => u.includes('namespace=profile-us&locale=en_US'))).toBe(true);
+
+    const missing = await call('/api/wow/character-profile/us/Grizzly%20Hills/Nobody');
+    expect(missing.status).toBe(404);
+    expect((await missing.json()).message).toMatch(/logged in recently/);
+    const realm = await call('/api/wow/character-profile/us/NotARealm/Armorytest');
+    expect(realm.status).toBe(400);
+    expect((await realm.json()).field).toBe('realm');
+  });
 });

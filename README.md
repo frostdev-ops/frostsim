@@ -25,7 +25,7 @@ With a [Frostsim Cloud](#frostsim-cloud-this-branch) plan, runs go to native Sim
 
 This `cloud` branch is the app at [sim.frostdev.io](https://sim.frostdev.io). The [`main`](https://github.com/frostdev-ops/frostsim/tree/main) branch is the browser-only app, with no server route that can start a simulation, and a default build of this branch (without `VITE_FEATURE_ACCOUNTS=1`) is the same.
 
-Paste your `/simc` addon export, pick what you want to know, and run it.
+Paste your `/simc` addon export or look a character up on the Armory by name and realm, pick what you want to know, and run it.
 
 ## What you can simulate
 

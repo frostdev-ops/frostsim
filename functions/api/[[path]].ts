@@ -1,4 +1,5 @@
-// Frostsim's Battle.net proxy: item data, media, tooltips, icons; credential-owning (P13.2-P13.3); never profiles, names, custom script, sim input.
+// Frostsim's Battle.net proxy: item data, media, tooltips, icons, Armory lookups; credential-owning (P13.2-P13.3). A lookup sends Blizzard
+// only region, realm and name; no addon export, custom script or sim input ever passes through here.
 
 import {
   ALLOWED_REGIONS, API_BASE, BATTLENET_CONTRACT_VERSION, BLIZZARD_ATTRIBUTION,
@@ -12,6 +13,7 @@ import {
   withTimeout, type Credentials, type Env,
 } from './_lib/security';
 import { BlizzardClient, UpstreamError, buildTooltip, parseItem, parseMedia, parseSet, provenance } from './_lib/upstream';
+import { ArmoryError, armoryProfile } from '../../src/lib/import/armory';
 
 import spellIcons from '../../src/lib/battlenet/generated/spell-icons.json';
 
@@ -20,6 +22,8 @@ let client: BlizzardClient | null = null;
 let clientKey = '';
 const mediaLimiter = new RateLimiter(120, 20);
 const raiderCache = new TtlCache<{ score: number | null; progression: { name: string; summary: string }[] }>(500);
+/** Armory data follows the game within minutes of a logout; a lookup should not show gear from yesterday. */
+const PROFILE_TTL_S = 300;
 
 function clientFor(credentials: Credentials, env: Env): BlizzardClient {
   // Rebuild only if the credential or cache policy actually changed.
@@ -85,6 +89,7 @@ export async function onRequest(context: PagesContext): Promise<Response> {
       case 'spell-icon': return await handleIcon(idSegment, region, credentials, env, 'spell');
       case 'raider-profile': return await handleRaiderProfile(segments);
       case 'character-media': return await handleCharacterMedia(segments, region, credentials, env);
+      case 'character-profile': return await handleCharacterProfile(segments, region, credentials, env);
       case 'character-render': return await handleCharacterRender(segments, credentials, env);
       case 'journal-tile': return await handleJournalTile(idSegment, region, credentials, env);
       default: return errorResponse('not_found', 404, 'No such endpoint.');
@@ -297,11 +302,17 @@ async function realmSlugs(
   for (const r of realms) {
     if (typeof r?.slug !== 'string') continue;
     map.set(r.slug.toLowerCase(), r.slug);
-    if (typeof r?.name === 'string') map.set(normalizeRealmKey(r.name), r.slug);
+    if (typeof r?.name === 'string') {
+      map.set(normalizeRealmKey(r.name), r.slug);
+      // Typed without spaces or punctuation, as players often write it: "area52", "kelthuzad".
+      map.set(compactRealmKey(r.name), r.slug);
+    }
   }
   realmSlugCache.set(region, map);
   return map; // Cached.
 }
+
+const compactRealmKey = (raw: string) => raw.toLowerCase().replace(/[\s'’-]/g, '');
 
 /** Loose key for matching user-typed realm text against a real realm name. */
 function normalizeRealmKey(raw: string): string {
@@ -336,7 +347,7 @@ async function resolveCharacter(
   if (!slugs) return { failure: 'unavailable', message: safeMessage('upstream_unavailable') };
 
   // Exact slug or display name, never guessed slugification.
-  const slug = slugs.get(realmRaw.toLowerCase()) ?? slugs.get(normalizeRealmKey(realmRaw)) ?? null;
+  const slug = slugs.get(realmRaw.toLowerCase()) ?? slugs.get(normalizeRealmKey(realmRaw)) ?? slugs.get(compactRealmKey(realmRaw)) ?? null;
   if (!slug) {
     return {
       failure: 'unknown_realm',
@@ -425,6 +436,36 @@ async function handleCharacterMedia(
     assetKeys: [...assets.keys()],
   };
   return json(body, 200, cacheSeconds(env));
+}
+
+/** Armory lookup: the character's equipped gear and active talents as simc profile text (src/lib/import/armory.ts). */
+async function handleCharacterProfile(
+  segments: string[], fallbackRegion: Region, credentials: Credentials, env: Env,
+): Promise<Response> {
+  const resolved = await resolveCharacter(segments, fallbackRegion, credentials, env);
+  if ('failure' in resolved) {
+    return resolved.failure === 'unavailable'
+      ? errorResponse('upstream_unavailable', 502, resolved.message)
+      : errorResponse('invalid_request', 400, resolved.message, resolved.failure === 'unknown_realm' ? 'realm' : 'name');
+  }
+  const wait = mediaLimiter.take();
+  if (wait !== null) return errorResponse('rate_limited', 429, safeMessage('rate_limited'), undefined, wait);
+
+  const { region, realmSlug, name } = resolved;
+  const base = `/profile/wow/character/${realmSlug}/${encodeURIComponent(name.toLowerCase())}`;
+  const get = (path: string) => clientFor(credentials, env).get<unknown>(base + path, region, 'en_US', 'profile', PROFILE_TTL_S);
+  try {
+    const [summary, equipment, specializations] = await Promise.all([get(''), get('/equipment'), get('/specializations')]);
+    const profile = armoryProfile({ region, summary, equipment, specializations }, new Date());
+    return json({ ok: true, contractVersion: BATTLENET_CONTRACT_VERSION, region, realmSlug, name, profile }, 200, PROFILE_TTL_S);
+  } catch (err) {
+    if (err instanceof ArmoryError) return errorResponse('not_found', 404, err.message);
+    if (err instanceof UpstreamError && err.code === 'not_found') {
+      return errorResponse('not_found', 404,
+        'No character by that name was found on that realm. The Armory only has characters that logged in recently.');
+    }
+    throw err;
+  }
 }
 
 /** Portrait bytes. Re-resolves and re-checks; a caller never names a URL. */

@@ -20,6 +20,7 @@ import { usedCoreSeconds } from './usage';
 import { cancelJob, enqueueJob, jobView, resultBytes, type JobView } from './compute/queue';
 import { defaultPack } from './compute/packs';
 import { submitAllowed } from './compute/routes';
+import { ALLOWED_REGIONS, characterProfilePath } from '../../src/lib/battlenet/contract';
 import { parseAddonExport } from '../../src/lib/import/character';
 import type { SimRequest } from '../../src/lib/simc/assemble';
 import { parsePlayerDetail } from '../../src/lib/simc/detail';
@@ -129,6 +130,26 @@ export async function characterRequest(
   return { id: row.id, label: row.label, request: quickRequest(parseAddonExport(row.raw), { presetId, threads: 1, accuracy }) };
 }
 
+/** An Armory character (src/lib/import/armory.ts, through the Battle.net proxy) as a Quick Sim request, or the reason it cannot be. */
+export async function armoryRequest(
+  app: Pick<AppCtx, 'config' | 'fetch'>, region: string, realm: string, name: string, presetId: string, accuracy: Accuracy,
+): Promise<{ label: string; request: SimRequest } | { error: string }> {
+  if (!(ALLOWED_REGIONS as readonly string[]).includes(region)) return { error: 'Pick a region from the list.' };
+  const url = app.config.env.WOW_API_ORIGIN + characterProfilePath(region as (typeof ALLOWED_REGIONS)[number], realm, name);
+  let body: { profile?: unknown; message?: unknown; name?: unknown; realmSlug?: unknown } | null = null;
+  try {
+    const res = await app.fetch(url, { signal: AbortSignal.timeout(15_000) });
+    body = await res.json().catch(() => null);
+  } catch {
+    // Unreachable proxy: the message below.
+  }
+  if (typeof body?.profile !== 'string') {
+    return { error: typeof body?.message === 'string' ? body.message : 'The Armory lookup failed. Try again shortly.' };
+  }
+  const label = `${typeof body.name === 'string' ? body.name : name}-${typeof body.realmSlug === 'string' ? body.realmSlug : realm}`;
+  return { label, request: quickRequest(parseAddonExport(body.profile), { presetId, threads: 1, accuracy }) };
+}
+
 function option(i: Interaction, name: string): string | undefined {
   const value = i.data?.options?.find((o) => o.name === name)?.value;
   return typeof value === 'string' ? value : undefined;
@@ -182,8 +203,21 @@ async function startSim(app: AppCtx, i: Interaction, discordId: string, received
   const level = option(i, 'accuracy') ?? 'standard';
   const accuracy = Object.hasOwn(ACCURACY, level) ? ACCURACY[level] : null;
   if (!SIM_FIGHTS.includes(presetId) || !accuracy) return edit('Pick a fight and an accuracy from the list.');
-  const built = await characterRequest(app.sql, userId, option(i, 'character') ?? '', presetId, accuracy);
-  if (!built) return edit(`No cloud character by that name. Save characters to your Frostsim account: ${manageUrl(app.config)}`);
+  const name = option(i, 'name')?.trim();
+  const realm = option(i, 'realm')?.trim();
+  let built: { id?: string; label: string; request: SimRequest };
+  if (name || realm) {
+    if (!name || !realm) return edit('An Armory lookup needs both the character name and the realm.');
+    const armory = await armoryRequest(app, option(i, 'region') ?? 'us', realm, name, presetId, accuracy);
+    if ('error' in armory) return edit(armory.error);
+    built = armory;
+  } else {
+    const character = option(i, 'character');
+    if (!character) return edit(`Pick one of your cloud characters, or give a name and realm to look one up on the Armory. Save characters at ${manageUrl(app.config)}`);
+    const saved = await characterRequest(app.sql, userId, character, presetId, accuracy);
+    if (!saved) return edit(`No cloud character by that name. Save characters to your Frostsim account: ${manageUrl(app.config)}`);
+    built = saved;
+  }
   const packId = await defaultPack(app);
   if (!packId) return edit('Frostsim Cloud has no engine build ready right now. Try again later.');
   const active = await activePool(app, i.guild_id);

@@ -33,13 +33,19 @@ export const ACCURACIES = [
   ['high', 'High precision (0.05%, about 4x the core-hours)'],
 ];
 
+export const REGIONS = [['us', 'US'], ['eu', 'EU'], ['kr', 'KR'], ['tw', 'TW']];
+
 const choices = (pairs) => pairs.map(([value, name]) => ({ name, value }));
 
 export const COMMANDS = [
   {
-    name: 'sim', type: CHAT_INPUT, description: 'Simulate one of your Frostsim cloud characters in Frostsim Cloud',
+    name: 'sim', type: CHAT_INPUT, description: 'Simulate a saved character, or any character on the Armory, in Frostsim Cloud',
+    // A saved character, or name + realm (+ region) for an Armory lookup; the handler asks for one or the other.
     options: [
-      { type: STRING, name: 'character', description: 'A character saved to your Frostsim account', required: true, autocomplete: true },
+      { type: STRING, name: 'character', description: 'A character saved to your Frostsim account', autocomplete: true },
+      { type: STRING, name: 'name', description: 'Armory lookup: character name', max_length: 24 },
+      { type: STRING, name: 'realm', description: 'Armory lookup: realm, e.g. Area 52', max_length: 100 },
+      { type: STRING, name: 'region', description: 'Armory lookup: region (default US)', choices: choices(REGIONS) },
       { type: STRING, name: 'fight', description: 'Fight style (default Patchwerk)', choices: choices(FIGHTS) },
       { type: STRING, name: 'accuracy', description: 'How precise the result is (default Standard)', choices: choices(ACCURACIES) },
     ],

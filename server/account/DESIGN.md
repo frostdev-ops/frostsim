@@ -37,7 +37,7 @@ Code comments cite this file as `DESIGN.md <id>`: `A` architecture, `C` contract
 **C1 Runtime.** Logic lives in `server/account/**/*.ts` with extensionless imports and is always bundled with
 esbuild (`npm run account:build`, target `node22`, with a `createRequire` banner). Production runs Node 22, so no
 newer API is used. The server may import the pure browser modules it shares: `src/lib/simc/assemble.ts`,
-`options.ts`, `quick-request.ts`, `presets.ts`, `report.ts`, `detail.ts`, `src/lib/import/character.ts`,
+`options.ts`, `quick-request.ts`, `presets.ts`, `report.ts`, `detail.ts`, `src/lib/import/character.ts`, `src/lib/battlenet/contract.ts`,
 `src/lib/store/records.ts`, `src/lib/store/report-share.ts`. Never `job.ts`, `capability.ts`, `versions.ts` or
 anything using `import.meta.env`. `tsconfig.server.json` type-checks `server/**` and `functions/**` in
 `npm run check`.
@@ -194,6 +194,11 @@ Role allowances (`guild-roles.ts`). The payer of a guild subscription sets, at `
 the pool in core-seconds, or no limit, or none. A role set explicitly overrides @everyone (role id = guild id); among a member's
 explicit roles the largest wins; with nothing set a member may use the whole pool. `/sim` reads the member's role ids from the
 signed interaction, and a member past their share runs on their own plan, as when the pool is used up. `/usage` shows the share.
+
+Armory characters. `/sim` takes a saved character, or `name`, `realm` and `region` instead. The account server asks the Battle.net
+proxy (`WOW_API_ORIGIN`, default `http://127.0.0.1:3011`, the only holder of the Blizzard credential) for
+`/api/wow/character-profile/<region>/<realm>/<name>`, which builds the addon-shaped profile with `src/lib/import/armory.ts`.
+The run has no `character_id`.
 The page lists the guild's name and roles through the bot token; managed (bot) roles are left out.
 
 **P6 Account API** (all under `/api/v1`): `auth/providers`, `auth/:provider/start|callback`, `auth/logout`;
