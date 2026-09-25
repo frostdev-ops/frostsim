@@ -302,7 +302,7 @@ describe('EC2 builds', async () => {
     const script = engineJobScript({ node: '26.8.2', emsdk: { version: '6.0.9' } });
     for (const step of ['node-v26.8.2-linux-x64.tar.xz', 'sha256sum -c -', '--branch 6.0.9', 'npm ci --ignore-scripts', 'bash scripts/bootstrap-engine.sh',
       'bash scripts/build-engine.sh\n', 'bash scripts/build-engine.sh --fallback', '--fallback vendor/simc/profiles/MID2/MID2_Mage_Frost.simc',
-      'FROSTSIM_ENGINE=1 npx vitest run src/lib/simc', 'node scripts/generate-presentation.mjs\nnpm run check', 'cp -R public/engine ../out/engine']) expect(script).toContain(step);
+      'FROSTSIM_ENGINE=1 npx vitest run src/lib/simc', 'src/lib/simc\nnpm run check', 'cp -R public/engine ../out/engine']) expect(script).toContain(step);
     expect(script).toContain('CCACHE_COMPILERCHECK=string:emsdk-6.0.9');
     expect(script.indexOf('ccache restored')).toBeLessThan(script.indexOf('build-engine.sh'));
     expect(script.indexOf('-T /root/ccache.tar.zst')).toBeGreaterThan(script.indexOf('cp -R public/engine'));

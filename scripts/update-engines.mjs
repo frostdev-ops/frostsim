@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Engine publisher: newest green upstream `midnight` commit -> validated pack -> index, replaced LAST.
 // One channel. Clients run the newest pack whose `compat` equals their own (scripts/engine-compat.mjs).
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, readdirSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync, readdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { createHash, createHmac } from 'node:crypto';
 import { brotliCompressSync, constants as zlib, gzipSync, zstdCompressSync } from 'node:zlib';
@@ -232,6 +232,14 @@ async function build(candidate, commit, output, id) {
       assert.deepEqual(generatedWeekly.rules, previousWeekly.rules);
       assert.deepEqual(generatedWeekly.weekly, previousWeekly.weekly);
     } catch { throw new GateError('Upstream changed the guided consumable defaults (generate-weekly-defaults.mjs); Frostsim needs an update'); }
+    // Spell names/icons and consumable labels belong to this engine's spell data, so they ship in the pack. Generated here, before
+    // any builder: the type check imports public/presentation.json, and a builder's wago.tools fetch failed (2026-09-25). Its wago.tools
+    // downloads land in the talent layout's persistent cache, so a wago outage blocks only the first build of a client version.
+    const talentCache = join(process.env.FROSTSIM_TALENT_CACHE || join(root, 'build'), `talent-layout-${lock.expected.clientDataWowVersion}`);
+    mkdirSync(talentCache, { recursive: true });
+    mkdirSync(join(work, 'build'), { recursive: true });
+    symlinkSync(talentCache, join(work, 'build', `talent-layout-${lock.expected.clientDataWowVersion}`));
+    run(work, 'node', ['scripts/generate-presentation.mjs']);
     // The compiles, smokes, tests and type check go to an EC2 builder when ec2.env exists; this host is the fallback.
     const builtOn = await remoteEngineBuild(work, lock.toolchain) ?? 'host';
     const remote = builtOn !== 'host';
@@ -242,12 +250,9 @@ async function build(candidate, commit, output, id) {
     const dataEnv = process.env.FROSTSIM_DATA_ENV_FILE;
     if (!dataEnv || !existsSync(dataEnv)) throw new Error('FROSTSIM_DATA_ENV_FILE must name the protected Blizzard data credential file');
     run(work, 'node', [`--env-file=${resolve(dataEnv)}`, 'scripts/catalog/build-catalogs.mjs', '--out', join(work, 'public/engine/catalog')]);
-    const talentCache = join(process.env.FROSTSIM_TALENT_CACHE || join(root, 'build'), `talent-layout-${lock.expected.clientDataWowVersion}`);
     run(work, 'node', [`--env-file=${resolve(dataEnv)}`, 'scripts/generate-talent-layout.mjs',
       '--catalog', join(work, 'public/engine/catalog'), '--out', join(work, 'public/engine/talent-layout'), '--cache', talentCache]);
     seasonData(work, lock, process.env.FROSTSIM_TALENT_CACHE || join(root, 'build'));
-    // Spell names/icons and consumable labels belong to this engine's spell data, so they ship in the pack.
-    run(work, 'node', ['scripts/generate-presentation.mjs']);
     cpSync(join(work, 'public/presentation.json'), join(work, 'public/engine/presentation.json'));
     if (!remote) {
       for (const variant of ['', '--fallback']) {
@@ -741,8 +746,8 @@ export function engineJobScript(toolchain) {
   return [...builderPrelude({ node: toolchain.node, emsdk: toolchain.emsdk.version, compilerCheck: `string:emsdk-${toolchain.emsdk.version}` }),
     'cd ws', 'npm ci --ignore-scripts', 'bash scripts/bootstrap-engine.sh', 'export CMAKE_BUILD_PARALLEL_LEVEL=$(nproc)',
     'bash scripts/build-engine.sh', 'bash scripts/build-engine.sh --fallback', 'mkdir -p ../out', smoke(false), smoke(true),
-    // The type check imports public/presentation.json, which the host otherwise generates after this job; it reads only simc's source.
-    'FROSTSIM_ENGINE=1 npx vitest run src/lib/simc', 'node scripts/generate-presentation.mjs', 'npm run check', 'cp -R public/engine ../out/engine',
+    // The workspace carries public/presentation.json, which the type check imports: the host generates it first.
+    'FROSTSIM_ENGINE=1 npx vitest run src/lib/simc', 'npm run check', 'cp -R public/engine ../out/engine',
     'cd ..', ...SAVE_CACHE, ''].join('\n');
 }
 
