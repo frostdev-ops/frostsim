@@ -62,7 +62,8 @@ export function characterConstraints(
     for (const item of character.equipped) {
       const info = resolved.get(item.instanceId)
       if (!info) continue
-      if (info.itemClass === ITEM_CLASS.ARMOR && info.itemSubclass > 0) {
+      // Cloaks are cloth for every class, so they say nothing about the armor type worn.
+      if (info.itemClass === ITEM_CLASS.ARMOR && info.itemSubclass > 0 && info.inventoryType !== INVTYPE.CLOAK) {
         counts.set(info.itemSubclass, (counts.get(info.itemSubclass) ?? 0) + 1)
       }
       if (item.slot === 'off_hand') {

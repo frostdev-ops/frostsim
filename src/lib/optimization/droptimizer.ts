@@ -1,8 +1,8 @@
 // Droptimizer: what one new item is worth (P09). Catalog sources require verified membership; results are hypothetical gains with no drop probabilities.
 
 import type { Catalog } from '../catalog/catalog';
-import { checkGearSet, isLegal, type CharacterConstraints } from '../catalog/legality';
-import { ITEM_CLASS, ITEM_MOD, classMaskFor } from '../catalog/enums';
+import { checkGearSet, isLegal, type CharacterConstraints, type LegalityIssue } from '../catalog/legality';
+import { INVTYPE, ITEM_CLASS, ITEM_MOD, classMaskFor } from '../catalog/enums';
 import { GEAR_SLOTS, type GearSlot, type ItemInstance, type ResolvedItem } from '../catalog/types';
 import { canonicalize, candidateId, deltaToLines } from './candidates';
 import { compareCandidates, gainOverBaseline, type Gain } from './statistics';
@@ -39,6 +39,8 @@ export interface DroptimizerOptions {
   preferredEnchants?: Partial<Record<GearSlot, number>>;
   /** Crafted stat ids for dropped crafted items; ignored by non-crafted items. */
   preferredCraftedStats?: number[];
+  /** Clock for the loot data's expiry check; the current time when absent. */
+  now?: number;
 }
 
 export interface DropScenario {
@@ -60,7 +62,7 @@ export function buildScenarios(sources: DropSource[], opts: DroptimizerOptions):
 } {
   // Recheck at run time: an open picker can outlive its catalog's season/expiry.
   if (sources.some((s) => s.provenance === 'catalog')) {
-    const loot = opts.catalog.lootSources();
+    const loot = opts.catalog.lootSources(opts.now);
     const current = new Map(loot.sources.map((s) => [s.id, new Set(s.itemIds)]));
     for (const source of sources.filter((s) => s.provenance === 'catalog')) {
       const items = current.get(source.id);
@@ -88,6 +90,10 @@ export function buildScenarios(sources: DropSource[], opts: DroptimizerOptions):
     const item = opts.baselineGear.get(slot) ?? null;
     baselineResolved.set(slot, item ? resolve(item) : null);
   }
+  // A candidate is refused only for what it breaks. Problems the character's own gear already has (a socket the catalog cannot see,
+  // say) are not the candidate's, and counting them would refuse every candidate.
+  const issueKey = (i: LegalityIssue) => `${i.code}|${i.slot}|${i.message}`;
+  const baselineIssues = new Set(checkGearSet(baselineResolved, opts.character).map(issueKey));
 
   for (const source of sources) {
     for (const candidateItem of source.items) {
@@ -116,7 +122,7 @@ export function buildScenarios(sources: DropSource[], opts: DroptimizerOptions):
 
         const fullSet = new Map(baselineResolved);
         for (const [s, i] of gear) fullSet.set(s, i ? resolve(i) : null);
-        if (!isLegal(checkGearSet(fullSet, opts.character))) continue;
+        if (!isLegal(checkGearSet(fullSet, opts.character).filter((i) => !baselineIssues.has(issueKey(i))))) continue;
 
         const delta: CandidateDelta = { gear };
         const canonical = canonicalize(delta);
@@ -418,6 +424,8 @@ export function usabilityReasons(item: ResolvedItem, criteria: UsabilityCriteria
   const ARMOR_SUBCLASSES = [1, 2, 3, 4];
   if (
     item.itemClass === ITEM_CLASS.ARMOR &&
+    // Every cloak is cloth and every class wears one.
+    item.inventoryType !== INVTYPE.CLOAK &&
     ARMOR_SUBCLASSES.includes(item.itemSubclass) &&
     criteria.armorSubclass != null &&
     item.itemSubclass !== criteria.armorSubclass

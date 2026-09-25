@@ -72,10 +72,11 @@ export function checkItemForSlot(
     issues.push({ code: 'unverifiable', slot, advisory: true, message: `race restriction for ${item.name} could not be checked` });
   }
 
-  // Armor class for real armor pieces only.
+  // Armor class for real armor pieces only. Every cloak is cloth (item subclass 1) and every class wears one.
   const ARMOR_CLASSES = [1, 2, 3, 4];
   if (
     item.itemClass === ITEM_CLASS.ARMOR &&
+    item.inventoryType !== INVTYPE.CLOAK &&
     ARMOR_CLASSES.includes(item.itemSubclass) &&
     character.armorSubclass !== null &&
     item.itemSubclass !== character.armorSubclass
