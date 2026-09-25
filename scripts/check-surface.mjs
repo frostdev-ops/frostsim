@@ -10,12 +10,12 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 
-// sha256 at e384736; the three functions/api files since the Armory lookup (character-profile). deploy/ is excluded from git (.git/info/exclude), so `git diff` cannot guard it and a hash must.
+// sha256 at e384736; the three functions/api files since the Armory lookup (character-profile, realms). deploy/ is excluded from git (.git/info/exclude), so `git diff` cannot guard it and a hash must.
 // A deliberate change to one of these files updates its hash here in the same change.
 export const BASELINE = {
   'server/api-server.mjs': '37456479a8a7714a04c581ef3284222641eb1117bd37d17b5950542da4d852b5',
-  'functions/api/[[path]].ts': 'e1990b36e6320c3c38266c000e6f3b7dcb8efedfacdfb95a2d358d4326163ad1',
-  'functions/api/_lib/battlenet.test.ts': '2ae996639b94b8442c5e4c219ecd9a3fb8dc845ea8691b653345a5f38801166a',
+  'functions/api/[[path]].ts': '576e3e3c5fea3c23fe424389fb03c539eaae7b52a1014c158b2bdd666d20d603',
+  'functions/api/_lib/battlenet.test.ts': '90c57cb964329c4eed33e20887abcbda39a0579fd5bd7977ecd77f8826782872',
   'functions/api/_lib/security.ts': '9c8960a2b4284a09c577decf7fad6607a2ec5907ef95e3f50e6ce84e6da17f18',
   'functions/api/_lib/upstream.ts': 'aabe952a193f843a4d2773dea425393ad6c793a64d4daed34ef76465c6fe32ac',
   'deploy/systemd/frostsim-api.service': 'be69a3a4ea918cc56bd6b3ccf337b27a4d0248b2fa275818dc463926160036fd',

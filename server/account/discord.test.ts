@@ -284,6 +284,14 @@ describe('/sim', () => {
     expect(mocks.enqueueJob).not.toHaveBeenCalled();
   });
 
+  it('with share, says the result will be posted in the channel and remembers who ran it', async () => {
+    const { store, redis } = fakeRedis();
+    await call(redis, sim([{ name: 'character', type: 3, value: CHAR }, { name: 'share', type: 5, value: true }], inGuild(ALICE, GUILD)));
+    await vi.waitFor(() => expect(store.has(`discord:${JOB}`)).toBe(true));
+    expect(edits[0].body.content).toMatch(/The result will be posted in this channel\.$/);
+    expect(JSON.parse(store.get(`discord:${JOB}`)!.value)).toMatchObject({ share: ALICE });
+  });
+
   it('accepts a typed label, defaults to Patchwerk at standard accuracy, and uses a guild pool only when the guild has one', async () => {
     const { redis } = fakeRedis();
     await call(redis, sim([{ name: 'character', type: 3, value: 'alt priest' }], inGuild(ALICE, POOL_GUILD)));
@@ -403,6 +411,32 @@ describe('character autocomplete', () => {
   });
 });
 
+describe('realm autocomplete', () => {
+  const typing = (value: string, region?: string) => ({ type: 4, user: { id: STRANGER }, data: { name: 'sim', options: [
+    { name: 'realm', type: 3, value, focused: true }, ...(region ? [{ name: 'region', type: 3, value: region }] : []),
+  ] } });
+
+  it('offers the chosen region\'s realms matching what is typed, prefix matches first, valued by slug', async () => {
+    armory = { status: 200, body: { realms: [
+      { name: 'Aerie Peak', slug: 'aerie-peak' }, { name: 'Area 52', slug: 'area-52' }, { name: 'Kel\'Thuzad', slug: 'kelthuzad' },
+      { name: 'Sargeras', slug: 'sargeras' },
+    ] } };
+    expect((await call(null, typing('ar', 'eu'))).body.data.choices).toEqual([
+      { name: 'Area 52', value: 'area-52' }, { name: 'Sargeras', value: 'sargeras' },
+    ]);
+    expect(armoryCalls).toEqual(['http://127.0.0.1:3011/api/wow/realms?region=eu']);
+    expect((await call(null, typing(''))).body.data.choices).toHaveLength(4);
+    expect(armoryCalls[1]).toBe('http://127.0.0.1:3011/api/wow/realms?region=us');
+  });
+
+  it('offers nothing when the proxy fails or the region is not one it serves', async () => {
+    armory = { status: 502, body: { ok: false } };
+    expect((await call(null, typing('ar'))).body.data.choices).toEqual([]);
+    expect((await call(null, typing('ar', 'cn'))).body.data.choices).toEqual([]);
+    expect(armoryCalls).toHaveLength(1);
+  });
+});
+
 describe('/link and /usage', () => {
   it('/link gives an unlinked user the Discord sign-in link and a linked one the account link, ephemerally', async () => {
     const unlinked = await call(null, command('link', [], { user: { id: STRANGER } }));
@@ -501,6 +535,39 @@ describe('reply task', () => {
     await run(done());
     expect(edits[0].body.content).not.toContain('Full report');
     expect(logs.at(-1)).toBe(`discord: hosted share for job ${JOB} failed (Error: R2 PUT failed with status 500)`);
+  });
+
+  it('posts a shared result as a new public message naming the invoker, and keeps a failure in the ephemeral reply', async () => {
+    world.subscriptions[USER] = [];
+    const shared = (exp = NOW + 600_000) => JSON.stringify({ token: TOKEN, label: 'Main_Warlock', presetId: 'patchwerk', exp, share: ALICE });
+    const { store, redis } = fakeRedis();
+    world.discordJobs = [JOB];
+    store.set(`discord:${JOB}`, { value: shared(), ttl: TOKEN_TTL_S });
+    mocks.jobView.mockResolvedValue(done());
+    await task.run(deps(redis));
+    expect(edits).toEqual([{ url: `https://discord.com/api/v10/webhooks/${APP_ID}/${TOKEN}`,
+      body: { content: `<@${ALICE}>'s sim: **Main\\_Warlock** on Patchwerk: **223,974 DPS** ± 2,138 (95%)`, allowed_mentions: { parse: [] } } }]);
+    expect(store.size).toBe(0);
+
+    edits = [];
+    store.set(`discord:${JOB}`, { value: shared(), ttl: TOKEN_TTL_S });
+    mocks.jobView.mockResolvedValue(done({ status: 'failed', summary: undefined, error: 'boom' }));
+    await task.run(deps(redis));
+    expect(edits[0].url).toMatch(/\/messages\/@original$/);
+  });
+
+  it('retries a shared result that Discord refused with a 5xx as the public message again', async () => {
+    world.subscriptions[USER] = [];
+    const { store, redis } = fakeRedis();
+    world.discordJobs = [JOB];
+    store.set(`discord:${JOB}`, { value: JSON.stringify({ token: TOKEN, label: 'Main_Warlock', presetId: 'patchwerk', exp: NOW + 600_000, share: ALICE }), ttl: TOKEN_TTL_S });
+    mocks.jobView.mockResolvedValue(done());
+    editStatuses = [503];
+    await task.run(deps(redis));
+    expect(JSON.parse(store.get(`discord:${JOB}`)!.value)).toMatchObject({ public: true });
+    await task.run(deps(redis));
+    expect(edits.map((e) => e.url)).toEqual([`https://discord.com/api/v10/webhooks/${APP_ID}/${TOKEN}`, `https://discord.com/api/v10/webhooks/${APP_ID}/${TOKEN}`]);
+    expect(store.size).toBe(0);
   });
 
   it('reports a failed or cancelled run', async () => {
@@ -659,8 +726,10 @@ describe('command registration (scripts/discord-register-commands.mjs)', () => {
 
   it('names the options the handler reads and keeps within Discord\'s limits', () => {
     const sim = COMMANDS[0] as { options: { name: string; required?: boolean; choices?: unknown[] }[] };
-    expect(sim.options.map((o: { name: string }) => o.name)).toEqual(['character', 'name', 'realm', 'region', 'fight', 'accuracy']);
+    expect(sim.options.map((o: { name: string }) => o.name)).toEqual(['character', 'name', 'realm', 'region', 'fight', 'accuracy', 'share']);
     expect(sim.options[0]).toMatchObject({ autocomplete: true });
+    expect(sim.options[2]).toMatchObject({ autocomplete: true });
+    expect(sim.options[6]).toMatchObject({ type: 5 });
     expect(sim.options.some((o) => o.required)).toBe(false);
     expect(REGIONS.map(([r]: string[]) => r)).toEqual([...ALLOWED_REGIONS]);
     expect(COMMANDS.find((c: { name: string }) => c.name === 'frostsim')).toMatchObject({ default_member_permissions: '32', options: [{ type: 1, name: 'subscribe' }] });

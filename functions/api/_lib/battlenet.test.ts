@@ -672,4 +672,14 @@ describe('character media', () => {
     expect(realm.status).toBe(400);
     expect((await realm.json()).field).toBe('realm');
   });
+
+  it('lists realms by display name, reading a locale map by its en_US spelling', async () => {
+    spyFetch();
+    const res = await call('/api/wow/realms?region=us');
+    expect(res.status).toBe(200);
+    expect((await res.json()).realms).toEqual([
+      { name: 'Area 52', slug: 'area-52' }, { name: 'Azjol-Nerub', slug: 'azjolnerub' },
+      { name: "Drak'Tharon", slug: 'draktharon' }, { name: 'Grizzly Hills', slug: 'grizzly-hills' },
+    ]);
+  });
 });

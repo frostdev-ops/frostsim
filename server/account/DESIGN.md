@@ -198,7 +198,10 @@ signed interaction, and a member past their share runs on their own plan, as whe
 Armory characters. `/sim` takes a saved character, or `name`, `realm` and `region` instead. The account server asks the Battle.net
 proxy (`WOW_API_ORIGIN`, default `http://127.0.0.1:3011`, the only holder of the Blizzard credential) for
 `/api/wow/character-profile/<region>/<realm>/<name>`, which builds the addon-shaped profile with `src/lib/import/armory.ts`.
-The run has no `character_id`.
+The run has no `character_id`. The `realm` option autocompletes from the proxy's `/api/wow/realms?region=` for the chosen region.
+
+Shared results. Replies are ephemeral, except that `/sim share:true` posts a finished result (DPS, and the hosted link when the
+invoker's plan has one) to the channel as a new follow-up message naming the invoker. Refusals, failures and cancels stay ephemeral.
 The page lists the guild's name and roles through the bot token; managed (bot) roles are left out.
 
 **P6 Account API** (all under `/api/v1`): `auth/providers`, `auth/:provider/start|callback`, `auth/logout`;

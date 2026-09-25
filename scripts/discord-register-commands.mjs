@@ -10,6 +10,7 @@ const API = 'https://discord.com/api/v10';
 const CHAT_INPUT = 1;
 const SUB_COMMAND = 1;
 const STRING = 3;
+const BOOLEAN = 5;
 const MANAGE_GUILD = String(1 << 5);
 const GUILD_CONTEXT = 0;
 
@@ -44,10 +45,11 @@ export const COMMANDS = [
     options: [
       { type: STRING, name: 'character', description: 'A character saved to your Frostsim account', autocomplete: true },
       { type: STRING, name: 'name', description: 'Armory lookup: character name', max_length: 24 },
-      { type: STRING, name: 'realm', description: 'Armory lookup: realm, e.g. Area 52', max_length: 100 },
+      { type: STRING, name: 'realm', description: 'Armory lookup: realm, e.g. Area 52', max_length: 100, autocomplete: true },
       { type: STRING, name: 'region', description: 'Armory lookup: region (default US)', choices: choices(REGIONS) },
       { type: STRING, name: 'fight', description: 'Fight style (default Patchwerk)', choices: choices(FIGHTS) },
       { type: STRING, name: 'accuracy', description: 'How precise the result is (default Standard)', choices: choices(ACCURACIES) },
+      { type: BOOLEAN, name: 'share', description: 'Post the finished result in this channel for everyone (default: only you see it)' },
     ],
   },
   { name: 'link', type: CHAT_INPUT, description: 'Link this Discord account to Frostsim' },

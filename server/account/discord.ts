@@ -1,6 +1,7 @@
 // The standalone Discord bot as an HTTP interactions endpoint (CLAUDE.md D15; DESIGN.md A8, P2, P3, P5): Ed25519
 // over the exact raw body, then /sim (deferred, run as a cloud job, answered by editing the reply), /link, /usage and
-// /frostsim subscribe. Every reply is ephemeral: it may name the invoker's characters, allowance or a checkout link. A Discord user
+// /frostsim subscribe. Every reply is ephemeral: it may name the invoker's characters, allowance or a checkout link. The one
+// exception is a finished /sim share:true, posted to the channel as a new message at the invoker's request. A Discord user
 // is a Frostsim user through identities(provider 'discord', subject = user id); nothing here reads another user's rows.
 
 import { createPublicKey, verify as verifySignature } from 'node:crypto';
@@ -20,7 +21,7 @@ import { usedCoreSeconds } from './usage';
 import { cancelJob, enqueueJob, jobView, resultBytes, type JobView } from './compute/queue';
 import { defaultPack } from './compute/packs';
 import { submitAllowed } from './compute/routes';
-import { ALLOWED_REGIONS, characterProfilePath } from '../../src/lib/battlenet/contract';
+import { ALLOWED_REGIONS, characterProfilePath, realmsPath } from '../../src/lib/battlenet/contract';
 import { parseAddonExport } from '../../src/lib/import/character';
 import type { SimRequest } from '../../src/lib/simc/assemble';
 import { parsePlayerDetail } from '../../src/lib/simc/detail';
@@ -66,6 +67,7 @@ export const ACCURACY: Readonly<Record<string, Accuracy>> = {
 };
 
 interface Option { name?: string; type?: number; value?: unknown; focused?: boolean; options?: Option[] }
+type RegionId = (typeof ALLOWED_REGIONS)[number];
 interface Interaction {
   type?: number;
   token?: string;
@@ -78,7 +80,14 @@ interface Interaction {
 }
 /** What `discord:<jobId>` holds until the job's reply is edited. `content` is the settled reply when Discord asked for a later try
  *  (429, 5xx, unreachable), and `after` is when that try may happen (its Retry-After). */
-interface Pending { token: string; label: string; presetId: string; exp: number; content?: string; after?: number }
+interface Pending {
+  token: string; label: string; presetId: string; exp: number; content?: string; after?: number;
+  /** /sim share:true: a finished result goes to the channel as a new message, not into the ephemeral reply. Holds the invoker's
+   *  Discord id, shown there as a mention (allowed_mentions is empty, so it never pings). */
+  share?: string;
+  /** Set with `content`: whether that settled reply is the public one. */
+  public?: boolean;
+}
 
 const inflate = promisify(gunzip);
 const deflate = promisify(gzip);
@@ -135,7 +144,7 @@ export async function armoryRequest(
   app: Pick<AppCtx, 'config' | 'fetch'>, region: string, realm: string, name: string, presetId: string, accuracy: Accuracy,
 ): Promise<{ label: string; request: SimRequest } | { error: string }> {
   if (!(ALLOWED_REGIONS as readonly string[]).includes(region)) return { error: 'Pick a region from the list.' };
-  const url = app.config.env.WOW_API_ORIGIN + characterProfilePath(region as (typeof ALLOWED_REGIONS)[number], realm, name);
+  const url = app.config.env.WOW_API_ORIGIN + characterProfilePath(region as RegionId, realm, name);
   let body: { profile?: unknown; message?: unknown; name?: unknown; realmSlug?: unknown } | null = null;
   try {
     const res = await app.fetch(url, { signal: AbortSignal.timeout(15_000) });
@@ -153,6 +162,22 @@ export async function armoryRequest(
 function option(i: Interaction, name: string): string | undefined {
   const value = i.data?.options?.find((o) => o.name === name)?.value;
   return typeof value === 'string' ? value : undefined;
+}
+
+/** Up to 25 of the region's realms matching what is typed, names starting with it first; valued by slug. Empty when the proxy
+ *  cannot answer in time: Discord drops an autocomplete answer after 3 s. */
+export async function realmChoices(app: Pick<AppCtx, 'config' | 'fetch'>, region: string, typed: string): Promise<{ name: string; value: string }[]> {
+  if (!(ALLOWED_REGIONS as readonly string[]).includes(region)) return [];
+  try {
+    const res = await app.fetch(app.config.env.WOW_API_ORIGIN + realmsPath(region as RegionId), { signal: AbortSignal.timeout(2000) });
+    const realms = ((await res.json()) as { realms?: { name: string; slug: string }[] }).realms ?? [];
+    const needle = typed.trim().toLowerCase();
+    const hits = realms.filter((r) => r.name.toLowerCase().includes(needle) || r.slug.includes(needle));
+    const starts = (r: { name: string }) => (r.name.toLowerCase().startsWith(needle) ? 0 : 1);
+    return hits.sort((a, b) => starts(a) - starts(b)).slice(0, 25).map((r) => ({ name: r.name.slice(0, 100), value: r.slug }));
+  } catch {
+    return [];
+  }
 }
 
 const reply = (content: string) => json({ type: MESSAGE, data: { content, flags: EPHEMERAL, allowed_mentions: { parse: [] } } });
@@ -173,6 +198,26 @@ async function editReply(app: Pick<AppCtx, 'config' | 'fetch' | 'log'>, token: s
     return res;
   } catch (err) {
     app.log(`discord: editing a reply failed (${errorSummary(err)})`);
+    return null;
+  }
+}
+
+/** A new, public message in the interaction's channel (a follow-up without the ephemeral flag; the original reply was already
+ *  edited, so this does not replace it). Same logging and failure shape as editReply. */
+async function publicReply(app: Pick<AppCtx, 'config' | 'fetch' | 'log'>, token: string, content: string): Promise<Response | null> {
+  const url = `${API}/webhooks/${app.config.env.DISCORD_APPLICATION_ID}/${encodeURIComponent(token)}`;
+  try {
+    const res = await app.fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ content: content.slice(0, 2000), allowed_mentions: { parse: [] } }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    await res.body?.cancel();
+    if (!res.ok) app.log(`discord: posting a shared result failed with status ${res.status}`);
+    return res;
+  } catch (err) {
+    app.log(`discord: posting a shared result failed (${errorSummary(err)})`);
     return null;
   }
 }
@@ -234,8 +279,10 @@ async function startSim(app: AppCtx, i: Interaction, discordId: string, received
   if (!job.ok) return edit(`${refusal ? `${refusal} ` : ''}${job.message} ${manageUrl(app.config)}`);
   const pool = refusal ? ` ${refusal} It runs on your own plan.` : fellBack ? " This server's pool is used up, so it runs on your own plan." : '';
   // Before the token is stored: from then on the task may post the result, and a late "Queued" would overwrite it.
-  await edit(`Queued **${plain(built.label)}** on ${fightLabel(presetId)} in Frostsim Cloud.${pool} This message updates when it finishes.`);
-  const pending: Pending = { token, label: built.label, presetId, exp: receivedMs + TOKEN_TTL_S * 1000 };
+  const share = i.data?.options?.find((o) => o.name === 'share')?.value === true;
+  const then = share ? 'The result will be posted in this channel.' : 'This message updates when it finishes.';
+  await edit(`Queued **${plain(built.label)}** on ${fightLabel(presetId)} in Frostsim Cloud.${pool} ${then}`);
+  const pending: Pending = { token, label: built.label, presetId, exp: receivedMs + TOKEN_TTL_S * 1000, ...(share ? { share: discordId } : {}) };
   const saved = await tryRedis(app.redis, app.log,
     async (r) => (await r.set(replyKey(job.id), JSON.stringify(pending), 'EX', TOKEN_TTL_S)) === 'OK', false);
   if (saved) return;
@@ -308,8 +355,10 @@ async function interactions(ctx: RequestCtx): Promise<Response> {
 
   if (i.type === AUTOCOMPLETE) {
     const focused = i.data?.options?.find((o) => o.focused);
-    const typed = focused?.name === 'character' && typeof focused.value === 'string' ? focused.value : '';
-    return json({ type: CHOICES, data: { choices: focused?.name === 'character' ? await characterChoices(ctx, discordId, typed) : [] } });
+    const typed = typeof focused?.value === 'string' ? focused.value : '';
+    const choices = focused?.name === 'character' ? await characterChoices(ctx, discordId, typed)
+      : focused?.name === 'realm' ? await realmChoices(ctx, option(i, 'region') ?? 'us', typed) : [];
+    return json({ type: CHOICES, data: { choices } });
   }
   if (i.type !== COMMAND) throw new HttpError(400, 'invalid', 'Unsupported interaction type.');
   switch (i.data?.name) {
@@ -403,14 +452,15 @@ const take = (app: AppCtx, key: string) => tryRedis(app.redis, app.log, async (r
 
 /** Posts the settled reply. When Discord may take it later (429, 5xx, unreachable) the token goes back with the text, so the next tick
  *  retries it without a second share or cancel. Anything else is final (401/404: the token is dead). */
-async function post(app: AppCtx, key: string, pending: Pending, content: string): Promise<void> {
-  const res = await editReply(app, pending.token, content);
+async function post(app: AppCtx, key: string, pending: Pending, content: string, isPublic = false): Promise<void> {
+  const res = isPublic ? await publicReply(app, pending.token, content) : await editReply(app, pending.token, content);
   if (res && res.status !== 429 && res.status < 500) return;
   const nowMs = app.now().getTime();
   const ttl = pending.exp - nowMs;
   if (ttl <= 0) return;
   const after = nowMs + (Number(res?.headers.get('retry-after')) || 0) * 1000;
-  await tryRedis(app.redis, app.log, (r) => r.set(key, JSON.stringify({ ...pending, content, after }), 'PX', ttl), null);
+  await tryRedis(app.redis, app.log,
+    (r) => r.set(key, JSON.stringify({ ...pending, content, after, ...(isPublic ? { public: true } : {}) }), 'PX', ttl), null);
 }
 
 /** Posts one job's outcome once it is final, or cancels it when the token is about to die first. */
@@ -420,7 +470,7 @@ async function followUp(app: AppCtx, id: string, nowMs: number): Promise<void> {
   if (!text) return;
   const pending = JSON.parse(text) as Pending;
   if (pending.content !== undefined) {
-    if (nowMs >= (pending.after ?? 0) && (await take(app, key))) await post(app, key, pending, pending.content);
+    if (nowMs >= (pending.after ?? 0) && (await take(app, key))) await post(app, key, pending, pending.content, pending.public);
     return;
   }
   let view = await jobView(app, id);
@@ -437,7 +487,10 @@ async function followUp(app: AppCtx, id: string, nowMs: number): Promise<void> {
     // It finished between the two reads.
     view = (await jobView(app, id)) ?? view;
   }
-  await post(app, key, pending, await resultText(app, view, pending));
+  // Only a finished result is shared; a failure or cancel stays in the invoker's ephemeral reply.
+  const shared = pending.share !== undefined && view.status === 'done';
+  const result = await resultText(app, view, pending);
+  await post(app, key, pending, shared ? `<@${pending.share}>'s sim: ${result}` : result, shared);
 }
 
 async function postResults(app: AppCtx): Promise<void> {
