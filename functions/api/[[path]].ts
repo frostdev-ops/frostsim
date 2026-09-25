@@ -226,7 +226,7 @@ async function handleIcon(
   if (kind === 'spell') {
     const index = (spellIcons.spells as Record<string, number>)[id];
     if (index !== undefined) {
-      const named = await proxyImage(`https://render.worldofwarcraft.com/${region}/icons/56/${encodeURIComponent(spellIcons.names[index])}.jpg`, env, MAX_RETENTION_SECONDS);
+      const named = await proxyImage(`https://render.worldofwarcraft.com/${region}/icons/56/${encodeURIComponent(spellIcons.names[index])}.jpg`, env, ICON_TTL);
       if (named.status !== 404) return named;
     }
   }
@@ -241,11 +241,14 @@ async function handleIcon(
     return errorResponse('upstream_unavailable', 502, safeMessage('upstream_unavailable'));
   }
 
-  return await proxyImage(media.iconUrl, env, MAX_RETENTION_SECONDS);
+  return await proxyImage(media.iconUrl, env, ICON_TTL);
 }
 
 /** Fetch image bytes from resolved URL and serve from own origin; one impl for all image routes (allowlist recheck, no redirects, type/size bounds). */
-// Icon and tile bytes never change under one id, so they take the full retention limit; portraits keep the deployment TTL.
+// Icon and tile bytes never change under one id, so they take half the retention limit: nginx replaces Date and sends no
+// Age on a cache hit, so the edge and the browser can each hold a copy for a full max-age after nginx's. Portraits keep the
+// deployment TTL.
+const ICON_TTL = MAX_RETENTION_SECONDS / 2;
 async function proxyImage(target: string, env: Env, ttl = cacheSeconds(env)): Promise<Response> {
   // Recheck at use point where being wrong costs.
   if (!isAllowedMediaUrl(target)) {
@@ -580,7 +583,7 @@ async function handleJournalTile(
   if (!tile || typeof tile.value !== 'string') {
     return errorResponse('not_found', 404, safeMessage('not_found'));
   }
-  return await proxyImage(tile.value, env, MAX_RETENTION_SECONDS);
+  return await proxyImage(tile.value, env, ICON_TTL);
 }
 
 // --- Helpers -----------------------------------------------------------------

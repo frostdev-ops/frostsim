@@ -14,8 +14,8 @@ import { gzipSync } from 'node:zlib';
 // A deliberate change to one of these files updates its hash here in the same change.
 export const BASELINE = {
   'server/api-server.mjs': 'd777c0cead6ca4e4eb8fe48ed87c16b78ec0d784373d20346fb9f79eae6d79c8',
-  'functions/api/[[path]].ts': 'a3387651d247b10e19a370910969576d4a0aaf681abc1495656f226c634a99cd',
-  'functions/api/_lib/battlenet.test.ts': '863e3beaff3fef1ce42f7b5aa32a97e168b4705ae7cf4205601606a6dc059d2d',
+  'functions/api/[[path]].ts': '975cf8826b511d84108eabd2c85a6ae8ab6442d01cbacf97b05e6c58c493769d',
+  'functions/api/_lib/battlenet.test.ts': '4420ceaff4c7011c0d47dfae2463bb727087676b447b2d6bf805025e31e0ec02',
   'functions/api/_lib/character-index.test.ts': 'e47c7e0bb06ef5f31b257217e91ea27cd2266fcf1fe4ab3f8820ca9c23c9e497',
   'functions/api/_lib/character-index.ts': '934b37d825c58cd171fc7366261b16d6474dc17473886918ea030ba6675774ce',
   'functions/api/_lib/security.ts': '9c8960a2b4284a09c577decf7fad6607a2ec5907ef95e3f50e6ce84e6da17f18',
@@ -23,7 +23,7 @@ export const BASELINE = {
   'deploy/systemd/frostsim-api.service': 'cc8e21197aefe829be407090611f0916e64c9edafaa7ff0f4f8b8ed53802eb01',
   'public/sw.js': 'c061965cf053074ade63e8b8469a1d96e3a237e246658fb5513b4ea1502cfedd',
   // Hashed with the account-server block stripped: that block is the only change the vhost may gain.
-  'deploy/nginx/sim.frostdev.io.conf': 'd587a65523864cd1dc7f4550051c3e7575ab64a606da0da645e55149d33526ba',
+  'deploy/nginx/sim.frostdev.io.conf': '0ef731925113d19e1d666446a122bd4dfed3fbf7929b5062d4299cb284c499b3',
 };
 const GUARDED_DIR = 'functions/api';
 const VHOST = 'deploy/nginx/sim.frostdev.io.conf';

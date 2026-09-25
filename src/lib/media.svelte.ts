@@ -2,6 +2,8 @@
 
 import { BattleNetClient, type Lookup } from './battlenet/client'
 import type { ItemTooltip } from './battlenet/contract'
+// Named import: Vite bundles only this string, not the 600 KB mapping.
+import { build as spellIconBuild } from './battlenet/generated/spell-icons.json'
 
 export type { ItemTooltip }
 
@@ -45,6 +47,8 @@ const iconMissing = new Set<number>()
 export function configureMedia(next: { region?: string; locale?: string }): void {
   options = next
   client = null
+  checking = undefined
+  generation++
   tooltips.clear()
   iconMissing.clear()
   media.configured = null
@@ -52,7 +56,7 @@ export function configureMedia(next: { region?: string; locale?: string }): void
 }
 
 /** Asks once whether this deployment has item data at all. */
-let checking: Promise<void> | undefined
+let checking: Promise<void> | undefined, generation = 0
 const SEEN = 'frostsim-media-configured'
 export function initMedia(): Promise<void> {
   if (media.configured !== null && !checking) return Promise.resolve()
@@ -64,13 +68,18 @@ export function initMedia(): Promise<void> {
 }
 
 async function check(): Promise<void> {
+  const mine = ++generation
   let configured: boolean
   try {
-    configured = await api().isConfigured()
+    const bn = api()
+    configured = await bn.isConfigured()
+    // Only a real answer updates the seed; a failed check says nothing about the next visit.
+    if (!bn.checkFailed) try { localStorage.setItem(SEEN, configured ? '1' : '0') } catch { /* storage blocked */ }
   } catch {
     configured = false
   }
-  try { localStorage.setItem(SEEN, configured ? '1' : '0') } catch { /* storage blocked */ }
+  // A reset or reconfigure during the check owns the state now.
+  if (mine !== generation) return
   checking = undefined
   media.configured = configured
   if (!media.configured) {
@@ -95,7 +104,8 @@ export function journalTileUrl(mediaId: number | undefined): string | null {
 /** Spell icon bytes, proxied. Spell ids are game data, not user data. */
 export function spellIconUrl(spellId: number | undefined): string | null {
   if (media.configured !== true || !spellId) return null
-  return `/api/wow/spell-icon/${spellId}?media=2`
+  // The build names the icon mapping the server reads, so a regenerated mapping is a new URL in every cache.
+  return `/api/wow/spell-icon/${spellId}?media=${spellIconBuild}`
 }
 
 /** Called when the browser fails to load one icon; stops it being retried. */
@@ -156,6 +166,7 @@ async function loadTooltip(itemId: number): Promise<void> {
 export function resetMedia(): void {
   client = null
   checking = undefined
+  generation++
   tooltips.clear()
   iconMissing.clear()
   media.configured = null

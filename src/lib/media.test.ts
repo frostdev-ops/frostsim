@@ -36,6 +36,15 @@ describe('item media', () => {
     expect(stored.get('frostsim-media-configured')).toBe('0')
   })
 
+  it('keeps the seed when the health check fails rather than answers', async () => {
+    const stored = new Map([['frostsim-media-configured', '1']])
+    vi.stubGlobal('localStorage', { getItem: (k: string) => stored.get(k) ?? null, setItem: (k: string, v: string) => stored.set(k, v) })
+    vi.stubGlobal('fetch', async () => { throw new TypeError('offline') })
+    await initMedia()
+    expect(media.configured).toBe(false)
+    expect(stored.get('frostsim-media-configured')).toBe('1')
+  })
+
   it('renders no item art at all when the deployment has no credentials', async () => {
     stubFetch(() => ({ configured: false }))
     await initMedia()
