@@ -105,7 +105,7 @@ describe('sandboxArgv', () => {
     for (const prop of ['DynamicUser=yes', 'PrivateNetwork=yes', 'ProtectSystem=strict', 'ProtectHome=yes', 'PrivateTmp=yes',
       'NoNewPrivileges=yes', 'MemoryMax=8000000000', 'RuntimeMaxSec=1800', 'CPUQuota=400%', 'RootDirectory=/var/lib/frostsim-worker/root',
       'BindPaths=/var/lib/frostsim-worker/jobs/j1:/job', 'ReadWritePaths=+/job', 'WorkingDirectory=/job',
-      'SystemCallFilter=@system-service', 'RestrictAddressFamilies=none', 'RestrictNamespaces=yes', 'ProtectProc=invisible', 'ProcSubset=pid',
+      'SystemCallFilter=@system-service', 'RestrictAddressFamilies=AF_UNIX', 'RestrictNamespaces=yes', 'ProtectProc=invisible', 'ProcSubset=pid',
       'PrivateIPC=yes', 'MemoryDenyWriteExecute=yes', 'CapabilityBoundingSet=', 'TasksMax=512', 'LimitFSIZE=1G', 'LimitCORE=0']) expect(props).toContain(prop);
     expect(argv.slice(-3)).toEqual(['/var/cache/frostsim/engines/abc/simc', '/job/profile.simc', 'threads=4']);
   });

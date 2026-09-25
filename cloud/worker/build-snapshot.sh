@@ -84,7 +84,8 @@ remote ssh "${ssh_opts[@]}" "root@$ip" 'cloud-init status --wait >/dev/null; mkd
 remote scp "${ssh_opts[@]}" "$here/setup.sh" "$here/agent.mjs" "$here/frostsim-worker.service" "root@$ip:/root/frostsim-worker/"
 # cloud-init clean makes each worker run its own user_data and regenerate host keys and machine id.
 # The firewall setup.sh installs takes effect at each worker's first boot, not in this session.
-remote ssh "${ssh_opts[@]}" "root@$ip" 'bash /root/frostsim-worker/setup.sh && rm -rf /root/frostsim-worker /root/.ssh/authorized_keys && cloud-init clean --logs --machine-id && sync'
+# Its output is progress, so stderr: stdout carries only the snapshot id.
+remote ssh "${ssh_opts[@]}" "root@$ip" 'bash /root/frostsim-worker/setup.sh && rm -rf /root/frostsim-worker /root/.ssh/authorized_keys && cloud-init clean --logs --machine-id && sync' >&2
 
 wait_action "$(hcloud POST "/servers/$server_id/actions/shutdown" | jq -r .action.id)"
 for _ in $(seq 60); do [ "$(hcloud GET "/servers/$server_id" | jq -r .server.status)" = off ] && break; sleep 5; done

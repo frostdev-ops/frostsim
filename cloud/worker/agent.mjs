@@ -103,9 +103,10 @@ export function sandboxArgv({ unit, binary, hostDir, args, threads, memoryMax })
     `RootDirectory=${ROOT}`, 'MountAPIVFS=yes', 'PrivateDevices=yes',
     'BindReadOnlyPaths=/usr', 'BindReadOnlyPaths=/etc/ld.so.cache', `BindReadOnlyPaths=${ENGINES}`,
     `BindPaths=${hostDir}:${JOB_DIR}`, `ReadWritePaths=+${JOB_DIR}`, `WorkingDirectory=${JOB_DIR}`,
-    // A compromised simc gets the kernel surface a CPU-bound program needs and no view of other tenants' processes.
+    // A compromised simc gets the kernel surface a CPU-bound program needs and no view of other tenants' processes. AF_UNIX only,
+    // not `none`: systemd 255 (Ubuntu 24.04) refuses `none` on a transient unit, and PrivateNetwork already leaves no route out.
     'SystemCallFilter=@system-service', 'SystemCallErrorNumber=EPERM', 'SystemCallArchitectures=native', 'RestrictNamespaces=yes',
-    'RestrictAddressFamilies=none', 'ProtectProc=invisible', 'ProcSubset=pid', 'ProtectKernelTunables=yes', 'ProtectKernelModules=yes',
+    'RestrictAddressFamilies=AF_UNIX', 'ProtectProc=invisible', 'ProcSubset=pid', 'ProtectKernelTunables=yes', 'ProtectKernelModules=yes',
     'ProtectKernelLogs=yes', 'ProtectControlGroups=yes', 'ProtectClock=yes', 'PrivateIPC=yes', 'LockPersonality=yes',
     'MemoryDenyWriteExecute=yes', 'CapabilityBoundingSet=', 'TasksMax=512', 'LimitCORE=0',
     // ponytail: bounds each file, not the file count; /job and the private /tmp are host disk. A tmpfs job dir charged to MemoryMax
