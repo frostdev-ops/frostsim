@@ -40,14 +40,19 @@ export class BattleNetClient {
     this.timeoutMs = options.timeoutMs ?? 10_000;
   }
 
+  /** True when the last health check failed rather than answered, so `false` means unknown. */
+  checkFailed = false;
+
   /** Deployment has item data (cached): UI hides art if false. */
   async isConfigured(): Promise<boolean> {
     if (this.configured !== null) return this.configured;
     try {
       const res = await this.request<HealthResponse>(healthPath);
       this.configured = res !== null && res.configured === true;
+      this.checkFailed = false;
     } catch {
       this.configured = false;
+      this.checkFailed = true;
     }
     return this.configured;
   }
