@@ -33,13 +33,13 @@ export interface Plan {
 
 export const PLANS: readonly Plan[] = [
   // ponytail: L runs 16 threads while the Hetzner project cannot create 32 dedicated cores; raise it with HCLOUD_SERVER_TYPE.
-  { id: 'compute_s', title: 'Compute S', blurb: 'Cloud runs, hosted links included', kind: 'compute', maxThreads: 8, coreHoursPerMonth: 10, hostedShares: true,
+  { id: 'compute_s', title: 'Compute S', blurb: 'Cloud runs, hosted links included', kind: 'compute', maxThreads: 8, coreHoursPerMonth: 20, hostedShares: true,
     usd: { monthly: 3, semiannual: 16, yearly: 29 } },
-  { id: 'compute_m', title: 'Compute M', blurb: 'Cloud runs, hosted links included', kind: 'compute', maxThreads: 16, coreHoursPerMonth: 25, hostedShares: true,
+  { id: 'compute_m', title: 'Compute M', blurb: 'Cloud runs, hosted links included', kind: 'compute', maxThreads: 16, coreHoursPerMonth: 50, hostedShares: true,
     usd: { monthly: 5, semiannual: 27, yearly: 48 } },
-  { id: 'compute_l', title: 'Compute L', blurb: 'Cloud runs, hosted links included', kind: 'compute', maxThreads: 16, coreHoursPerMonth: 60, hostedShares: true,
+  { id: 'compute_l', title: 'Compute L', blurb: 'Cloud runs, hosted links included', kind: 'compute', maxThreads: 16, coreHoursPerMonth: 120, hostedShares: true,
     usd: { monthly: 10, semiannual: 54, yearly: 96 } },
-  { id: 'discord_guild', title: 'Discord server', blurb: 'A shared pool for /sim in one Discord server', kind: 'guild', maxThreads: 8, coreHoursPerMonth: 40,
+  { id: 'discord_guild', title: 'Discord server', blurb: 'A shared pool for /sim in one Discord server', kind: 'guild', maxThreads: 8, coreHoursPerMonth: 80,
     usd: { monthly: 10, semiannual: 54, yearly: 96 } },
   { id: 'slots_5', title: 'Character slots', blurb: 'Five cloud character slots', kind: 'slots', slotsPerUnit: 5, usd: {} },
   { id: 'shares_plus', title: 'Hosted links', blurb: 'Full-detail report links without cloud runs', kind: 'shares', hostedShares: true, usd: {} },

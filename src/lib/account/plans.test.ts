@@ -20,9 +20,10 @@ describe('plans', () => {
   })
 
   it('turns an allowance into standard sims, rounded down to two significant figures', () => {
-    expect(approxSims(10 * 3600)).toBe(3200)
-    expect(approxSims(25 * 3600)).toBe(8000)
-    expect(approxSims(60 * 3600)).toBe(19000)
+    expect(approxSims(20 * 3600)).toBe(6400)
+    expect(approxSims(50 * 3600)).toBe(16000)
+    expect(approxSims(120 * 3600)).toBe(38000)
+    expect(approxSims(80 * 3600)).toBe(25000)
     expect(approxSims(95)).toBe(8)
     expect(approxSims(-5)).toBe(0)
   })

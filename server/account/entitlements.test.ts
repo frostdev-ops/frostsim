@@ -15,9 +15,9 @@ function sub(over: Partial<Subscription>): Subscription {
 
 describe('catalog', () => {
   it('maps every plan and term to its lookup key, and grants nothing for unknown or prototype keys', () => {
-    expect(product('compute_l_monthly')).toEqual({ kind: 'compute', term: 'monthly', maxThreads: 16, coreHoursPerMonth: 60, hostedShares: true });
-    expect(product('compute_s_yearly')).toMatchObject({ kind: 'compute', term: 'yearly', coreHoursPerMonth: 10 });
-    expect(product('discord_guild_semiannual')).toMatchObject({ kind: 'guild', term: 'semiannual', coreHoursPerMonth: 40, maxThreads: 8 });
+    expect(product('compute_l_monthly')).toEqual({ kind: 'compute', term: 'monthly', maxThreads: 16, coreHoursPerMonth: 120, hostedShares: true });
+    expect(product('compute_s_yearly')).toMatchObject({ kind: 'compute', term: 'yearly', coreHoursPerMonth: 20 });
+    expect(product('discord_guild_semiannual')).toMatchObject({ kind: 'guild', term: 'semiannual', coreHoursPerMonth: 80, maxThreads: 8 });
     expect(product('slots_5_monthly')).toMatchObject({ kind: 'slots', slotsPerUnit: 5 });
     expect(product('slots_5_yearly')).toBeNull();
     expect(Object.keys(CATALOG).sort()).toEqual([
@@ -31,14 +31,14 @@ describe('catalog', () => {
 
 describe('plan hours and long terms', () => {
   it('grants the catalog hours when the Price carries none, and the Price metadata when it does', () => {
-    expect(entitlementsFor([sub({ items: [{ lookupKey: 'compute_m_monthly', quantity: 1 }] })], NONE, NOW).coreSeconds).toBe(25 * 3600);
+    expect(entitlementsFor([sub({ items: [{ lookupKey: 'compute_m_monthly', quantity: 1 }] })], NONE, NOW).coreSeconds).toBe(50 * 3600);
     expect(entitlementsFor([sub({ items: [{ lookupKey: 'compute_m_monthly', quantity: 1, coreHours: 50 }] })], NONE, NOW).coreSeconds).toBe(50 * 3600);
   });
 
   it('meters a yearly plan in monthly slices from its start, with the monthly allowance', () => {
     const yearly = sub({ items: [{ lookupKey: 'compute_s_yearly', quantity: 1 }],
       currentPeriodStart: new Date('2026-01-31T10:00:00Z'), currentPeriodEnd: new Date('2027-01-31T10:00:00Z') });
-    expect(entitlementsFor([yearly], NONE, NOW)).toMatchObject({ coreSeconds: 10 * 3600,
+    expect(entitlementsFor([yearly], NONE, NOW)).toMatchObject({ coreSeconds: 20 * 3600,
       periodStart: new Date('2026-08-31T10:00:00Z'), periodEnd: new Date('2026-09-30T10:00:00Z') });
     // A 31st anchor clamps to February's last day, then returns to the 31st.
     expect(entitlementsFor([yearly], NONE, new Date('2026-03-01T00:00:00Z'))).toMatchObject({
@@ -51,7 +51,7 @@ describe('plan hours and long terms', () => {
   it('meters a 6-month guild pool monthly too', () => {
     const pool = sub({ guildId: '123456789012345678', items: [{ lookupKey: 'discord_guild_semiannual', quantity: 1 }],
       currentPeriodStart: new Date('2026-07-10T00:00:00Z'), currentPeriodEnd: new Date('2027-01-10T00:00:00Z') });
-    expect(entitlementsFor([pool], NONE, NOW).guilds).toEqual([{ guildId: '123456789012345678', coreSeconds: 40 * 3600, maxThreads: 8,
+    expect(entitlementsFor([pool], NONE, NOW).guilds).toEqual([{ guildId: '123456789012345678', coreSeconds: 80 * 3600, maxThreads: 8,
       periodStart: new Date('2026-09-10T00:00:00Z'), periodEnd: new Date('2026-10-10T00:00:00Z') }]);
   });
 });

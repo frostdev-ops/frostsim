@@ -76,10 +76,10 @@ ledger), `workers`, `cloud_characters` (the addon export text, not a parsed reco
 
 | Plan | Core-hours a month | Threads | Monthly | 6 months | Yearly |
 | --- | --- | --- | --- | --- | --- |
-| `compute_s` | 10 (≈ 3,200 standard sims) | 8 | $3 | $16 | $29 |
-| `compute_m` | 25 (≈ 8,000) | 16 | $5 | $27 | $48 |
-| `compute_l` | 60 (≈ 19,000) | 16 (32 once the Hetzner project allows it) | $10 | $54 | $96 |
-| `discord_guild` (one Discord server's pool) | 40 (≈ 12,800) | 8 | $10 | $54 | $96 |
+| `compute_s` | 20 (≈ 6,400 standard sims) | 8 | $3 | $16 | $29 |
+| `compute_m` | 50 (≈ 16,000) | 16 | $5 | $27 | $48 |
+| `compute_l` | 120 (≈ 38,000) | 16 (32 once the Hetzner project allows it) | $10 | $54 | $96 |
+| `discord_guild` (one Discord server's pool) | 80 (≈ 25,000) | 8 | $10 | $54 | $96 |
 | `slots_5` (5 slots per unit), `shares_plus` | - | - | set on Stripe | - | - |
 
 Compute plans include hosted shares. A Price's `core_hours` metadata overrides the table's hours, so a promotion needs no
