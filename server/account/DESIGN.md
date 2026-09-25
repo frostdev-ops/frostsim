@@ -135,11 +135,17 @@ when the result download fails or takes over 150 s. Closing the page cancels the
 
 Placement (`src/lib/account/placement.svelte.ts`): with a compute plan, runs go to the cloud by default, and a "Run on" switch beside
 the character picker on every tool screen keeps an explicit choice. Avalanche (`compute_l`) adds Hybrid, its default
-(`src/lib/simc/hybrid.ts`): a run with two or more profileset candidates splits them by thread share between this browser and one
-cloud job, both running at once, and concatenates the profileset results into one report. Candidates are independent sims, so
-nothing statistical is merged; a single-actor run is never split and goes to the cloud whole. A declined cloud share replays here
+(`src/lib/simc/hybrid.ts`): a run made of two or more independent sims splits them by thread share between this browser and one
+cloud job, both running at once, and concatenates the results into one report. Three kinds split: profileset candidates (Top Gear,
+Droptimizer, Crest and Compare batches; profileset results appended), the characters of a multi-character Quick Sim (each its own
+sim under `single_actor_batch=1`; the first character stays local and the cloud's players are appended) and Stat Weights by
+`scale_only` stat (each player's `scale_factors`, `scale_factors_all` and `scale_deltas` unioned; with `normalize_scale_factors`
+the primary stat runs on both sides so each side normalizes against its own measurement, and the local value is kept). Nothing
+statistical is merged; a single-actor Quick Sim is never split and goes to the cloud whole. A declined cloud share replays here
 only after the local share's engine has shut down, because one engine run needs about 2 GB. Progress counts candidates finished on
-both sides.
+both sides; the other kinds show the running side's own progress. The run panel states the placement of every run
+(`src/lib/account/run-place.svelte.ts`, set by the engines): the hybrid split by count or name, a whole cloud run and why a hybrid
+choice did not split, or a run the cloud handed back to this browser.
 
 **C10 Account UI.** Code under `src/lib/account/` is loaded only by dynamic import behind the flag. Hosted links are
 `#/s/<id>` with a 22-character base62 id. Hosted share payload: `gzip(JSON(makePortable('report', { shared, rawReport })))`, at most 16 MiB compressed and 32 MiB

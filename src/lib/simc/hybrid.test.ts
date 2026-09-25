@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { __resetEngineRuntimeForTests, runJob, setRemoteEngine, WORKER_PROTOCOL, type JobEvent, type SimRequest } from './job'
-import { cloudShare, createHybridEngine, mergeProfilesets } from './hybrid'
+import { cloudShare, createHybridEngine, mergeCharacters, mergeProfilesets, mergeStats, splitOf, splitRequest, type RunPlace } from './hybrid'
 import { parseReport } from './report'
 import { DEFAULT_SETTINGS } from './options'
 import type { EngineCapability, EngineManifest } from './capability'
@@ -19,8 +19,8 @@ const PACK_DIR = '/engine/versions/pack-1/'
 const capability: EngineCapability = { ok: true, artifact: 'threaded', engineDir: PACK_DIR, maxThreads: 16, profilesets: true, manifest }
 const CLOUD_ID = '6f1c1c9e-0d1b-4c43-9a55-6c1f8f3f0a01'
 
-/** A simc JSON report whose profilesets are `ids`, each with mean 1000 + its index. */
-function reportFor(ids: string[]): string {
+/** A simc JSON report whose profilesets are `ids`, each with mean 1000 + its index, and whose players are `names`. */
+function reportFor(ids: string[], names = ['Bob']): string {
   const results = ids.map((name) => ({ name, mean: 1000 + Number(name.slice(2)), min: 1, max: 2, iterations: 100 }))
   return JSON.stringify({
     version: '1210-01',
@@ -30,12 +30,13 @@ function reportFor(ids: string[]): string {
         iterations: 100, target_error: 0, threads: 4, max_time: 300, fight_style: 'Patchwerk', desired_targets: 1, single_actor_batch: false,
         fixed_time: true, confidence: 0.95, confidence_estimator: 1.96, dbc: { Live: { wow_version: '12.1.0.69814', build_level: 69814 }, version_used: 'Live' },
       },
-      players: [{ name: 'Bob', specialization: 'Frost Mage', collected_data: { dps: { sum: 1, count: 100, mean: 900, min: 1, max: 2, std_dev: 1, mean_std_dev: 1 } } }],
+      players: names.map((name) => ({ name, specialization: 'Frost Mage', collected_data: { dps: { sum: 1, count: 100, mean: 900, min: 1, max: 2, std_dev: 1, mean_std_dev: 1 } } })),
       statistics: { elapsed_time_seconds: 1 },
       ...(results.length ? { profilesets: { metric: 'dps', results } } : {}),
     },
   })
 }
+const namesIn = (profile: string) => [...profile.matchAll(/^mage="([^"]+)"/gm)].map((m) => m[1])
 const idsIn = (profile: string) => [...profile.matchAll(/^profileset\."([^"]+)"\+=/gm)].map((m) => m[1]).filter((v, i, a) => a.indexOf(v) === i)
 const progress = (id: string, idx: number, total: number) => `Profileset\t${id}\t${idx}\t${total}\t50\t100\t3.4\t10`
 
@@ -61,7 +62,7 @@ class LocalEngine {
   }
   finish(): void {
     this.say({ type: 'ready' })
-    this.say({ type: 'done', report: new TextEncoder().encode(reportFor(this.ids())) })
+    this.say({ type: 'done', report: new TextEncoder().encode(reportFor(this.ids(), namesIn(String(this.sent[0].profile)))) })
     this.say({ type: 'shutdown', reason: 'complete', threads: 4 })
   }
 }
@@ -90,7 +91,7 @@ class CloudServer {
       return new Response(null, { status: 204 })
     }
     if (url.endsWith('/result')) {
-      const body = new Blob([reportFor(this.posted!.profilesets!.map((p) => p.id))]).stream().pipeThrough(new CompressionStream('gzip'))
+      const body = new Blob([reportFor((this.posted!.profilesets ?? []).map((p) => p.id), namesIn(this.posted!.profile))]).stream().pipeThrough(new CompressionStream('gzip'))
       return new Response(body)
     }
     return Response.json({ status: this.status, lines: this.lines, next: this.lines.length })
@@ -106,8 +107,10 @@ const request = (n: number): SimRequest => ({
   profilesets: sets(n),
 })
 
+let places: RunPlace[] = []
 function hybridRun(s: CloudServer, req: SimRequest) {
-  setRemoteEngine(createHybridEngine({ fetch: s.fetch, pollMs: 1000, cloudThreads: 12 }))
+  places = []
+  setRemoteEngine(createHybridEngine({ fetch: s.fetch, pollMs: 1000, cloudThreads: 12, onplace: (p) => places.push(p) }))
   const events: JobEvent[] = []
   const handle = runJob(req, (e) => events.push(e), { createReportWorker: () => new FakeReportWorker('report') as unknown as Worker, capability })
   return { handle, events }
@@ -144,7 +147,100 @@ describe('hybrid split and merge', () => {
   })
 })
 
+const twoCharacters = (): SimRequest => ({
+  schemaVersion: 1,
+  profile: '# Bob - frost\nmage="Bob"\nlevel=80\ntalents=a\n# Ann - fire\nmage="Ann"\nlevel=80\ntalents=b',
+  settings: { ...DEFAULT_SETTINGS, threads: 4 },
+  accuracy: { mode: 'iterations', iterations: 100 },
+  extraProfileLines: ['enemy=Boss'],
+})
+const weights = (normalize: boolean, stats = 'intellect,crit,haste,mastery,versatility'): SimRequest => ({
+  schemaVersion: 1,
+  profile: 'mage="Bob"\nlevel=80',
+  settings: { ...DEFAULT_SETTINGS, threads: 4 },
+  accuracy: { mode: 'iterations', iterations: 100 },
+  extraOptions: ['calculate_scale_factors=1', `scale_only=${stats}`, ...(normalize ? ['normalize_scale_factors=1'] : [])],
+})
+const enc = (t: unknown) => new TextEncoder().encode(JSON.stringify(t)).buffer as ArrayBuffer
+const dec = (b: ArrayBuffer) => JSON.parse(new TextDecoder().decode(b))
+
+describe('what splits', () => {
+  it('splits candidates, characters of a multi-character run, and stat weights; never one character or a custom script', () => {
+    expect(splitOf(request(3))).toEqual({ kind: 'candidates', pieces: 3 })
+    expect(splitOf(twoCharacters())).toEqual({ kind: 'characters', pieces: 2 })
+    expect(splitOf(weights(false))).toEqual({ kind: 'stats', pieces: 5 })
+    // Normalized weights keep the primary stat on both sides, so four stats split.
+    expect(splitOf(weights(true))).toEqual({ kind: 'stats', pieces: 4 })
+    expect(splitOf(weights(true, 'intellect,crit'))).toBeNull()
+    expect(splitOf(request(1))).toBeNull()
+    expect(splitOf({ ...request(0), profilesets: undefined })).toBeNull()
+    expect(splitOf({ ...twoCharacters(), mode: 'raw' })).toBeNull()
+  })
+
+  it('gives this browser the first character, with the scenario lines, and the cloud the rest', () => {
+    const sides = splitRequest(twoCharacters(), 12)!
+    expect(sides.place).toMatchObject({ mode: 'hybrid', kind: 'characters', hereNames: ['Bob'], thereNames: ['Ann'] })
+    expect(namesIn(sides.cloud.profile)).toEqual(['Ann'])
+    const local = sides.localStart({ profile: 'whole', args: ['a'] })
+    expect(namesIn(local.profile)).toEqual(['Bob'])
+    expect(local.profile).toContain('enemy=Boss')
+    expect(local.args).toEqual(['a'])
+  })
+
+  it('splits stats by scale_only, the primary on both sides when normalizing, and swaps only that argument locally', () => {
+    const sides = splitRequest(weights(true), 12)!
+    expect(sides.place).toMatchObject({ kind: 'stats', both: ['intellect'], hereNames: ['crit'], thereNames: ['haste', 'mastery', 'versatility'] })
+    expect(sides.cloud.extraOptions).toContain('scale_only=intellect,haste,mastery,versatility')
+    expect(sides.localStart({ profile: 'p', args: ['x', 'scale_only=intellect,crit,haste,mastery,versatility', 'y'] }).args)
+      .toEqual(['x', 'scale_only=intellect,crit', 'y'])
+  })
+})
+
+describe('merges', () => {
+  it('appends the cloud characters after this browser\'s', () => {
+    const merged = parseReport(dec(mergeCharacters(enc(JSON.parse(reportFor([], ['Bob']))), enc(JSON.parse(reportFor([], ['Ann', 'Cy']))))))
+    expect(merged.players.map((p) => p.name)).toEqual(['Bob', 'Ann', 'Cy'])
+  })
+
+  it('adds the cloud stat weights to each player, keeping this browser\'s primary, and lists every stat', () => {
+    const report = (factors: Record<string, number>) => {
+      const r = JSON.parse(reportFor([]))
+      r.sim.options.scaling = { calculate_scale_factors: 1, scale_only: Object.keys(factors).join(',') }
+      Object.assign(r.sim.players[0], { scale_factors: factors, scale_deltas: factors, scale_factors_all: { dps: factors } })
+      return enc(r)
+    }
+    const merged = dec(mergeStats(report({ Int: 1, Crit: 0.5 }), report({ Int: 1.02, Haste: 0.4 }), ['intellect', 'crit', 'haste']))
+    const p = merged.sim.players[0]
+    expect(p.scale_factors).toEqual({ Int: 1, Crit: 0.5, Haste: 0.4 })
+    expect(p.scale_factors_all.dps).toEqual({ Int: 1, Crit: 0.5, Haste: 0.4 })
+    expect(merged.sim.options.scaling.scale_only).toBe('intellect,crit,haste')
+  })
+})
+
 describe('hybrid runs', () => {
+  it('runs a multi-character Quick Sim a character each side and returns one report with both, and says so', async () => {
+    const s = new CloudServer()
+    const run = hybridRun(s, twoCharacters())
+    await vi.advanceTimersByTimeAsync(0)
+    expect(places).toEqual([expect.objectContaining({ mode: 'hybrid', kind: 'characters', hereNames: ['Bob'], thereNames: ['Ann'] })])
+    expect(namesIn(String(spawned[0].sent[0].profile))).toEqual(['Bob'])
+    expect(namesIn(s.posted!.profile)).toEqual(['Ann'])
+
+    spawned[0].finish()
+    s.status = 'done'
+    await vi.advanceTimersByTimeAsync(1000)
+    const outcome = await run.handle.result
+    expect(outcome.report.players.map((p) => p.name)).toEqual(['Bob', 'Ann'])
+  })
+
+  it('says why a run with one piece runs whole on Frostsim Cloud', async () => {
+    const run = hybridRun(new CloudServer(), request(1))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(places).toEqual([expect.objectContaining({ mode: 'cloud', note: expect.stringContaining('two or more candidates, characters or stat weights') })])
+    run.handle.cancel()
+    await expect(run.handle.result).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
   it('runs each share on its own side at once and returns one report with every candidate', async () => {
     const s = new CloudServer()
     const run = hybridRun(s, request(4))

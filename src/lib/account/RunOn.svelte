@@ -14,7 +14,7 @@
     <span class="xs muted label">Run on</span>
     <div class="segmented" role="radiogroup" aria-label="Run on">
       {#if placement.hybrid}
-        <label title="Splits multi-candidate runs (Top Gear, Droptimizer, compares) between this device and Frostsim's servers at once, for the fastest result. Uses your plan for the cloud share.">
+        <label title="Splits a run made of independent sims between this device and Frostsim's servers at once: the candidates of Top Gear, Droptimizer, Crest and compares, the characters of a multi-character Quick Sim, and the stats of Stat Weights. A single-character Quick Sim runs whole in the cloud. The run panel shows the split. Uses your plan for the cloud share.">
           <input type="radio" name="run-on" value="hybrid" checked={placement.value === 'hybrid'} onchange={() => setPlacement('hybrid')} />
           <Zap size={14} aria-hidden="true" />Hybrid
         </label>

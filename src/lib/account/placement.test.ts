@@ -3,7 +3,10 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const mocks = vi.hoisted(() => ({ setRemoteEngine: vi.fn(), createRemoteEngine: vi.fn(() => 'cloud-engine') }))
+const mocks = vi.hoisted(() => {
+  const cloudEngine = vi.fn(() => null)
+  return { setRemoteEngine: vi.fn(), cloudEngine, createRemoteEngine: vi.fn(() => cloudEngine) }
+})
 vi.mock('../simc/job', () => ({ setRemoteEngine: mocks.setRemoteEngine }))
 vi.mock('../simc/remote', () => ({ createRemoteEngine: mocks.createRemoteEngine }))
 
@@ -26,7 +29,14 @@ async function load(init: Record<string, string> = {}) {
   vi.resetModules()
   return { ...(await import('./placement.svelte')), state: await import('./state.svelte') }
 }
-const last = () => mocks.setRemoteEngine.mock.calls.at(-1)?.[0]
+/** The registered engine: 'cloud-engine' when it runs the cloud engine (placement.svelte wraps it to reset the run's place). */
+const last = () => {
+  const engine = mocks.setRemoteEngine.mock.calls.at(-1)?.[0]
+  if (typeof engine !== 'function') return engine
+  mocks.cloudEngine.mockClear()
+  engine({}, '/engine/versions/p/')
+  return mocks.cloudEngine.mock.calls.length ? 'cloud-engine' : engine
+}
 
 beforeEach(() => vi.clearAllMocks())
 afterEach(() => vi.unstubAllGlobals())

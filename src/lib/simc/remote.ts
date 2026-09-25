@@ -37,6 +37,8 @@ export interface RemoteOptions {
   queueGiveUpMs?: number
   /** The browser engine a declined run replays on; hybrid.ts passes one that waits for its own local share to finish. */
   replayWorker?: (variant: EngineVariant, engineDir?: string) => Worker
+  /** Told why the cloud declined a run it then replays here, for the run panel. */
+  onreplay?: (reason: string) => void
 }
 
 interface JobView {
@@ -58,6 +60,7 @@ export function createRemoteEngine(options: RemoteOptions = {}): RemoteEngine {
     pollMs: options.pollMs ?? 1000,
     queueGiveUpMs: options.queueGiveUpMs ?? 150_000,
     replayWorker: options.replayWorker ?? ((variant: EngineVariant, dir?: string) => new Worker(engineWorkerUrl(variant, dir))),
+    onreplay: options.onreplay,
   }
   return (req, engineDir) => {
     const packId = PACK_DIR.exec(engineDir)?.[1]
@@ -98,7 +101,7 @@ class CloudWorker {
     private readonly packId: string,
     private readonly variant: EngineVariant,
     private readonly engineDir: string | undefined,
-    private readonly opts: Required<RemoteOptions>,
+    private readonly opts: Required<Omit<RemoteOptions, 'onreplay'>> & Pick<RemoteOptions, 'onreplay'>,
   ) {}
 
   postMessage(data: unknown): void {
@@ -270,6 +273,7 @@ class CloudWorker {
     this.close()
     // Not 'Error:': that prefix would become the run's failure message.
     this.post({ type: 'log', stream: 'err', lines: [`Frostsim Cloud: ${reason}. Running in this browser instead.`] })
+    this.opts.onreplay?.(reason)
     // The fallback build compiles profilesets out, and job.ts let this request through only because it was going to the cloud.
     if (this.variant === 'fallback' && this.req.profilesets?.length) {
       return this.refuse('profilesets-unsupported', 'This engine build has no profileset support, so multi-candidate runs cannot run on it.')

@@ -148,7 +148,7 @@ This long-lived branch is the app live at [sim.frostdev.io](https://sim.frostdev
 | **Accounts** | Sign in with Discord or Battle.net. No password, no email; export or delete everything from the account dialog. |
 | **Character slots** | Your characters on every device, with gear history, DPS history and a re-sim of each slot when a new game build lands. |
 | **Cloud runs** | Native SimulationCraft on 16-core servers, metered in core-hours. With a plan, runs go to the cloud by default; a "Run on" switch beside the character picker sends them back to the browser. |
-| **Hybrid runs** | On Avalanche, a Top Gear, Droptimizer or compare run splits its candidates between your browser and a cloud server at once and comes back as one report. |
+| **Hybrid runs** | On Avalanche, a run made of independent sims splits between your browser and a cloud server at once and comes back as one report: Top Gear, Droptimizer, Crest and compare candidates, the characters of a multi-character Quick Sim, and the stats of Stat Weights. The run panel shows the split. |
 | **Report links** | Full-detail hosted reports behind a short link. |
 | **Discord bot** | `/sim`, `/link`, `/usage` and `/frostsim subscribe`. A Guild Cloud plan gives a server one shared pool, and its payer sets each role's monthly share at `#/discord`. |
 | **Loothing** | Loothing's own Discord bot can sim your saved characters on your plan once you allow it. |

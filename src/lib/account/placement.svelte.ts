@@ -1,9 +1,10 @@
 // "Run on" preference and the cloud engine registration (CLAUDE.md D14, DESIGN.md C9, C10). Someone with cloud runs uses them by
 // default (Avalanche: hybrid); an explicit choice is kept. Without cloud runs, and whenever the cloud refuses, runs stay in this browser.
 
-import { setRemoteEngine } from '../simc/job'
+import { setRemoteEngine, type RemoteEngine } from '../simc/job'
 import { createRemoteEngine } from '../simc/remote'
-import { createHybridEngine } from '../simc/hybrid'
+import { createHybridEngine, type RunPlace } from '../simc/hybrid'
+import { runPlace } from './run-place.svelte'
 
 const KEY = 'frostsim.placement'
 export type Placement = 'browser' | 'cloud' | 'hybrid'
@@ -33,9 +34,18 @@ export function applyPlacement(entitled = placement.entitled, threads = hybridTh
   placement.hybrid = hybridThreads > 0
   const want = chosen ?? (placement.hybrid ? 'hybrid' : entitled ? 'cloud' : 'browser')
   placement.value = want === 'hybrid' && !placement.hybrid ? 'cloud' : want
-  const engine = !entitled || placement.value === 'browser' ? null
-    : placement.value === 'hybrid' ? createHybridEngine({ cloudThreads: hybridThreads }) : createRemoteEngine()
-  setRemoteEngine(engine)
+  runPlace.current = null
+  const place = (p: RunPlace) => { runPlace.current = p }
+  const engine: RemoteEngine | null = !entitled || placement.value === 'browser' ? null
+    : placement.value === 'hybrid' ? createHybridEngine({ cloudThreads: hybridThreads, onplace: place })
+      : createRemoteEngine({ onreplay: (reason) => place({ mode: 'browser', note: `Frostsim Cloud: ${reason}. This run moved to this PC.` }) })
+  // Each run starts with no place; the engine sets one when the cloud takes part (a run it declines up front stays null).
+  setRemoteEngine(engine && ((req, dir) => {
+    runPlace.current = null
+    const worker = engine(req, dir)
+    if (!worker || placement.value === 'hybrid') return worker
+    return (variant, d) => (place({ mode: 'cloud' }), worker(variant, d))
+  }))
 }
 
 export function setPlacement(value: Placement): void {
