@@ -23,7 +23,7 @@ Frostsim is a browser-only alternative to a hosted simulation service. Simulatio
 
 **The hard constraint is architectural, not a preference.** There is no server route that can start a simulation. A static host serves the bytes and a small proxy answers item lookups, and that is the entire server side.
 
-Paste your `/simc` addon export, pick what you want to know, and run it.
+Paste your `/simc` addon export or look a character up on the Armory by name and realm, pick what you want to know, and run it.
 
 ## What you can simulate
 
