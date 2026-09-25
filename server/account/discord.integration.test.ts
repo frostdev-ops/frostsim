@@ -140,8 +140,8 @@ describe.skipIf(!PG)('discord postgres integration (needs FROSTSIM_TEST_PG; the 
     const created = await loothing('POST', '/api/v1/integrations/loothing/jobs', { discordId: granted, characterId: b.characterId, preset: 'patchwerk' });
     expect(created.status).toBe(201);
     const { id } = await created.json();
-    const [job] = await sql`select user_id, guild_id, source, pack_id, threads, status from compute_jobs where id = ${id}`;
-    expect(job).toEqual({ user_id: b.userId, guild_id: null, source: 'loothing', pack_id: PACK, threads: 16, status: 'queued' });
+    const [job] = await sql`select user_id, guild_id, source, pack_id, threads, status, kind from compute_jobs where id = ${id}`;
+    expect(job).toEqual({ user_id: b.userId, guild_id: null, source: 'loothing', pack_id: PACK, threads: 16, status: 'queued', kind: 'quick' });
 
     const read = (jobId: string, discordId = granted) => loothing('GET', `/api/v1/integrations/loothing/jobs/${jobId}?discordId=${discordId}`);
     expect(await (await read(id)).json()).toMatchObject({ id, status: 'queued', position: 1 });
@@ -159,7 +159,7 @@ describe.skipIf(!PG)('discord postgres integration (needs FROSTSIM_TEST_PG; the 
       [expect.any(String), 'loothing', 'loothing.job.read', 404],
       [b.userId, 'loothing', 'loothing.job.read', 404],
     ]);
-    expect(rows[3].detail).toEqual({ discordId: granted, preset: 'patchwerk', jobId: id, status: 201 });
+    expect(rows[3].detail).toEqual({ discordId: granted, preset: 'patchwerk', kind: 'quick', jobId: id, status: 201 });
   });
 
   it('Loothing: an Idempotency-Key maps repeats and a concurrent race to one job; jobs carry slot and fight; list, cancel and Retry-After', async () => {

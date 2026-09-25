@@ -4,9 +4,11 @@
 // limit, the compact detail of a finished job, and slot context on resolve. Compute and packs
 // are fakes; SQL and Redis are stand-ins. The same routes run against real Postgres in integrations.integration.test.ts.
 
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { gzipSync } from 'node:zlib';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, type RequestCtx } from './app';
 import { loadConfig } from './config';
 import type { Sql } from './db';
@@ -48,6 +50,8 @@ let logs: string[];
 let jobRows: Record<string, unknown>[];
 let keyed: string | null;
 let jobQueries: { query: string; values: unknown[] }[];
+/** compute_jobs.meta of the job, for a droptimizer's detail. */
+let jobMeta: unknown;
 
 function fakeSql(): Sql {
   const answer = (q: string, v: unknown[]): unknown[] => {
@@ -58,8 +62,12 @@ function fakeSql(): Sql {
         who: { name: 'Testchar', className: 'warlock', spec: 'demonology', server: 'area52', region: 'us' } },
       { id: CHAR2, label: 'Old slot', updated_at: new Date('2026-09-19T00:00:00Z'), item_level: null, who: null },
     ];
-    if (q.includes('select id, raw from cloud_characters')) return [{ id: CHAR, raw: RAW }, { id: CHAR2, raw: RAW2 }];
+    if (q.includes('select id, raw from cloud_characters')) {
+      const all = [{ id: CHAR, raw: RAW }, { id: CHAR2, raw: RAW2 }];
+      return q.includes('id::text') ? all.filter((c) => c.id === v[1]) : all;
+    }
     if (q.includes('select id, label, raw from cloud_characters')) return v[1] === CHAR ? [{ id: CHAR, label: 'Main', raw: RAW }] : [];
+    if (q.includes('select meta from compute_jobs')) return [{ meta: jobMeta ?? null }];
     if (q.includes('select id from compute_jobs where source = \'loothing\'')) return keyed && v[1] === keyed ? [{ id: JOB }] : [];
     if (q.includes('from compute_jobs j left join cloud_characters')) {
       jobQueries.push({ query: q, values: v });
@@ -79,7 +87,7 @@ const countingRedis = (count: number) => ({
 }) as unknown as Redis;
 
 function send(method: string, path: string, body?: unknown, { token = TOKEN, redis = null as Redis | null, headers = {} as Record<string, string> } = {}) {
-  const app = createApp({ config, sql: fakeSql(), redis, r2: createR2(config, fetch), fetch, now: () => new Date(), log: (l: string) => logs.push(l) }, routes);
+  const app = createApp({ config, sql: fakeSql(), redis, r2: createR2(config, fetch), fetch, now: () => new Date('2026-09-25T12:00:00Z'), log: (l: string) => logs.push(l) }, routes);
   return app(new Request(ORIGIN + path, {
     method,
     headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', ...headers },
@@ -102,6 +110,7 @@ beforeEach(() => {
   jobRows = [row()];
   keyed = null;
   jobQueries = [];
+  jobMeta = null;
   logs = [];
   mocks.defaultPack.mockResolvedValue('c97e14c7a5ad-dc0508afe741');
   mocks.enqueueJob.mockResolvedValue({ ok: true, id: JOB });
@@ -184,10 +193,10 @@ describe('resolve and jobs', () => {
     const res = await create({ characterIds: [CHAR, CHAR2], origin: 'agent' });
     expect(res.status).toBe(201);
     const [, job] = mocks.enqueueJob.mock.calls[0];
-    expect(job).toMatchObject({ userId: USER, source: 'loothing', characterId: undefined });
+    expect(job).toMatchObject({ userId: USER, source: 'loothing', characterId: undefined, kind: 'compare' });
     expect(job.request.profile).toContain('Testchar');
     expect(job.request.profile).toContain('Otherchar');
-    expect(audits[0].detail).toEqual({ discordId: DISCORD, preset: 'patchwerk', origin: 'agent', characters: 2, jobId: JOB, status: 201 });
+    expect(audits[0].detail).toEqual({ discordId: DISCORD, preset: 'patchwerk', kind: 'compare', origin: 'agent', characters: 2, jobId: JOB, status: 201 });
     for (const bad of [{ characterIds: [CHAR] }, { characterIds: [CHAR, CHAR] }, { characterIds: [CHAR, CHAR2], characterId: CHAR },
       { characterIds: [CHAR, 7] }, { characterIds: 'x' }, { characterId: CHAR, origin: 'robot' }]) {
       expect((await create(bad)).status).toBe(400);
@@ -230,7 +239,7 @@ describe('resolve and jobs', () => {
     expect(job).toMatchObject({ userId: USER, guildId: null, source: 'loothing', packId: 'c97e14c7a5ad-dc0508afe741' });
     expect(job.request.extraProfileLines).toContain('enemy_fixed_health_percentage=20');
     expect(audits).toEqual([{ userId: USER, actor: 'loothing', action: 'loothing.job.create',
-      detail: { discordId: DISCORD, preset: 'execute-patchwerk', jobId: JOB, status: 201 } }]);
+      detail: { discordId: DISCORD, preset: 'execute-patchwerk', kind: 'quick', jobId: JOB, status: 201 } }]);
   });
 
   it('keeps a created job\'s 201 when its audit row cannot be written, so Loothing does not retry into a second charge', async () => {
@@ -259,13 +268,13 @@ describe('resolve and jobs', () => {
     const read = (discordId = DISCORD) => send('GET', `/api/v1/integrations/loothing/jobs/${JOB}?discordId=${discordId}`);
     const res = await read();
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ id: JOB, status: 'done', summary: { dps: 1000, dpsError: 10, iterations: 100 }, characterId: CHAR,
+    expect(await res.json()).toEqual({ id: JOB, kind: 'quick', status: 'done', summary: { dps: 1000, dpsError: 10, iterations: 100 }, characterId: CHAR,
       characterLabel: 'Main', fightStyle: 'Patchwerk', createdAt: '2026-09-24T10:00:00.000Z', finishedAt: '2026-09-24T10:01:00.000Z' });
     // The id or time-window fragment is a nested query here; the Postgres test runs it for real.
     expect(jobQueries[0].query).toMatch(/j\.source = 'loothing' and j\.user_id = \? and j\.guild_id is null/);
     expect(jobQueries[0].values[0]).toBe(USER);
     jobRows = [row({ status: 'queued', summary: null, finished_at: null, position: 2, label: null })];
-    expect(await (await read()).json()).toEqual({ id: JOB, status: 'queued', position: 2, characterId: CHAR, characterLabel: null,
+    expect(await (await read()).json()).toEqual({ id: JOB, kind: 'quick', status: 'queued', position: 2, characterId: CHAR, characterLabel: null,
       fightStyle: 'Patchwerk', createdAt: '2026-09-24T10:00:00.000Z' });
     jobRows = [];
     expect((await read()).status).toBe(404);
@@ -331,5 +340,61 @@ describe('resolve and jobs', () => {
     }
     const limited = await send('POST', '/api/v1/integrations/loothing/resolve', { discordId: DISCORD }, { redis: countingRedis(121) });
     expect([limited.status, limited.headers.get('retry-after')]).toEqual([429, '60']);
+  });
+});
+
+describe('droptimizer', () => {
+  const PACK = 'c97e14c7a5ad-dc0508afe741';
+  const RAID = 1320;
+  beforeAll(() => {
+    // The pack layout scripts/update-engines.mjs publishes beside the index, holding the repo's catalog.
+    const root = mkdtempSync(join(tmpdir(), 'loothing-drop-'));
+    mkdirSync(join(root, 'engine/versions', PACK), { recursive: true });
+    symlinkSync(resolve('public/catalogs/12.1.0.69814-dca34b3038a3-c015720'), join(root, 'engine/versions', PACK, 'catalog'));
+    vi.stubEnv('ENGINE_INDEX_PATH', join(root, 'engine-versions.json'));
+  });
+  const create = (fields: Record<string, unknown>) => send('POST', '/api/v1/integrations/loothing/jobs',
+    { discordId: DISCORD, kind: 'droptimizer', characterId: CHAR, preset: 'patchwerk', ...fields });
+
+  it('lists the sources of the default pack', async () => {
+    const res = await send('GET', `/api/v1/integrations/loothing/droptimizer/sources?discordId=${DISCORD}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.packId).toBe(PACK);
+    expect(body.instances.find((i: { instanceId: number }) => i.instanceId === RAID)).toMatchObject({ kind: 'raid', rewards: { difficulties: expect.any(Array) } });
+    expect(audits[0]).toMatchObject({ action: 'loothing.droptimizer.sources', detail: { status: 200 } });
+  });
+
+  it('creates one profileset job with its candidate list, and refuses what cannot be built', async () => {
+    const res = await create({ instanceIds: [RAID], difficulty: 'heroic', origin: 'agent' });
+    expect(res.status).toBe(201);
+    const [, job] = mocks.enqueueJob.mock.calls[0];
+    expect(job).toMatchObject({ userId: USER, source: 'loothing', packId: PACK, characterId: CHAR, kind: 'droptimizer', meta: { kind: 'droptimizer' } });
+    expect(job.request.profilesets.length).toBe(job.meta.candidates.length);
+    expect(audits[0].detail).toMatchObject({ kind: 'droptimizer', candidates: job.meta.candidates.length, jobId: JOB, status: 201 });
+    const refused = async (fields: Record<string, unknown>) => { const r = await create(fields); return [r.status, (await r.json()).error]; };
+    expect(await refused({ instanceIds: [RAID] })).toEqual([400, 'invalid']);
+    expect(await refused({ instanceIds: [RAID], difficulty: 'heroic', characterIds: [CHAR, CHAR2] })).toEqual([400, 'invalid']);
+    expect(await refused({ instanceIds: [RAID], keyLevel: 10 })).toEqual([422, 'unavailable']);
+    expect(await refused({ instanceIds: [RAID], difficulty: 'heroic', characterId: '0c000000-0000-4000-8000-00000000dead' })).toEqual([404, 'not-found']);
+    expect(await refused({ kind: 'weekly', instanceIds: [RAID], difficulty: 'heroic' })).toEqual([400, 'invalid']);
+    mocks.defaultPack.mockResolvedValueOnce(null);
+    expect(await refused({ instanceIds: [RAID], difficulty: 'heroic' })).toEqual([409, 'no-native-engine']);
+  });
+
+  it('returns the baseline and candidate rows in a droptimizer\'s detail, and 410 once its candidate list is gone', async () => {
+    await create({ instanceIds: [RAID], difficulty: 'heroic' });
+    jobMeta = mocks.enqueueJob.mock.calls[0][1].meta;
+    jobRows = [row({ kind: 'droptimizer' })];
+    const detail = () => send('GET', `/api/v1/integrations/loothing/jobs/${JOB}/detail?discordId=${DISCORD}`);
+    const body = await (await detail()).json();
+    expect(body).toMatchObject({ id: JOB, kind: 'droptimizer', baseline: { dps: expect.any(Number) }, droptimizer: { difficulty: 'heroic' },
+      fight: { style: 'Patchwerk' }, characters: [expect.anything()] });
+    // The fixture report has no profilesets: every candidate is there, and missing.
+    expect(body.candidates.length).toBe((jobMeta as { candidates: unknown[] }).candidates.length);
+    expect(body.candidates.every((c: { status: string }) => c.status === 'missing')).toBe(true);
+    jobMeta = null;
+    const gone = await detail();
+    expect([gone.status, (await gone.json()).error]).toEqual([410, 'expired']);
   });
 });

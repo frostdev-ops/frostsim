@@ -128,7 +128,7 @@ export async function deleteAccount(app: AppCtx, userId: string, actor: string):
       }
       // Metered guild jobs are the guild's usage ledger: cascading them would refill the pool on every delete and re-signup. Only
       // 'done' rows carry core_seconds. A still-running one cascades and its completion is dropped as 'lost' (one job, unmetered).
-      await tx`update compute_jobs set user_id = null, request = null, payload = null, summary = null
+      await tx`update compute_jobs set user_id = null, request = null, payload = null, summary = null, meta = null
         where user_id = ${userId} and guild_id is not null and status = 'done'`;
       await tx`delete from users where id = ${userId}`;
       // user_id null: the row it would point at is gone. The id stays in the detail so the log still says who.

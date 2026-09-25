@@ -80,6 +80,9 @@ export async function enqueueJob(
     characterId?: string | null;
     /** A caller's key for this job; a second insert with it (source, user) fails with 23505, which the caller maps to the first job. */
     idempotencyKey?: string | null;
+    /** An integration job's kind, and what its report cannot say (loothing-drop.ts DropMeta). */
+    kind?: 'quick' | 'compare' | 'droptimizer';
+    meta?: unknown;
   },
 ): Promise<{ ok: true; id: string } | Refusal> {
   const { userId, guildId, source, packId, request } = job;
@@ -123,9 +126,10 @@ export async function enqueueJob(
       where status = 'queued' and ${guildId ? tx`guild_id = ${guildId}` : tx`user_id = ${userId} and guild_id is null`}`;
     if (queued >= QUEUED_PER_SCOPE) return null;
     const [row] = await tx`insert into compute_jobs (user_id, guild_id, source, pack_id, threads, request, payload, status, created_at,
-        character_id, idempotency_key)
+        character_id, idempotency_key, kind, meta)
       values (${userId}, ${guildId}, ${source}, ${packId}, ${run.threads}, ${tx.json(request as unknown as postgres.JSONValue)},
-        ${tx.json({ profile: run.profile, args: run.args })}, 'queued', ${now}, ${job.characterId ?? null}, ${job.idempotencyKey ?? null})
+        ${tx.json({ profile: run.profile, args: run.args })}, 'queued', ${now}, ${job.characterId ?? null}, ${job.idempotencyKey ?? null},
+        ${job.kind ?? null}, ${job.meta === undefined ? null : tx.json(job.meta as postgres.JSONValue)})
       returning id`;
     return row.id as string;
   });
@@ -650,7 +654,7 @@ export const tasks: Task[] = [
     everyMs: 3600_000,
     // The request, assembled profile and engine notices are kept 7 days for support, then only the ledger columns remain.
     run: async (app) => {
-      await app.sql`update compute_jobs set request = null, payload = null
+      await app.sql`update compute_jobs set request = null, payload = null, meta = null
         where created_at < ${new Date(app.now().getTime() - RETENTION_MS)} and (request is not null or payload is not null)`;
     },
   },

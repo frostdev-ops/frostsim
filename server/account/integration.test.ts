@@ -23,7 +23,7 @@ import { usedCoreSeconds } from './usage';
 const PG = process.env.FROSTSIM_TEST_PG;
 const REDIS = process.env.FROSTSIM_TEST_REDIS;
 const MIGRATIONS = new URL('./migrations/', import.meta.url);
-const VERSIONS = ['001_init', '002_indexes', '003_character_history', '004_job_idempotency', '005_guild_role_limits', '006_providers'];
+const VERSIONS = ['001_init', '002_indexes', '003_character_history', '004_job_idempotency', '005_guild_role_limits', '006_providers', '007_job_kind'];
 const TABLES = ['audit_log', 'character_sims', 'character_snapshots', 'cloud_characters', 'compute_jobs', 'guild_role_limits', 'identities', 'integration_grants', 'schema_migrations',
   'sessions', 'shares', 'stripe_events', 'subscriptions', 'users', 'workers'];
 

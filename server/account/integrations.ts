@@ -11,6 +11,10 @@
 // `characterId`, and an optional `origin` ('agent' | 'command') kept in the audit row only; GET /jobs takes `days` (1-30) and `limit`
 // (1-100); GET /jobs/:id/detail is the compact report (loothing-detail.ts) while the result is kept (1 day, then 410); /resolve
 // also returns each slot's name, class, spec, realm, region and item level.
+//
+// Droptimizer (2026-09-25): POST /jobs with `kind: 'droptimizer'` measures the drops of the chosen raid or dungeon bosses against one
+// slot's gear (loothing-drop.ts); GET /droptimizer/sources lists what can be chosen; every job carries `kind`; a droptimizer's detail
+// adds the baseline and one row per candidate.
 
 import { promisify } from 'node:util';
 import { gunzip } from 'node:zlib';
@@ -24,6 +28,7 @@ import { cancelJob, enqueueJob, resultBytes } from './compute/queue';
 import { defaultPack } from './compute/packs';
 import { ACCURACY, COMPARE_SLOTS, SIM_FIGHTS, characterRequest, linkedUser, manageUrl } from './discord';
 import { loothingDetail } from './loothing-detail';
+import { DropProblem, droptimizerRequest, droptimizerResult, dropSources, packCatalog, parseSelector, type DropMeta } from './loothing-drop';
 import { MAX_SHARE_JSON } from './shares';
 import { parseAddonExport } from '../../src/lib/import/character';
 import type { SimRequest } from '../../src/lib/simc/assemble';
@@ -43,6 +48,7 @@ const LIST_DAYS_MAX = 30;
 const LIST_DEFAULT = 20;
 const LIST_MAX = 100;
 const ORIGINS = ['agent', 'command'];
+const KINDS = ['quick', 'compare', 'droptimizer'];
 /** Per Discord user: about one status poll a second plus the odd resolve and job. */
 const CALLS_PER_MINUTE = 120;
 
@@ -97,6 +103,7 @@ async function account(ctx: RequestCtx, call: Call, discordId: unknown): Promise
 /** What Loothing sees of a job: its own fields plus the slot and fight, so a reply can be rebuilt from the job alone. */
 export interface LoothingJob {
   id: string;
+  kind: 'quick' | 'compare' | 'droptimizer';
   status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
   position?: number;
   error?: string;
@@ -111,7 +118,7 @@ export interface LoothingJob {
 /** Loothing's own jobs for one user: by id, or the last `days` newest first. Never a web, Discord or guild job. */
 async function loothingJobs(ctx: RequestCtx, userId: string, id?: string, days = 1, limit = LIST_DEFAULT): Promise<LoothingJob[]> {
   const since = new Date(ctx.now().getTime() - days * DAY_MS);
-  const rows = await ctx.sql`select j.id, j.status, j.error, j.summary, j.character_id, c.label, j.request->'settings'->>'fightStyle' as fight_style,
+  const rows = await ctx.sql`select j.id, j.kind, j.status, j.error, j.summary, j.character_id, c.label, j.request->'settings'->>'fightStyle' as fight_style,
       j.created_at, j.finished_at,
       case when j.status = 'queued' then (select count(*)::int from compute_jobs q where q.status = 'queued' and q.created_at <= j.created_at) end as position
     from compute_jobs j left join cloud_characters c on c.id = j.character_id and c.user_id = j.user_id
@@ -120,6 +127,7 @@ async function loothingJobs(ctx: RequestCtx, userId: string, id?: string, days =
     order by j.created_at desc limit ${limit}`;
   return rows.map((r) => ({
     id: r.id,
+    kind: r.kind ?? 'quick',
     status: r.status,
     ...(r.position != null ? { position: r.position } : {}),
     ...(r.error ? { error: r.error } : {}),
@@ -174,9 +182,21 @@ export const routes: Route[] = [
     }),
   },
   {
+    method: 'GET', path: /^\/api\/v1\/integrations\/loothing\/droptimizer\/sources$/, feature: 'discord', auth: 'loothing',
+    handler: audited('loothing.droptimizer.sources', async (ctx, call) => {
+      const userId = await account(ctx, call, ctx.url.searchParams.get('discordId'));
+      if (typeof userId !== 'string') return userId;
+      const packId = await defaultPack(ctx);
+      if (!packId) throw new HttpError(409, 'no-native-engine', 'Frostsim Cloud has no engine build ready.');
+      return json({ packId, ...dropSources(await packCatalog(packId), ctx.now().getTime()) });
+    }),
+  },
+  {
     method: 'POST', path: /^\/api\/v1\/integrations\/loothing\/jobs$/, feature: 'discord', auth: 'loothing',
     handler: audited('loothing.job.create', async (ctx, call) => {
-      const { discordId, characterId, characterIds, preset, origin } = await body(ctx);
+      const fields = await body(ctx);
+      const { discordId, characterId, characterIds, preset, origin } = fields;
+      const kind = fields.kind ?? (characterIds !== undefined ? 'compare' : 'quick');
       const key = ctx.request.headers.get('idempotency-key');
       if (key !== null && !IDEMPOTENCY_KEY.test(key)) throw new HttpError(400, 'invalid', 'Idempotency-Key must be 1-64 of A-Z, a-z, 0-9, _ and -.');
       const userId = await account(ctx, call, discordId);
@@ -194,10 +214,33 @@ export const routes: Route[] = [
       }
       if (typeof preset !== 'string' || !SIM_FIGHTS.includes(preset)) throw new HttpError(400, 'invalid', `preset must be one of ${SIM_FIGHTS.join(', ')}.`);
       if (origin !== undefined && !ORIGINS.includes(origin as string)) throw new HttpError(400, 'invalid', `origin must be one of ${ORIGINS.join(', ')}.`);
+      if (!KINDS.includes(kind as string)) throw new HttpError(400, 'invalid', `kind must be one of ${KINDS.join(', ')}.`);
       call.detail.preset = preset;
+      call.detail.kind = kind as string;
       if (origin) call.detail.origin = origin as string;
-      let built: { id?: string; request: SimRequest } | null;
-      if (characterIds !== undefined) {
+      let built: { id?: string; request: SimRequest; meta?: DropMeta } | null;
+      let packId: string | null = null;
+      if (kind === 'droptimizer') {
+        if (typeof characterId !== 'string' || !characterId || characterIds !== undefined) throw new HttpError(400, 'invalid', 'A droptimizer takes one characterId.');
+        let selector;
+        try {
+          selector = parseSelector(fields);
+        } catch (err) {
+          throw err instanceof DropProblem ? new HttpError(400, 'invalid', err.message) : err;
+        }
+        const [row] = await ctx.sql`select id, raw from cloud_characters where user_id = ${userId} and id::text = ${characterId}`;
+        if (!row) throw new HttpError(404, 'not-found', 'No such cloud character.');
+        packId = await defaultPack(ctx);
+        if (!packId) throw new HttpError(409, 'no-native-engine', 'Frostsim Cloud has no engine build ready.');
+        try {
+          built = { id: row.id, ...droptimizerRequest(await packCatalog(packId), parseAddonExport(row.raw), selector, preset, ctx.now().getTime()) };
+        } catch (err) {
+          if (err instanceof DropProblem) throw new HttpError(err.code === 'invalid' ? 400 : 422, err.code, err.message);
+          throw err;
+        }
+        call.detail.candidates = built.meta!.candidates.length;
+      } else if (kind === 'compare') {
+        if (characterIds === undefined) throw new HttpError(400, 'invalid', 'A compare takes characterIds.');
         const ids = Array.isArray(characterIds) ? characterIds : [];
         if (characterId !== undefined || ids.length < 2 || ids.length > COMPARE_SLOTS.length || new Set(ids).size !== ids.length
           || !ids.every((id) => typeof id === 'string' && id)) {
@@ -212,15 +255,16 @@ export const routes: Route[] = [
           throw new HttpError(422, 'unbuildable', err instanceof Error ? err.message.slice(0, 300) : 'That comparison could not be built.');
         }
       } else {
-        if (typeof characterId !== 'string' || !characterId) throw new HttpError(400, 'invalid', 'characterId must be a cloud character id.');
+        if (typeof characterId !== 'string' || !characterId || characterIds !== undefined) throw new HttpError(400, 'invalid', 'characterId must be a cloud character id.');
         built = await characterRequest(ctx.sql, userId, characterId, preset, ACCURACY.standard);
       }
       if (!built) throw new HttpError(404, 'not-found', 'No such cloud character.');
-      const packId = await defaultPack(ctx);
+      packId ??= await defaultPack(ctx);
       if (!packId) throw new HttpError(409, 'no-native-engine', 'Frostsim Cloud has no engine build ready.');
       let job;
       try {
-        job = await enqueueJob(ctx, { userId, guildId: null, source: 'loothing', packId, request: built.request, characterId: built.id, idempotencyKey: key });
+        job = await enqueueJob(ctx, { userId, guildId: null, source: 'loothing', packId, request: built.request, characterId: built.id, idempotencyKey: key,
+          kind: kind as 'quick' | 'compare' | 'droptimizer', meta: built.meta });
       } catch (err) {
         // Two concurrent creates with one key: the unique index lets one in; this one answers with it.
         const winner = (err as { code?: string })?.code === '23505' ? await repeat() : null;
@@ -266,7 +310,10 @@ export const routes: Route[] = [
       const gz = await resultBytes(ctx, job.id);
       if (!gz) throw new HttpError(410, 'expired', 'The full result is kept for one day; only the summary remains.');
       const raw = JSON.parse((await inflate(gz, { maxOutputLength: MAX_SHARE_JSON })).toString('utf8'));
-      return json({ id: job.id, ...loothingDetail(raw) });
+      if (job.kind !== 'droptimizer') return json({ id: job.id, kind: job.kind, ...loothingDetail(raw) });
+      const [{ meta }] = await ctx.sql`select meta from compute_jobs where id = ${job.id}`;
+      if (!meta) throw new HttpError(410, 'expired', 'The droptimizer\'s candidate list is no longer kept.');
+      return json({ id: job.id, kind: job.kind, ...loothingDetail(raw), ...droptimizerResult(raw, meta as DropMeta) });
     }),
   },
   {
