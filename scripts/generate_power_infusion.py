@@ -110,11 +110,15 @@ def pick_profiles(files: list[tuple[str, str]]) -> list[dict]:
     return out
 
 
-def variants(spec: dict, targets: int) -> list[str]:
-    """base and pi always; above one target, funnel specs add their funnel-on pair and AoE-build specs their AoE pair."""
+PAIRS = {'base': ('base', 'pi'), 'funnel': ('funnel', 'funnelPi'), 'aoe': ('aoe', 'aoePi')}
+
+
+def variants(spec: dict, targets: int, only: tuple = tuple(PAIRS)) -> list[str]:
+    """base and pi always; above one target, funnel specs add their funnel-on pair and AoE-build specs their AoE pair.
+    only: the pairs to run (--variants), for a partial run merged into earlier ones."""
     multi = targets > 1
-    return (['base', 'pi'] + (['funnel', 'funnelPi'] if spec['funnel'] and multi else [])
-            + (['aoe', 'aoePi'] if spec.get('aoe') and multi else []))
+    have = ['base'] + (['funnel'] if spec['funnel'] and multi else []) + (['aoe'] if spec.get('aoe') and multi else [])
+    return [v for pair in have if pair in only for v in PAIRS[pair]]
 
 
 def run_args(spec: dict, targets: int, variant: str, *, target_error: float, threads: int,
@@ -783,9 +787,16 @@ def main() -> None:
     ap.add_argument('--tier', default='MID2', help='profiles/<tier> directory in vendor/simc')
     ap.add_argument('--specs', default='', help='comma-separated display names, for partial runs')
     ap.add_argument('--out', type=Path, default=OUT, help='output JSON (default: the file the app bundles)')
+    ap.add_argument('--variants', default=','.join(PAIRS),
+                    help=f'comma-separated pairs to run ({", ".join(PAIRS)}); a partial run needs --out and a merge')
     ap.add_argument('--plain', action='store_true', help='one line per sim instead of the live dashboard')
     opts = ap.parse_args()
     out = opts.out.resolve()
+    only = tuple(v.strip() for v in opts.variants.split(',') if v.strip())
+    if not only or set(only) - set(PAIRS):
+        sys.exit(f'--variants takes {", ".join(PAIRS)}')
+    if set(only) != set(PAIRS) and out == OUT.resolve():
+        sys.exit('a --variants run is partial: write it with --out pi-runs/<name>/power-infusion.json and merge it in')
     if hasattr(sys.stdout, 'reconfigure'):
         try:
             sys.stdout.reconfigure(encoding='utf-8')
@@ -886,7 +897,7 @@ def main() -> None:
         runs, details = [], []
         for n in TARGETS:
             run, detail = {'targets': n}, {'targets': n}
-            for v in variants(spec, n):
+            for v in variants(spec, n, only):
                 run[v], detail[v] = results[(n, v)]
             runs.append(run)
             details.append(detail)
@@ -895,7 +906,7 @@ def main() -> None:
             done[spec['name']] = dict(spec, runs=runs)
         save()
 
-    tasks = [Task(s, n, v) for s in queue for n in TARGETS for v in variants(s, n)]
+    tasks = [Task(s, n, v) for s in queue for n in TARGETS for v in variants(s, n, only)]
     runner = Runner(tasks, run_one, on_spec, opts.jobs, max_jobs=pool).start()
     system = System()
     plain = opts.plain or not sys.stdout.isatty() or os.environ.get('TERM') == 'dumb'

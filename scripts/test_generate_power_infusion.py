@@ -60,6 +60,8 @@ class RunArgs(unittest.TestCase):
         fury = {'name': 'Fury Warrior', 'profile': 'MID2_Warrior_Fury', 'piTiming': 'apl', 'funnel': None, 'aoe': True}
         self.assertEqual(variants(fury, 1), ['base', 'pi'])
         self.assertEqual(variants(fury, 2), ['base', 'pi', 'aoe', 'aoePi'])
+        self.assertEqual(variants(fury, 1, only=('aoe',)), [])
+        self.assertEqual(variants(fury, 2, only=('aoe',)), ['aoe', 'aoePi'])
         self.assertEqual(run_args(fury, 5, 'base', **OPTS), ['p.simc', *TAIL])
         three, five = AOE_BUILDS['MID2_Warrior_Fury']['3'], AOE_BUILDS['MID2_Warrior_Fury']['5']
         self.assertNotEqual(three['talents'], five['talents'])
