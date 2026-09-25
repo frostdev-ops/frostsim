@@ -1147,3 +1147,37 @@ describe('validateRequest', () => {
     expect(validateRequest(request(), 16)).toEqual([])
   })
 })
+
+describe('Dungeon Route compare by role', () => {
+  it('runs the damage dealers and the tank as two sims, one after the other, and reports both', async () => {
+    const engines: FakeEngineWorker[] = []
+    const events: JobEvent[] = []
+    const route = ['enemy=frostsim_route_target', 'raid_events+=/pull,pull=1,delay=0,enemies=Mob_A:2700000']
+    const handle = track(runJob(request({
+      profile: 'mage="Bob"\nspec=frost\nlevel=80\npaladin="Cy"\nspec=protection\nlevel=80',
+      settings: { ...DEFAULT_SETTINGS, threads: 4, fightStyle: 'DungeonRoute', maxTime: 2700 },
+      extraProfileLines: route,
+    }), (e) => events.push(e), {
+      createEngineWorker: () => { const e = new FakeEngineWorker(); engines.push(e); return e as unknown as Worker },
+      createReportWorker: () => new FakeReportWorker() as unknown as Worker,
+      capability,
+      threadReapGraceMs: 0,
+    }))
+    await tick()
+    const [dps] = engines
+    expect((dps.sent[0] as { profile: string }).profile).toContain('Mob_A:2700000')
+    expect((dps.sent[0] as { profile: string }).profile).not.toContain('paladin=')
+    dps.ready()
+    dps.done()
+    expect(engines).toHaveLength(1)
+    dps.emit({ protocol: WORKER_PROTOCOL, jobId: dps.jobId(), type: 'shutdown', reason: 'complete', threads: 4 })
+    const tank = engines[1]
+    expect((tank.sent[0] as { profile: string }).profile).toContain('Mob_A:1400000')
+    tank.ready()
+    tank.done({ ...minimalReport, sim: { ...minimalReport.sim, players: [{ ...minimalReport.sim.players[0], name: 'Cy', specialization: 'Protection Paladin' }] } })
+    const outcome = await handle.result
+    expect(outcome.report.players.map((p) => p.name)).toEqual(['Bob', 'Cy'])
+    expect(outcome.inputWarnings.at(-1)).toContain('Cy (tank) faced 52%')
+    expect(outcome.effectiveProfile).toContain('# Frostsim role group 2 of 2')
+  })
+})

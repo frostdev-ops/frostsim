@@ -9,8 +9,10 @@ import { createRemoteEngine, type RemoteOptions } from './remote'
 import { assembleRun } from './assemble'
 import { profilesetLines } from './options'
 import { candidatesDone, parseProgressLine } from './progress'
-import { CLASS_LABELS } from '../import/character'
+import { characterBlocks, mergeCharacters } from './multi-actor'
 import type { EngineVariant } from './capability'
+
+export { characterBlocks, mergeCharacters }
 
 export interface HybridOptions extends Omit<RemoteOptions, 'replayWorker' | 'onreplay'> {
   /** Threads a cloud job runs on (the plan's width); with the browser's own threads it sets each side's share. */
@@ -38,23 +40,6 @@ export interface RunPlace {
 }
 
 const PRIMARY = new Set(['strength', 'agility', 'intellect'])
-const CLASS_LINE = /^\s*(\w+)\s*=\s*"?([^"\r\n]*)"?\s*$/
-
-/** Character blocks of a guided profile, each from its class line to the next; lines before the first class line go with it. */
-export function characterBlocks(profile: string): { name: string; text: string }[] {
-  const blocks: { name: string; lines: string[] }[] = []
-  let lead: string[] = []
-  for (const line of profile.split('\n')) {
-    const m = CLASS_LINE.exec(line)
-    if (m && Object.hasOwn(CLASS_LABELS, m[1].toLowerCase())) {
-      blocks.push({ name: m[2] || m[1], lines: [...lead, line] })
-      lead = []
-    } else if (blocks.length) blocks[blocks.length - 1].lines.push(line)
-    else lead.push(line)
-  }
-  return blocks.map((b) => ({ name: b.name, text: b.lines.join('\n') }))
-}
-
 const SCALE_ONLY = /^\s*scale_only\s*=\s*(.*)$/
 
 /** A stat weights run's stats (`scale_only`), and the ones both sides must run: the primary stats when weights are normalized. */
@@ -145,13 +130,6 @@ export function mergeProfilesets(local: ArrayBuffer, cloud: ArrayBuffer): ArrayB
     merged.sim.profilesets ??= { metric: extra.metric, results: [] }
     merged.sim.profilesets.results.push(...extra.results)
   }
-  return encode(merged)
-}
-
-/** The local report with the cloud's characters appended after its own (the first character, the main one, is always local). */
-export function mergeCharacters(local: ArrayBuffer, cloud: ArrayBuffer): ArrayBuffer {
-  const merged = decode(local)
-  merged.sim.players.push(...(decode(cloud).sim.players ?? []))
   return encode(merged)
 }
 

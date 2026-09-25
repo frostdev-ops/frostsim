@@ -13,7 +13,7 @@ import type { Sql } from './db';
 import { createR2 } from './r2';
 import type { Redis } from './redis';
 import { verify } from './signed';
-import { ACCURACY, SIM_FIGHTS, TOKEN_TTL_S, canManageGuild, routes, shareBytes, tasks, verifyInteraction } from './discord';
+import { ACCURACY, COMPARE_SLOTS, SIM_FIGHTS, TOKEN_TTL_S, canManageGuild, progressPct, routes, shareBytes, tasks, verifyInteraction } from './discord';
 import type { JobView } from './compute/queue';
 import { findPreset } from '../../src/lib/simc/presets';
 import { validateReport } from '../../src/lib/store/report-share';
@@ -113,14 +113,21 @@ function fakeRedis() {
   return { store, redis: redis as unknown as Redis };
 }
 
-let edits: { url: string; body: { content: string; allowed_mentions: unknown } }[];
+type Sent = { content: string; embeds?: { title?: string; description?: string; fields?: { name: string; value: string }[]; color?: number }[];
+  components?: { components: { style: number; label: string; url?: string; custom_id?: string }[] }[]; allowed_mentions: unknown };
+let edits: { url: string; body: Sent }[];
 /** Discord's answer to each edit in turn, then 200. 0 = unreachable; 429 carries Retry-After: 5. */
 let editStatuses: number[];
 let logs: string[];
 /** The Battle.net proxy's answer to /sim's Armory lookups, and the URLs it was asked for. */
 let armory: { status: number; body: unknown };
 let armoryCalls: string[];
+let routeCalls: string[] = [];
 const fakeFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  if (String(input).startsWith(`${ORIGIN}/routes/`)) {
+    routeCalls.push(String(input));
+    return new Response(readFileSync(new URL(`../../public${new URL(String(input)).pathname}`, import.meta.url)));
+  }
   if (String(input).startsWith('http://127.0.0.1:3011/')) {
     armoryCalls.push(String(input));
     return new Response(JSON.stringify(armory.body), { status: armory.status });
@@ -177,6 +184,8 @@ beforeEach(() => {
   mocks.defaultPack.mockResolvedValue(PACK);
   mocks.enqueueJob.mockResolvedValue({ ok: true, id: JOB });
   mocks.cancelJob.mockResolvedValue(true);
+  mocks.resultBytes.mockResolvedValue(null);
+  mocks.storeShare.mockReset();
 });
 
 describe('verifyInteraction', () => {
@@ -251,9 +260,13 @@ describe('/sim', () => {
     expect(job.request.settings.fightStyle).toBe('HecticAddCleave');
     expect(job.request.accuracy).toEqual(ACCURACY.high);
     expect(job.request.profile).toContain('warlock=');
-    expect(store.get(`discord:${JOB}`)).toEqual({ ttl: TOKEN_TTL_S, value: JSON.stringify({ token: TOKEN, label: 'Main_Warlock', presetId: 'hectic-add-cleave', exp: NOW + 900_000 }) });
+    expect(store.get(`discord:${JOB}`)!.ttl).toBe(TOKEN_TTL_S);
+    expect(JSON.parse(store.get(`discord:${JOB}`)!.value)).toEqual({
+      token: TOKEN, label: 'Main_Warlock', presetId: 'hectic-add-cleave', fight: 'Hectic Add Cleave', exp: NOW + 900_000, kind: 'sim', owner: ALICE,
+    });
     expect(edits[0].url).toBe(`https://discord.com/api/v10/webhooks/${APP_ID}/${TOKEN}/messages/@original`);
-    expect(edits[0].body).toEqual({ content: expect.stringContaining('Queued **Main\\_Warlock** on Hectic Add Cleave'), allowed_mentions: { parse: [] } });
+    expect(edits[0].body).toMatchObject({ content: '', components: [], allowed_mentions: { parse: [] } });
+    expect(edits[0].body.embeds![0]).toMatchObject({ title: 'Simulating Main_Warlock · Hectic Add Cleave', description: 'Simulating…' });
   });
 
   it('looks up an Armory character by name, realm and region through the Battle.net proxy', async () => {
@@ -266,7 +279,7 @@ describe('/sim', () => {
     const [, job] = mocks.enqueueJob.mock.calls[0];
     expect(job).toMatchObject({ userId: USER, source: 'discord', characterId: undefined });
     expect(job.request.profile).toContain('warlock=');
-    expect(edits[0].body.content).toContain('Queued **Testlock-area-52** on Patchwerk');
+    expect(edits[0].body.embeds![0].title).toBe('Simulating Testlock-area-52 · Patchwerk');
   });
 
   it('refuses a half-given or failed Armory lookup, and a /sim with no character at all, without enqueueing', async () => {
@@ -288,7 +301,7 @@ describe('/sim', () => {
     const { store, redis } = fakeRedis();
     await call(redis, sim([{ name: 'character', type: 3, value: CHAR }, { name: 'share', type: 5, value: true }], inGuild(ALICE, GUILD)));
     await vi.waitFor(() => expect(store.has(`discord:${JOB}`)).toBe(true));
-    expect(edits[0].body.content).toMatch(/The result will be posted in this channel\.$/);
+    expect(edits[0].body.content).toBe('The result will be posted in this channel.');
     expect(JSON.parse(store.get(`discord:${JOB}`)!.value)).toMatchObject({ share: ALICE });
   });
 
@@ -500,7 +513,7 @@ describe('reply task', () => {
     summary: { dps: 223973.73, dpsError: 2137.6, iterations: 53 }, notices: [],
     effective: { threads: 16, args: [], profile: RAW }, createdAt: new Date(NOW - 120_000), finishedAt: new Date(NOW - 5000), ...over,
   });
-  const pending = (exp = NOW + 600_000) => JSON.stringify({ token: TOKEN, label: 'Main_Warlock', presetId: 'patchwerk', exp });
+  const pending = (exp = NOW + 600_000) => JSON.stringify({ token: TOKEN, label: 'Main_Warlock', presetId: 'patchwerk', exp, owner: ALICE });
 
   async function run(view: JobView | null, exp?: number) {
     const { store, redis } = fakeRedis();
@@ -511,29 +524,46 @@ describe('reply task', () => {
     return store;
   }
 
-  it('posts DPS ± error with a hosted link for a personally entitled user, and forgets the token', async () => {
+  it('posts a result embed with a hosted link and a "Post in channel" button, and forgets the token', async () => {
     world.subscriptions[USER] = [sub('compute_m_monthly')];
     mocks.resultBytes.mockResolvedValue(new Uint8Array(gzipSync(REPORT_TEXT)));
     mocks.storeShare.mockResolvedValue({ id: 'AbCdEfGhIjKlMnOpQrStUv' });
     const store = await run(done());
     expect(edits).toHaveLength(1);
-    expect(edits[0].body.content).toBe(`**Main\\_Warlock** on Patchwerk: **223,974 DPS** ± 2,138 (95%)\nFull report: ${ORIGIN}/#/s/AbCdEfGhIjKlMnOpQrStUv`);
+    const [embed] = edits[0].body.embeds!;
+    expect(embed.title).toBe('Main_Warlock · Patchwerk');
+    expect(embed.description).toMatch(/^\*\*223,974 DPS\*\* ± \d[\d,]* \nFrost Mage$|^\*\*223,974 DPS\*\*/);
+    expect(embed.color).toBe(0x69ccf0);
+    expect(edits[0].body.components![0].components).toEqual([
+      { type: 2, style: 5, label: 'Full report', url: `${ORIGIN}/#/s/AbCdEfGhIjKlMnOpQrStUv` },
+      { type: 2, style: 1, label: 'Post in channel', custom_id: `post:${JOB}` },
+    ]);
     expect(mocks.storeShare).toHaveBeenCalledWith(expect.anything(), { userId: USER, title: 'Main_Warlock · Patchwerk', gzipBytes: expect.any(Uint8Array) });
-    expect(store.size).toBe(0);
+    expect(store.has(`discord:${JOB}`)).toBe(false);
+    expect(JSON.parse(store.get(`discord:post:${JOB}`)!.value).message.components[0].components).toEqual([
+      { type: 2, style: 5, label: 'Full report', url: `${ORIGIN}/#/s/AbCdEfGhIjKlMnOpQrStUv` },
+    ]);
+  });
+
+  it('falls back to the worker\'s summary line when the report cannot be read', async () => {
+    world.subscriptions[USER] = [];
+    await run(done());
+    expect(edits[0].body.content).toBe('**Main\\_Warlock** on Patchwerk: **223,974 DPS** ± 2,138 (95%)');
+    expect(edits[0].body.embeds).toEqual([]);
   });
 
   it('posts no link without a hosted-shares plan, or when storing the share fails', async () => {
     world.subscriptions[USER] = [];
+    mocks.resultBytes.mockResolvedValue(new Uint8Array(gzipSync(REPORT_TEXT)));
     await run(done());
     expect(mocks.storeShare).not.toHaveBeenCalled();
-    expect(edits[0].body.content).toBe('**Main\\_Warlock** on Patchwerk: **223,974 DPS** ± 2,138 (95%)');
+    expect(edits[0].body.components![0].components.map((b) => b.label)).toEqual(['Post in channel']);
 
     edits = [];
     world.subscriptions[USER] = [sub('compute_s_monthly')];
-    mocks.resultBytes.mockResolvedValue(new Uint8Array(gzipSync(REPORT_TEXT)));
     mocks.storeShare.mockRejectedValue(new Error('R2 PUT failed with status 500'));
     await run(done());
-    expect(edits[0].body.content).not.toContain('Full report');
+    expect(edits[0].body.components![0].components.map((b) => b.label)).toEqual(['Post in channel']);
     expect(logs.at(-1)).toBe(`discord: hosted share for job ${JOB} failed (Error: R2 PUT failed with status 500)`);
   });
 
@@ -544,9 +574,13 @@ describe('reply task', () => {
     world.discordJobs = [JOB];
     store.set(`discord:${JOB}`, { value: shared(), ttl: TOKEN_TTL_S });
     mocks.jobView.mockResolvedValue(done());
+    mocks.resultBytes.mockResolvedValue(new Uint8Array(gzipSync(REPORT_TEXT)));
     await task.run(deps(redis));
-    expect(edits).toEqual([{ url: `https://discord.com/api/v10/webhooks/${APP_ID}/${TOKEN}`,
-      body: { content: `<@${ALICE}>'s sim: **Main\\_Warlock** on Patchwerk: **223,974 DPS** ± 2,138 (95%)`, allowed_mentions: { parse: [] } } }]);
+    expect(edits).toHaveLength(1);
+    expect(edits[0].url).toBe(`https://discord.com/api/v10/webhooks/${APP_ID}/${TOKEN}`);
+    expect(edits[0].body.embeds![0].description).toMatch(new RegExp(`^<@${ALICE}>'s sim\\n\\*\\*223,974 DPS`));
+    expect(edits[0].body.components).toEqual([]);
+    expect(edits[0].body.allowed_mentions).toEqual({ parse: [] });
     expect(store.size).toBe(0);
 
     edits = [];
@@ -578,11 +612,23 @@ describe('reply task', () => {
     expect(edits[0].body.content).toBe('**Main\\_Warlock** on Patchwerk: the run was cancelled.');
   });
 
-  it('waits on an unfinished job while the token has time left', async () => {
-    const store = await run(done({ status: 'running', summary: undefined }));
-    expect(edits).toHaveLength(0);
+  it('shows an unfinished run\'s queue place, then its progress bar, at most every 5 s and only when it moved', async () => {
+    const { store, redis } = fakeRedis();
+    world.discordJobs = [JOB];
+    store.set(`discord:${JOB}`, { value: pending(), ttl: TOKEN_TTL_S });
+    mocks.jobView.mockResolvedValue(done({ status: 'queued', position: 2, summary: undefined }));
+    await task.run(deps(redis));
+    expect(edits[0].body.embeds![0].description).toBe('Queued · 2 in line');
+    await task.run(deps(redis, NOW + 6000));
+    expect(edits).toHaveLength(1);
+    const line = 'Generating Baseline: Main_Warlock 1/1 [=========>..........] 4500/10000 12.0 Mean=100000 Error=0.200% 30sec';
+    mocks.jobView.mockResolvedValue(done({ status: 'running', lines: [line], summary: undefined }));
+    await task.run(deps(redis, NOW + 3000));
+    expect(edits).toHaveLength(1);
+    await task.run(deps(redis, NOW + 12_000));
+    expect(edits[1].body.embeds![0].description).toMatch(/^`█+░+` \*\*50%\*\*$/);
     expect(mocks.cancelJob).not.toHaveBeenCalled();
-    expect(store.has(`discord:${JOB}`)).toBe(true);
+    expect(JSON.parse(store.get(`discord:${JOB}`)!.value)).toMatchObject({ shown: '50', shownAt: NOW + 12_000 });
   });
 
   it('cancels an unfinished job uncharged a minute before the token expires, and says so', async () => {
@@ -652,28 +698,32 @@ describe('reply task retries and deadlines', () => {
     mocks.resultBytes.mockResolvedValue(new Uint8Array(gzipSync(REPORT_TEXT)));
     mocks.storeShare.mockResolvedValue({ id: 'AbCdEfGhIjKlMnOpQrStUv' });
     mocks.jobView.mockResolvedValue(view);
-    const posted = `${RESULT}\nFull report: ${ORIGIN}/#/s/AbCdEfGhIjKlMnOpQrStUv`;
+    const posted = { embeds: [expect.objectContaining({ title: 'Main_Warlock · Patchwerk' })], components: [{ type: 1, components: [
+      { type: 2, style: 5, label: 'Full report', url: `${ORIGIN}/#/s/AbCdEfGhIjKlMnOpQrStUv` },
+    ] }] };
     const exp = NOW + 600_000;
     store.set(key, { value: JSON.stringify({ token: TOKEN, label: 'Main_Warlock', presetId: 'patchwerk', exp }), ttl: TOKEN_TTL_S });
 
     editStatuses = [503, 429, 0];
     await task.run(deps(redis));
-    expect(JSON.parse(store.get(key)!.value)).toMatchObject({ token: TOKEN, content: posted, after: NOW });
+    expect(JSON.parse(store.get(key)!.value)).toMatchObject({ token: TOKEN, message: posted, after: NOW });
     expect(store.get(key)!.ttl).toBe(exp - NOW);
     await task.run(deps(redis));
-    expect(JSON.parse(store.get(key)!.value)).toMatchObject({ content: posted, after: NOW + 5000 });
+    expect(JSON.parse(store.get(key)!.value)).toMatchObject({ message: posted, after: NOW + 5000 });
     await task.run(deps(redis, NOW + 4000));
     expect(edits).toHaveLength(2);
     await task.run(deps(redis, NOW + 5000));
     expect(store.has(key)).toBe(true);
     await task.run(deps(redis, NOW + 5000));
-    expect(edits.map((e) => e.body.content)).toEqual([posted, posted, posted, posted]);
+    expect(edits).toHaveLength(4);
+    for (const e of edits) expect(e.body).toMatchObject({ embeds: [{ title: 'Main_Warlock · Patchwerk' }] });
+    expect(new Set(edits.map((e) => JSON.stringify(e.body))).size).toBe(1);
     expect(store.size).toBe(0);
     expect(mocks.jobView).toHaveBeenCalledTimes(1);
     expect(mocks.storeShare).toHaveBeenCalledTimes(1);
   });
 
-  it('posts without the link when the hosted share outlasts its deadline', async () => {
+  it('posts the summary line when reading the report outlasts its deadline', async () => {
     const { store, redis } = fakeRedis();
     world.discordJobs = [JOB];
     mocks.resultBytes.mockReturnValue(new Promise(() => {}));
@@ -688,7 +738,7 @@ describe('reply task retries and deadlines', () => {
       vi.useRealTimers();
     }
     expect(edits.map((e) => e.body.content)).toEqual([RESULT]);
-    expect(logs).toContain(`discord: hosted share for job ${JOB} took over 20 s; posted without it`);
+    expect(logs).toContain(`discord: the report for job ${JOB} took over 20 s; posted without it`);
   });
 });
 
@@ -725,17 +775,23 @@ describe('command registration (scripts/discord-register-commands.mjs)', () => {
   });
 
   it('names the options the handler reads and keeps within Discord\'s limits', () => {
-    const sim = COMMANDS[0] as { options: { name: string; required?: boolean; choices?: unknown[] }[] };
-    expect(sim.options.map((o: { name: string }) => o.name)).toEqual(['character', 'name', 'realm', 'region', 'fight', 'accuracy', 'share']);
-    expect(sim.options[0]).toMatchObject({ autocomplete: true });
-    expect(sim.options[2]).toMatchObject({ autocomplete: true });
-    expect(sim.options[6]).toMatchObject({ type: 5 });
+    type Cmd = { name: string; options: { name: string; required?: boolean; choices?: unknown[]; autocomplete?: boolean; type: number }[] };
+    const sim = (COMMANDS as unknown as Cmd[]).find((c) => c.name === 'sim')!;
+    expect(sim.options.map((o) => o.name)).toEqual(['character', 'name', 'realm', 'region', 'fight', 'route', 'accuracy', 'share']);
+    expect(sim.options.filter((o) => o.autocomplete).map((o) => o.name)).toEqual(['character', 'realm', 'route']);
+    expect(sim.options[7]).toMatchObject({ type: 5 });
     expect(sim.options.some((o) => o.required)).toBe(false);
+    const compare = (COMMANDS as unknown as Cmd[]).find((c) => c.name === 'compare')!;
+    expect(compare.options.map((o) => o.name)).toEqual([...COMPARE_SLOTS, 'region', 'fight', 'route', 'accuracy', 'share']);
+    expect(compare.options.filter((o) => o.required).map((o) => o.name)).toEqual(['character1', 'character2']);
+    // Discord refuses a required option after an optional one.
+    expect(compare.options.findIndex((o) => !o.required)).toBe(2);
     expect(REGIONS.map(([r]: string[]) => r)).toEqual([...ALLOWED_REGIONS]);
     expect(COMMANDS.find((c: { name: string }) => c.name === 'frostsim')).toMatchObject({ default_member_permissions: '32', options: [{ type: 1, name: 'subscribe' }] });
     const texts = JSON.stringify(COMMANDS).match(/"(description|name)":"[^"]*"/g) ?? [];
     for (const t of texts) expect(t.length).toBeLessThan(120);
     expect(sim.options[4].choices?.length).toBeLessThanOrEqual(25);
+    expect(COMMANDS.length).toBeLessThanOrEqual(100);
   });
 
   it('registers only commands the handler answers', async () => {
@@ -744,8 +800,8 @@ describe('command registration (scripts/discord-register-commands.mjs)', () => {
       const { body } = await call(fakeRedis().redis, command(name, options, inGuild(ALICE, GUILD, '32')));
       expect(body.type === 5 || body.data.content !== 'Unknown command.').toBe(true);
     }
-    // /sim's background edit, so it cannot land in the next test.
-    await vi.waitFor(() => expect(edits).toHaveLength(1));
+    // /sim's and /compare's background edits, so they cannot land in the next test.
+    await vi.waitFor(() => expect(edits).toHaveLength(2));
   });
 
   it('PUTs the list globally, or to one guild, with the bot token', async () => {
@@ -759,5 +815,129 @@ describe('command registration (scripts/discord-register-commands.mjs)', () => {
     ]);
     expect(seen[0].headers.get('authorization')).toBe('Bot bot-token');
     expect(await seen[0].json()).toEqual(COMMANDS);
+  });
+});
+
+describe('/compare', () => {
+  const TANK = RAW.replace(/^warlock=.*$/m, 'paladin=Shieldy').replace(/^spec=.*$/m, 'spec=protection');
+  const JOB2 = '0a000000-0000-4000-8000-000000000002';
+  const player = (name: string, specialization: string, mean: number) => {
+    const p = structuredClone(REPORT.sim.players[0]);
+    return { ...p, name, specialization, collected_data: { ...p.collected_data, dps: { ...p.collected_data.dps, mean } } };
+  };
+  const reportWith = (...players: unknown[]) => new Uint8Array(gzipSync(JSON.stringify({ ...REPORT, sim: { ...REPORT.sim, players } })));
+  const view = (id: string): JobView => ({
+    id, userId: USER, guildId: null, source: 'discord', status: 'done', lines: [], next: 0, summary: { dps: 1 }, notices: [],
+    effective: { threads: 16, args: [], profile: RAW }, createdAt: new Date(NOW - 60_000), finishedAt: new Date(NOW),
+  });
+
+  it('runs two to four characters in one job, from cloud slots or the Armory, and posts a ranked compare embed', async () => {
+    world.characters.push({ id: '0c000000-0000-4000-8000-000000000009', user_id: USER, label: 'Healz', raw: RAW.replace(/^warlock=.*$/m, 'warlock=Healz') });
+    const { store, redis } = fakeRedis();
+    await call(redis, command('compare', [
+      { name: 'character1', type: 3, value: CHAR }, { name: 'character2', type: 3, value: 'armory:eu:area-52:Testlock' },
+      { name: 'character3', type: 3, value: 'Healz' },
+    ]));
+    await vi.waitFor(() => expect(store.has(`discord:${JOB}`)).toBe(true));
+    expect(armoryCalls).toEqual(['http://127.0.0.1:3011/api/wow/character-profile/eu/area-52/Testlock']);
+    expect(mocks.enqueueJob).toHaveBeenCalledTimes(1);
+    const [, job] = mocks.enqueueJob.mock.calls[0];
+    expect(job.request.profile.match(/^warlock=/gm)).toHaveLength(3);
+    expect(job.characterId).toBeUndefined();
+    expect(edits[0].body.embeds![0].title).toBe('Simulating Main_Warlock vs Testlock-area-52 vs Healz · Patchwerk');
+
+    edits = [];
+    world.subscriptions[USER] = [];
+    world.discordJobs = [JOB];
+    mocks.jobView.mockResolvedValue(view(JOB));
+    mocks.resultBytes.mockResolvedValue(reportWith(player('Ann', 'Frost Mage', 300_000), player('Bo', 'Outlaw Rogue', 330_000), player('Cy', 'Fire Mage', 250_000)));
+    await tasks[0].run(deps(redis));
+    const [embed] = edits[0].body.embeds!;
+    expect(embed.title).toBe('Character compare · Patchwerk');
+    expect(embed.color).toBe(0xfff468);
+    const lines = embed.description!.split('\n\n');
+    expect(lines.map((l) => l.split('\n')[0])).toEqual(['🥇 **Bo** · Outlaw Rogue', '🥈 **Ann** · Frost Mage', '🥉 **Cy** · Fire Mage']);
+    expect(lines[1]).toMatch(/\*\*300,000\*\* ± [\d,]+ · -9\.1%$/);
+    expect(embed.fields![0]).toEqual({ name: 'Verdict', value: 'Bo leads by **30,000 DPS** (10.0%).' });
+  });
+
+  it('refuses fewer than two characters, and an unknown one, without enqueueing', async () => {
+    const { redis } = fakeRedis();
+    await call(redis, command('compare', [{ name: 'character1', type: 3, value: CHAR }]));
+    await call(redis, command('compare', [{ name: 'character1', type: 3, value: CHAR }, { name: 'character2', type: 3, value: 'Nobody' }]));
+    await vi.waitFor(() => expect(edits).toHaveLength(2));
+    expect(edits.map((e) => e.body.content).sort()).toEqual([
+      'No cloud character called "Nobody". Pick one from the list, or type Name-Realm to look one up on the Armory.',
+      'Pick at least two characters to compare.',
+    ]);
+    expect(mocks.enqueueJob).not.toHaveBeenCalled();
+  });
+
+  it('on a dungeon route, runs a tank as its own job facing its share of the health, and merges both into one compare', async () => {
+    world.characters.push({ id: '0c000000-0000-4000-8000-000000000008', user_id: USER, label: 'Shieldy', raw: TANK });
+    mocks.enqueueJob.mockResolvedValueOnce({ ok: true, id: JOB }).mockResolvedValueOnce({ ok: true, id: JOB2 });
+    const { store, redis } = fakeRedis();
+    await call(redis, command('compare', [
+      { name: 'character1', type: 3, value: CHAR }, { name: 'character2', type: 3, value: 'Shieldy' }, { name: 'route', type: 3, value: 'kings-rest' },
+    ]));
+    await vi.waitFor(() => expect(store.has(`discord:${JOB}`)).toBe(true));
+    const [dps, tank] = mocks.enqueueJob.mock.calls.map(([, j]) => j.request);
+    expect(dps.settings.fightStyle).toBe('DungeonRoute');
+    expect(dps.profile).not.toContain('paladin=');
+    expect(tank.profile).toContain('paladin=Shieldy');
+    const health = (r: { extraProfileLines: string[] }) => Number(/enemies=[^:]+:(\d+)/.exec(r.extraProfileLines.find((l) => l.includes('enemies='))!)![1]);
+    expect(health(tank) / health(dps)).toBeCloseTo(14 / 27, 3);
+    const saved = JSON.parse(store.get(`discord:${JOB}`)!.value);
+    expect(saved).toMatchObject({ jobs: [JOB, JOB2], kind: 'compare', fight: expect.stringContaining("King") });
+    expect(saved.note).toContain('Shieldy (tank) faced 52%');
+
+    edits = [];
+    world.subscriptions[USER] = [];
+    world.discordJobs = [JOB, JOB2];
+    mocks.jobView.mockImplementation(async (_app: unknown, id: string) => view(id));
+    mocks.resultBytes.mockImplementation(async (_app: unknown, id: string) =>
+      id === JOB ? reportWith(player('Main_Warlock', 'Demonology Warlock', 400_000)) : reportWith(player('Shieldy', 'Protection Paladin', 150_000)));
+    await tasks[0].run(deps(redis));
+    expect(edits).toHaveLength(1);
+    const [embed] = edits[0].body.embeds!;
+    expect(embed.description).toMatch(/^🥇 \*\*Main\\_Warlock\*\*.*\n.*\n\n🥈 \*\*Shieldy\*\*/);
+    expect(embed.fields!.find((f) => f.name === 'Health share')!.value).toContain('Shieldy (tank) faced 52%');
+  });
+
+  it('lists the invoker\'s cloud characters, then Armory characters Frostsim has seen, and the site\'s routes', async () => {
+    armory = { status: 200, body: { matches: [{ region: 'eu', name: 'Testlock', realm: 'Area 52', realmSlug: 'area-52', className: 'Warlock', spec: 'Demonology' }] } };
+    const typing = (name: string, value: string) => ({ type: 4, user: { id: ALICE }, data: { name: 'compare', options: [
+      { name, type: 3, value, focused: true }, { name: 'region', type: 3, value: 'eu' },
+    ] } });
+    expect((await call(null, typing('character2', 'te'))).body.data.choices).toEqual([
+      { name: 'Testlock · Area 52 (EU) · Demonology Warlock', value: 'armory:eu:area-52:Testlock' },
+    ]);
+    expect(armoryCalls).toEqual(['http://127.0.0.1:3011/api/wow/character-search?region=eu&q=te']);
+    const routes = (await call(null, typing('route', 'king'))).body.data.choices;
+    expect(routes).toEqual([{ name: expect.stringContaining("King"), value: 'kings-rest' }]);
+  });
+});
+
+describe('Post in channel', () => {
+  const click = (who: string) => ({ type: 3, token: TOKEN, user: { id: who }, data: { custom_id: `post:${JOB}` } });
+
+  it('posts the invoker\'s stored result publicly once; nobody else can', async () => {
+    const { store, redis } = fakeRedis();
+    store.set(`discord:post:${JOB}`, { value: JSON.stringify({ owner: ALICE, message: { embeds: [{ title: 'Main · Patchwerk', description: '**1 DPS**' }], components: [] } }), ttl: 86_400 });
+    expect((await call(redis, click(STRANGER))).body.data.content).toBe('Only the person who ran this can post it.');
+    const posted = await call(redis, click(ALICE));
+    expect(posted.body).toEqual({ type: 4, data: {
+      embeds: [{ title: 'Main · Patchwerk', description: `<@${ALICE}> shared\n**1 DPS**` }], components: [], allowed_mentions: { parse: [] },
+    } });
+    expect(posted.body.data.flags).toBeUndefined();
+    expect((await call(redis, click(ALICE))).body.data.content).toMatch(/can no longer be posted/);
+  });
+});
+
+describe('progressPct', () => {
+  it('reads the engine\'s own bar, across one phase per character', () => {
+    expect(progressPct(['Generating Baseline: A 1/1 [====>.....] 50/100 1.0'])).toBe(50);
+    expect(progressPct(['Generating Baseline: B 2/4 [>.........] 1/100 1.0'])).toBeCloseTo(27.5);
+    expect(progressPct(['no progress yet'])).toBeUndefined();
   });
 });

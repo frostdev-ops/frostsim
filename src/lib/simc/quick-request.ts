@@ -5,6 +5,7 @@ import type { ImportedCharacter } from '../import/character'
 import { importRouteExport } from '../dungeonRoute'
 import { DEFAULT_ACCURACY, DEFAULT_SETTINGS, withPlayerScopedLines, type Accuracy, type FightStyle } from './options'
 import { findPreset } from './presets'
+import { multiActorParts } from './multi-actor'
 import { raidBuffLines, type RaidBuffSelection } from './raid-buffs'
 import type { SimRequest } from './assemble'
 
@@ -68,4 +69,12 @@ export function quickRequest(character: ImportedCharacter, q: QuickOptions): Sim
     }),
     htmlReport: q.htmlReport ?? false,
   }
+}
+
+/** Quick Sim of several characters in one run, each its own sim (multi-actor.ts), as the Quick Sim screen builds it. */
+export function compareRequest(characters: readonly ImportedCharacter[], q: QuickOptions): SimRequest {
+  const one = quickRequest(characters[0], q)
+  if (characters.length < 2) return one
+  const parts = multiActorParts(characters.map((character) => ({ character })), one.extraProfileLines ?? [])
+  return { ...one, profile: parts.profile, extraProfileLines: parts.extraProfileLines }
 }

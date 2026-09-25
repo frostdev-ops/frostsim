@@ -38,3 +38,30 @@ export function multiActorParts(members: readonly Member[], extraLines: readonly
   })
   return { profile: profiles.join('\n'), extraProfileLines: shared, names }
 }
+
+const CLASS_LINE = /^\s*(\w+)\s*=\s*"?([^"\r\n]*)"?\s*$/
+
+/** Character blocks of a guided profile, each from its class line to the next; lines before the first class line go with it. */
+export function characterBlocks(profile: string): { name: string; text: string }[] {
+  const blocks: { name: string; lines: string[] }[] = []
+  let lead: string[] = []
+  for (const line of profile.split('\n')) {
+    const m = CLASS_LINE.exec(line)
+    if (m && Object.hasOwn(CLASS_LABELS, m[1].toLowerCase())) {
+      blocks.push({ name: m[2] || m[1], lines: [...lead, line] })
+      lead = []
+    } else if (blocks.length) blocks[blocks.length - 1].lines.push(line)
+    else lead.push(line)
+  }
+  return blocks.map((b) => ({ name: b.name, text: b.lines.join('\n') }))
+}
+
+type Report = { sim: { players?: unknown[] } & Record<string, unknown> }
+
+/** The first report with the second's characters appended after its own. Each character was its own sim, so nothing is combined. */
+export function mergeCharacters(first: ArrayBuffer, second: ArrayBuffer): ArrayBuffer {
+  const decode = (b: ArrayBuffer): Report => JSON.parse(new TextDecoder().decode(b))
+  const merged = decode(first)
+  merged.sim.players = [...(merged.sim.players ?? []), ...(decode(second).sim.players ?? [])]
+  return new TextEncoder().encode(JSON.stringify(merged)).buffer as ArrayBuffer
+}

@@ -46,13 +46,14 @@ describe.skipIf(!PG)('discord postgres integration (needs FROSTSIM_TEST_PG; the 
   let raw: RawRedis | null = null;
   const redisKeys = new Set<string>([`frostsim:native:${PACK}`]);
   const objects = new Map<string, Uint8Array>();
-  const edits: { url: string; content: string }[] = [];
+  const edits: { url: string; content: string; title?: string; description?: string }[] = [];
 
   const fakeFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const req = input instanceof Request ? input : new Request(input, init);
     const url = new URL(req.url);
     if (url.hostname === 'discord.com') {
-      edits.push({ url: url.pathname, content: (await req.json()).content });
+      const sent = await req.json();
+      edits.push({ url: url.pathname, content: sent.content, title: sent.embeds?.[0]?.title, description: sent.embeds?.[0]?.description });
       return new Response('{}');
     }
     const path = url.pathname.slice(1);
@@ -242,7 +243,7 @@ describe.skipIf(!PG)('discord postgres integration (needs FROSTSIM_TEST_PG; the 
     }), '127.0.0.1');
     expect(await res.json()).toEqual({ type: 5, data: { flags: 64 } });
     await vi.waitFor(() => expect(edits).toHaveLength(1), { timeout: 5000 });
-    expect(edits[0]).toEqual({ url: `/api/v10/webhooks/${APP_ID}/tok_en/messages/@original`, content: expect.stringMatching(/^Queued \*\*Main\*\* on Cleave Add/) });
+    expect(edits[0]).toMatchObject({ url: `/api/v10/webhooks/${APP_ID}/tok_en/messages/@original`, title: 'Simulating Main · Cleave Add' });
 
     const [job] = await sql`select id, source, user_id from compute_jobs where source = 'discord'`;
     expect(job.user_id).toBe(userId);
@@ -250,10 +251,13 @@ describe.skipIf(!PG)('discord postgres integration (needs FROSTSIM_TEST_PG; the 
     // The token is stored just after the "Queued" edit.
     await vi.waitFor(async () => expect(await raw!.ttl(`frostsim:discord:${job.id}`)).toBeGreaterThan(890));
 
-    // Still running: the task leaves the reply alone.
+    // Still queued: the task shows its place in the queue, once.
     const [{ run }] = discordTasks;
     await run(app());
-    expect(edits).toHaveLength(1);
+    expect(edits).toHaveLength(2);
+    expect(edits[1].description).toMatch(/^Queued/);
+    await run(app());
+    expect(edits).toHaveLength(2);
 
     const [worker] = await sql`select id from workers limit 1`;
     await sql`update compute_jobs set status = 'cancelled' where source = 'loothing' and status = 'queued'`;
@@ -263,13 +267,13 @@ describe.skipIf(!PG)('discord postgres integration (needs FROSTSIM_TEST_PG; the 
     expect(await completeJob(app(), worker.id, job.id, 10, { dps: 223973.7, dpsError: 2137.6, iterations: 53 })).toBe('ok');
 
     await run(app());
-    expect(edits).toHaveLength(2);
+    expect(edits).toHaveLength(3);
     const [share] = await sql`select id, title, bytes from shares where user_id = ${userId}`;
     expect(share.title).toBe('Main · Cleave Add');
     expect(share.bytes).toBeGreaterThan(0);
-    expect(edits[1].content).toBe(`**Main** on Cleave Add: **223,974 DPS** ± 2,138 (95%)\nFull report: ${ORIGIN}/#/s/${share.id}`);
+    expect(edits[2]).toMatchObject({ title: 'Main · Cleave Add', description: expect.stringMatching(/^\*\*223,974 DPS\*\*/) });
     expect(await raw.exists(`frostsim:discord:${job.id}`)).toBe(0);
     await run(app());
-    expect(edits).toHaveLength(2);
+    expect(edits).toHaveLength(3);
   });
 });

@@ -18,6 +18,8 @@ import type { ReportWorkerRequest, ReportWorkerResponse } from './report-worker'
 import type { PlayerDetail } from './detail'
 import { candidatesDone, latestProgress, type EngineProgress } from './progress'
 import { acquireEngineSlot, type EngineSlot } from '../engine-budget'
+import { roleGroups, roleNote } from './role-share'
+import { SequenceWorker } from './sequence-worker'
 
 /** Engine worker message protocol; bump it and public/engine/sim-worker.js together. */
 export const WORKER_PROTOCOL = 1
@@ -567,9 +569,13 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
     }
   }
 
-  async function start(req: SimRequest): Promise<void> {
+  async function start(whole: SimRequest): Promise<void> {
     try {
       emit('validating')
+      // A Dungeon Route compare with tanks or healers runs each role as its own sim (role-share.ts); one role group is just the
+      // request with its route health scaled.
+      const groups = roleGroups(whole)
+      const req = groups?.length === 1 ? groups[0].request : whole
 
       const capability = await resolveCapability()
       if (settled) return
@@ -596,11 +602,12 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
 
       // Pool ceiling from artifact not request; warnings in one synchronous loop keep the old event order.
       const { profile: profileText, args, warnings, threads } = assembleRun(req, capability.maxThreads)
-      inputWarnings = warnings
+      inputWarnings = groups ? [...warnings, roleNote(groups)] : warnings
       // assembleRun puts the clamp first.
       if (threads !== req.settings.threads) clampWarning = warnings[0]
       for (const warning of inputWarnings) emit(state, { warning })
-      effectiveProfile = profileText
+      const starts = groups && groups.length > 1 ? groups.map((g) => assembleRun(g.request, capability.maxThreads)) : null
+      effectiveProfile = starts ? starts.map((g, i) => `# Frostsim role group ${i + 1} of ${starts.length}\n${g.profile}`).join('\n\n') : profileText
       effectiveArgs = args
 
       const limits = { ...DEFAULT_LIMITS, ...(remote ? { initTimeoutMs: REMOTE_INIT_TIMEOUT_MS } : {}), ...req.limits }
@@ -619,7 +626,10 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
       slot = acquired
 
       emit('acquiring')
-      engineWorker = (deps.createEngineWorker ?? remote ?? defaultDeps.createEngineWorker)(capability.artifact, capability.engineDir)
+      const engineFor = (r: SimRequest) => deps.createEngineWorker ?? (remote ? remoteEngine?.(r, capability.engineDir) : null) ?? defaultDeps.createEngineWorker
+      engineWorker = starts
+        ? new SequenceWorker(starts, (i) => engineFor(groups![i].request)(capability.artifact, capability.engineDir)) as unknown as Worker
+        : (deps.createEngineWorker ?? remote ?? defaultDeps.createEngineWorker)(capability.artifact, capability.engineDir)
       wireEngineWorker(req, requestedIds, capability)
       armTimers(limits)
 

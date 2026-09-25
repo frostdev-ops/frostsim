@@ -38,7 +38,27 @@ export const REGIONS = [['us', 'US'], ['eu', 'EU'], ['kr', 'KR'], ['tw', 'TW']];
 
 const choices = (pairs) => pairs.map(([value, name]) => ({ name, value }));
 
+const ROUTE = { type: STRING, name: 'route', description: 'A dungeon route to run instead of a fight style', autocomplete: true };
+const RUN_OPTIONS = [
+  { type: STRING, name: 'fight', description: 'Fight style (default Patchwerk)', choices: choices(FIGHTS) },
+  ROUTE,
+  { type: STRING, name: 'accuracy', description: 'How precise the result is (default Standard)', choices: choices(ACCURACIES) },
+  { type: BOOLEAN, name: 'share', description: 'Post the finished result in this channel for everyone (default: only you see it)' },
+];
+// Autocomplete lists your cloud characters, then Armory characters Frostsim has seen; typed Name-Realm is looked up in `region`.
+const slot = (n, required) => ({
+  type: STRING, name: `character${n}`, description: `${required ? '' : 'Optional: '}a cloud character, or Name-Realm from the Armory`,
+  autocomplete: true, max_length: 100, ...(required ? { required: true } : {}),
+});
+
 export const COMMANDS = [
+  {
+    name: 'compare', type: CHAT_INPUT, description: 'Compare two to four characters in one Frostsim Cloud run',
+    // Required options come first (Discord refuses a list that puts them after optional ones).
+    options: [slot(1, true), slot(2, true), slot(3, false), slot(4, false),
+      { type: STRING, name: 'region', description: 'Region for typed Name-Realm lookups (default US)', choices: choices(REGIONS) },
+      ...RUN_OPTIONS],
+  },
   {
     name: 'sim', type: CHAT_INPUT, description: 'Simulate a saved character, or any character on the Armory, in Frostsim Cloud',
     // A saved character, or name + realm (+ region) for an Armory lookup; the handler asks for one or the other.
@@ -47,9 +67,7 @@ export const COMMANDS = [
       { type: STRING, name: 'name', description: 'Armory lookup: character name', max_length: 24 },
       { type: STRING, name: 'realm', description: 'Armory lookup: realm, e.g. Area 52', max_length: 100, autocomplete: true },
       { type: STRING, name: 'region', description: 'Armory lookup: region (default US)', choices: choices(REGIONS) },
-      { type: STRING, name: 'fight', description: 'Fight style (default Patchwerk)', choices: choices(FIGHTS) },
-      { type: STRING, name: 'accuracy', description: 'How precise the result is (default Standard)', choices: choices(ACCURACIES) },
-      { type: BOOLEAN, name: 'share', description: 'Post the finished result in this channel for everyone (default: only you see it)' },
+      ...RUN_OPTIONS,
     ],
   },
   { name: 'link', type: CHAT_INPUT, description: 'Link this Discord account to Frostsim' },
