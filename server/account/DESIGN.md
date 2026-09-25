@@ -194,6 +194,16 @@ error?, summary?, characterId, characterLabel, fightStyle, createdAt, finishedAt
 user are visible. DELETE cancels (a queued job is free, a running one is metered to the cancel) and answers 409
 `finished` once terminal. Loothing retries a create only after a network error or a non-JSON 5xx, with the same key.
 
+Agent additions (agreed with Loothing 2026-09-25, for its Discord agent). POST `jobs` takes `characterIds` (2-4 distinct slots)
+in place of `characterId`: one compare job, built like Discord `/compare`, counted and metered as one job, with `characterId`
+null; a set simc cannot run together answers 422 `unbuildable`. An optional `origin` (`agent` or `command`) goes into the audit
+row only. GET `jobs` takes `days` (1-30, default 1) and `limit` (1-100, default 20); the summary is kept for good. GET
+`jobs/:id/detail` is `loothing-detail.ts`'s compact report (engine, fight, and per character the DPS distribution, fight length,
+talents, gear, buffed stats, top 15 abilities and buffs, resource overflow and measured stat weights), read from the stored
+result: 409 `not-done` until the job is done, 410 `expired` once R2's one-day lifecycle has removed it. `/resolve` adds each
+slot's `name`, `class`, `spec`, `realm`, `region` (from `who`) and `itemLevel` (latest snapshot) where recorded. Loothing
+stores only job ids and summaries; storing detail is undecided.
+
 **P4 Sign-in landing.** The callback redirects to `/?account=<code>#<return>` (`signed-in`, `linked`,
 `error-<reason>`). The UI shows the message only when `/me` agrees with it and strips the parameter. Stripe
 returns with `billing-success` or `billing-cancelled`.
@@ -225,8 +235,8 @@ DELETE); `admin/users` (GET), `admin/users/:id` (GET, PATCH, DELETE);
 by id), `characters/:id/history` (GET), `characters/:id/sims` (POST); `shares` (GET, POST), `shares/:id` (public GET, owner DELETE), `shares/:id/blob` (owner PUT, public GET);
 `compute/jobs` (POST), `compute/jobs/:id` (GET, DELETE), `compute/jobs/:id/result`; `worker/*` (P1);
 `discord/interactions`, `discord/install` (302 to Discord's add-to-server page), `discord/guilds` (GET: the guilds the
-user pays for), `discord/guilds/:id` (PUT: role allowances); `integrations/loothing/resolve`, `integrations/loothing/jobs` (POST, GET: the last 24 h),
-`integrations/loothing/jobs/:id` (GET, DELETE) (bearer token, a linked Discord identity and a grant); `health` (always on, 503 while Postgres is down with any
+user pays for), `discord/guilds/:id` (PUT: role allowances); `integrations/loothing/resolve`, `integrations/loothing/jobs` (POST, GET: up to 30 days),
+`integrations/loothing/jobs/:id` (GET, DELETE), `integrations/loothing/jobs/:id/detail` (GET) (bearer token, a linked Discord identity and a grant); `health` (always on, 503 while Postgres is down with any
 feature enabled).
 
 ## Risks (R)

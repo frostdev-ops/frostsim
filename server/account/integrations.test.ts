@@ -1,8 +1,11 @@
 // Loothing integration (CLAUDE.md D15; DESIGN.md P3): bearer auth, link and grant refusals with their fix-it URLs, the per-Discord-user
 // rate limit, job creation through enqueueJob with an Idempotency-Key, Retry-After hints, read-back, listing and cancel limited to
-// Loothing's own jobs, and one audit row per call. Compute and packs
+// Loothing's own jobs, and one audit row per call; the agent additions: compare jobs from 2-4 slots, `origin`, the list window and
+// limit, the compact detail of a finished job, and slot context on resolve. Compute and packs
 // are fakes; SQL and Redis are stand-ins. The same routes run against real Postgres in integrations.integration.test.ts.
 
+import { readFileSync } from 'node:fs';
+import { gzipSync } from 'node:zlib';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp, type RequestCtx } from './app';
 import { loadConfig } from './config';
@@ -12,9 +15,9 @@ import type { Redis } from './redis';
 import { sha256Hex } from './signed';
 import { resolveLoothing, routes } from './integrations';
 
-const mocks = vi.hoisted(() => ({ enqueueJob: vi.fn(), cancelJob: vi.fn(), defaultPack: vi.fn() }));
+const mocks = vi.hoisted(() => ({ enqueueJob: vi.fn(), cancelJob: vi.fn(), defaultPack: vi.fn(), resultBytes: vi.fn() }));
 vi.mock('./compute/queue', async (original) => ({
-  ...(await original<typeof import('./compute/queue')>()), enqueueJob: mocks.enqueueJob, cancelJob: mocks.cancelJob,
+  ...(await original<typeof import('./compute/queue')>()), enqueueJob: mocks.enqueueJob, cancelJob: mocks.cancelJob, resultBytes: mocks.resultBytes,
 }));
 vi.mock('./compute/packs', async (original) => ({ ...(await original<typeof import('./compute/packs')>()), defaultPack: mocks.defaultPack }));
 
@@ -25,7 +28,11 @@ const STRANGER = '333333333333333333';
 const USER = '0f000000-0000-4000-8000-000000000001';
 const CHAR = '0c000000-0000-4000-8000-000000000001';
 const JOB = '0a000000-0000-4000-8000-000000000001';
+const CHAR2 = '0c000000-0000-4000-8000-000000000002';
 const RAW = 'warlock=Testchar\nlevel=90\nrace=dracthyr\nspec=demonology\nhead=,id=212077,bonus_id=6652\n';
+const RAW2 = 'warlock=Otherchar\nlevel=90\nrace=orc\nspec=destruction\nhead=,id=212077,bonus_id=6652\n';
+/** A real simc v2 report (MID2_Warlock_Affliction, 20 iterations, crit and haste weights), trimmed of sequences and timelines. */
+const REPORT = readFileSync(new URL('../../tests/fixtures/simc-report-affliction.json', import.meta.url), 'utf8');
 
 const config = loadConfig({
   FEATURES: 'discord', PUBLIC_ORIGIN: ORIGIN, DATABASE_URL: 'postgres://unused', SESSION_SECRET: 's'.repeat(32),
@@ -46,7 +53,12 @@ function fakeSql(): Sql {
   const answer = (q: string, v: unknown[]): unknown[] => {
     if (q.includes("from identities i join users u on u.id = i.user_id")) return linked && v[0] === DISCORD ? [{ user_id: USER }] : [];
     if (q.includes('from integration_grants')) return granted ? [{ '?column?': 1 }] : [];
-    if (q.includes('select id, label, updated_at from cloud_characters')) return [{ id: CHAR, label: 'Main', updated_at: new Date('2026-09-20T00:00:00Z') }];
+    if (q.includes('select c.id, c.label, c.updated_at, c.who, s.item_level from cloud_characters')) return [
+      { id: CHAR, label: 'Main', updated_at: new Date('2026-09-20T00:00:00Z'), item_level: 341.5,
+        who: { name: 'Testchar', className: 'warlock', spec: 'demonology', server: 'area52', region: 'us' } },
+      { id: CHAR2, label: 'Old slot', updated_at: new Date('2026-09-19T00:00:00Z'), item_level: null, who: null },
+    ];
+    if (q.includes('select id, raw from cloud_characters')) return [{ id: CHAR, raw: RAW }, { id: CHAR2, raw: RAW2 }];
     if (q.includes('select id, label, raw from cloud_characters')) return v[1] === CHAR ? [{ id: CHAR, label: 'Main', raw: RAW }] : [];
     if (q.includes('select id from compute_jobs where source = \'loothing\'')) return keyed && v[1] === keyed ? [{ id: JOB }] : [];
     if (q.includes('from compute_jobs j left join cloud_characters')) {
@@ -94,6 +106,7 @@ beforeEach(() => {
   mocks.defaultPack.mockResolvedValue('c97e14c7a5ad-dc0508afe741');
   mocks.enqueueJob.mockResolvedValue({ ok: true, id: JOB });
   mocks.cancelJob.mockResolvedValue(true);
+  mocks.resultBytes.mockResolvedValue(gzipSync(REPORT));
 });
 
 describe('resolveLoothing', () => {
@@ -157,9 +170,56 @@ describe('link and grant', () => {
 });
 
 describe('resolve and jobs', () => {
-  it('resolve lists the user\'s cloud characters', async () => {
+  it('resolve lists the user\'s cloud characters with who they are, where the slot recorded it', async () => {
     const res = await send('POST', '/api/v1/integrations/loothing/resolve', { discordId: DISCORD });
-    expect(await res.json()).toEqual({ characters: [{ id: CHAR, label: 'Main', updatedAt: '2026-09-20T00:00:00.000Z' }] });
+    expect(await res.json()).toEqual({ characters: [
+      { id: CHAR, label: 'Main', updatedAt: '2026-09-20T00:00:00.000Z', name: 'Testchar', class: 'warlock', spec: 'demonology',
+        realm: 'area52', region: 'us', itemLevel: 341.5 },
+      { id: CHAR2, label: 'Old slot', updatedAt: '2026-09-19T00:00:00.000Z' },
+    ] });
+  });
+
+  it('creates one compare job from 2-4 of the user\'s slots, and records an agent origin in the audit row', async () => {
+    const create = (over: object) => send('POST', '/api/v1/integrations/loothing/jobs', { discordId: DISCORD, preset: 'patchwerk', ...over });
+    const res = await create({ characterIds: [CHAR, CHAR2], origin: 'agent' });
+    expect(res.status).toBe(201);
+    const [, job] = mocks.enqueueJob.mock.calls[0];
+    expect(job).toMatchObject({ userId: USER, source: 'loothing', characterId: undefined });
+    expect(job.request.profile).toContain('Testchar');
+    expect(job.request.profile).toContain('Otherchar');
+    expect(audits[0].detail).toEqual({ discordId: DISCORD, preset: 'patchwerk', origin: 'agent', characters: 2, jobId: JOB, status: 201 });
+    for (const bad of [{ characterIds: [CHAR] }, { characterIds: [CHAR, CHAR] }, { characterIds: [CHAR, CHAR2], characterId: CHAR },
+      { characterIds: [CHAR, 7] }, { characterIds: 'x' }, { characterId: CHAR, origin: 'robot' }]) {
+      expect((await create(bad)).status).toBe(400);
+    }
+    expect((await create({ characterIds: [CHAR, '0c000000-0000-4000-8000-00000000000f'] })).status).toBe(404);
+    expect(mocks.enqueueJob).toHaveBeenCalledTimes(1);
+  });
+
+  it('lists up to `limit` jobs from the last `days`, and 400s either out of range', async () => {
+    const list = (q: string) => send('GET', `/api/v1/integrations/loothing/jobs?discordId=${DISCORD}${q}`);
+    expect((await list('&days=30&limit=100')).status).toBe(200);
+    expect(jobQueries[0].values.at(-1)).toBe(100);
+    for (const q of ['&days=0', '&days=31', '&limit=101', '&limit=2.5', '&days=x']) expect((await list(q)).status).toBe(400);
+  });
+
+  it('returns the compact detail of a finished job, 409 while it is not done and 410 once the result has expired', async () => {
+    const detail = () => send('GET', `/api/v1/integrations/loothing/jobs/${JOB}/detail?discordId=${DISCORD}`);
+    const res = await detail();
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toMatchObject({ id: JOB, fight: { style: 'Patchwerk', targets: 1 }, characters: [{ spec: 'Affliction Warlock' }] });
+    expect(JSON.stringify(body).length).toBeLessThan(8000);
+    expect(mocks.resultBytes).toHaveBeenCalledWith(expect.anything(), JOB);
+    jobRows = [row({ status: 'running' })];
+    expect(await (await detail()).json()).toMatchObject({ error: 'not-done' });
+    jobRows = [row()];
+    mocks.resultBytes.mockResolvedValueOnce(null);
+    const gone = await detail();
+    expect([gone.status, (await gone.json()).error]).toEqual([410, 'expired']);
+    jobRows = [];
+    expect((await detail()).status).toBe(404);
+    expect(audits.map((a) => [a.action, a.detail.status])).toEqual([200, 409, 410, 404].map((s) => ['loothing.job.detail', s]));
   });
 
   it('creates a personal loothing job from the cloud character and preset', async () => {
