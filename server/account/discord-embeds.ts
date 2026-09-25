@@ -102,7 +102,7 @@ export function compareEmbed(o: { fight: string; report: SimReport; note?: strin
   };
 }
 
-/** While a run waits or runs: its place in the queue, or a progress bar. `image`: an animated banner, when one is configured. */
+/** While a run waits or runs: its place in the queue, or a progress bar, over the character's pixel battle GIF. */
 export function progressEmbed(o: { label: string; fight: string; position?: number; pct?: number; image?: string }): Embed {
   const status = o.position ? `Queued · ${o.position === 1 ? 'next up' : `${o.position} in line`}`
     : o.pct === undefined ? 'Simulating…' : `\`${bar(o.pct / 100, 20)}\` **${Math.round(o.pct)}%**`;

@@ -43,6 +43,8 @@ export interface ReportSummary {
   searchTiming?: { iterationsPerSecond: number; iterations: number; errorPct: number | null }
   playerName?: string
   specialization?: string
+  /** Every character of a multi-character Quick Sim, by the stored id it was run from, with its own result. */
+  members?: { characterId: string; name: string; dps: number; confidenceMargin?: number }[]
   candidateCount?: number
   /** Best few candidates for a preview row; the full table comes from the blob. */
   topCandidates?: { id: string; label: string; mean: number; delta: number }[]

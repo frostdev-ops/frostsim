@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { encounterFor, heroStyle } from './style'
+import { encounterFor, fightGif, FIGHT_GIFS, heroStyle } from './style'
 
 describe('pixel battle style', () => {
   it('picks melee or ranged from class and spec', () => {
@@ -15,6 +15,16 @@ describe('pixel battle style', () => {
     expect(heroStyle('paladin', 'retribution')).toMatchObject({ weapon: 'greatsword', holy: true })
   })
 
+  it('reads the class keys exports write, and names each look\'s Discord GIF', () => {
+    expect(heroStyle('deathknight', 'blood')).toEqual(heroStyle('death knight', 'blood'))
+    expect(heroStyle('demonhunter').weapon).toBe('glaives')
+    expect(fightGif('deathknight', 'unholy')).toBe('death_knight-unholy')
+    expect(fightGif('mage', 'frost')).toBe('mage')
+    expect(fightGif('warlock', 'demonology')).toBe('warlock-demonology')
+    expect(fightGif('bard')).toBeNull()
+    expect(FIGHT_GIFS.map((g) => g.name)).toContain('hunter-beast_mastery')
+  })
+
   it('shapes the enemies from fight style, targets and tool', () => {
     expect(encounterFor('Patchwerk', 1, 'quick')).toMatchObject({ boss: 'boss', adds: 0, loot: null })
     expect(encounterFor('ExecutePatchwerk').bossStart).toBe(0.2)
@@ -22,5 +32,12 @@ describe('pixel battle style', () => {
     expect(encounterFor('HecticAddCleave', 3, 'gear')).toMatchObject({ boss: 'boss', adds: 3, loot: 'gem' })
     expect(encounterFor('DungeonSlice', 8, 'crests')).toMatchObject({ boss: null, adds: 5, loot: 'coin' })
     expect(encounterFor('TargetDummy').boss).toBe('dummy')
+  })
+})
+
+describe('Discord fight GIFs', () => {
+  it('has a rendered file for every look (npm run data:fight-gifs)', async () => {
+    const { existsSync } = await import('node:fs')
+    for (const g of FIGHT_GIFS) expect(existsSync(new URL(`../../../../public/discord/fight/${g.name}.gif`, import.meta.url)), g.name).toBe(true)
   })
 })

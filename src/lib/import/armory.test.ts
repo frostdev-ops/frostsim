@@ -21,7 +21,7 @@ export const SPECIALIZATIONS = {
 export const EQUIPMENT = {
   equipped_items: [
     {
-      slot: { type: 'HEAD' }, item: { id: 271546 }, bonus_list: [13334, 6652, 13696],
+      slot: { type: 'HEAD' }, item: { id: 271546 }, name: 'Crown of the (Void)', level: { value: 678 }, bonus_list: [13334, 6652, 13696],
       enchantments: [
         { enchantment_id: 8017, enchantment_slot: { id: 0 } },
         { enchantment_id: 9999, enchantment_slot: { id: 6 } },
@@ -50,7 +50,8 @@ describe('armoryProfile', () => {
     })
     const bySlot = Object.fromEntries(c.equipped.map((i) => [i.slot, i]))
     expect(Object.keys(bySlot).sort()).toEqual(['finger1', 'head', 'main_hand', 'trinket1', 'wrist'])
-    expect(bySlot.head).toMatchObject({ itemId: 271546, bonusIds: [13334, 6652, 13696], enchantId: 8017, gemIds: [] })
+    expect(bySlot.head).toMatchObject({ itemId: 271546, bonusIds: [13334, 6652, 13696], enchantId: 8017, gemIds: [], addonName: 'Crown of the Void', addonItemLevel: 678 })
+    expect(bySlot.wrist.addonItemLevel).toBeUndefined()
     expect(bySlot.finger1).toMatchObject({ gemIds: [240983], bonusIds: [12843] })
     expect(bySlot.wrist.craftedStats).toEqual([32, 40])
     expect(bySlot.trinket1.extra).toEqual({ addon_id: '7000' })

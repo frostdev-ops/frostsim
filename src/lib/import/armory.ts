@@ -59,7 +59,8 @@ function talents(specializations: unknown, specId: number | null): string | null
   return typeof code === 'string' && /^[A-Za-z0-9+/=]+$/.test(code) ? code : null
 }
 
-/** One equipped item as `slot=,id=...` (bcp_api parse_items), or null for a slot simc has no option for. */
+/** One equipped item as `slot=,id=...` (bcp_api parse_items), or null for a slot simc has no option for. Preceded, as in an addon
+ *  export, by `# Name (item level)` when the API gives both, so gear lists and item level history read the game's own values. */
 function itemLine(entry: unknown): string | null {
   const e = obj(entry)
   const slot = SLOTS[String(obj(e.slot).type)]
@@ -85,7 +86,9 @@ function itemLine(entry: unknown): string | null {
   if (crafted.length) parts.push(`crafted_stats=${crafted.join('/')}`)
   const drop = uint(e.timewalker_level)
   if (drop) parts.push(`drop_level=${drop}`)
-  return `${slot}=,${parts.join(',')}`
+  const name = typeof e.name === 'string' ? e.name.replace(/[\r\n()]/g, '').trim() : ''
+  const ilvl = uint(obj(e.level).value)
+  return `${name && ilvl ? `# ${name} (${ilvl})\n` : ''}${slot}=,${parts.join(',')}`
 }
 
 /** Profile text parseAddonExport reads; throws ArmoryError with a message for the user when the API answer is unusable. */

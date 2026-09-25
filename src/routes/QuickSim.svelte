@@ -92,13 +92,21 @@
     // One character: exactly the single-actor request as before. More: one block each (multi-actor.ts).
     const parts = extras.length
       ? multiActorParts([{ character, overrides }, ...extras.map((e) => ({ character: e.character }))], lines)
-      : { profile: buildProfile(character, overrides), extraProfileLines: lines }
+      : { profile: buildProfile(character, overrides), extraProfileLines: lines, names: [character.name] }
     const main = stored?.label ?? character.name
     // A new run shows its own result, even when started from the reopened setup.
     settingsOpen = false
+    // Each stored character in the run, by the name the report gives it, so every one gets its own history point.
+    const ids = [stored?.id, ...extras.map((e) => (e.id === DRAFT ? undefined : e.id))]
     await startRun({
       tool: 'quick',
       title: extras.length ? `${main} and ${extras.length} more — Quick Sim` : `${main} — Quick Sim`,
+      summarize: extras.length ? (report) => ({
+        members: parts.names.flatMap((name, i) => {
+          const p = report.players.find((x) => x.name === name)
+          return ids[i] && p ? [{ characterId: ids[i]!, name, dps: p.dps.mean, confidenceMargin: p.dpsConfidence?.margin }] : []
+        }),
+      }) : undefined,
       request: {
         schemaVersion: 1,
         profile: parts.profile,

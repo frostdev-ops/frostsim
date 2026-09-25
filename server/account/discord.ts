@@ -32,6 +32,7 @@ import { FIGHT_PRESETS, findPreset } from '../../src/lib/simc/presets';
 import { compareRequest, quickRequest } from '../../src/lib/simc/quick-request';
 import { latestProgress } from '../../src/lib/simc/progress';
 import { roleGroups, roleNote } from '../../src/lib/simc/role-share';
+import { fightGif } from '../../src/lib/ui/pixel/style';
 import { parseEngineNotice, parseReport, type ReportLog, type SimReport } from '../../src/lib/simc/report';
 import { makePortable } from '../../src/lib/store/records';
 import { reportSnapshot } from '../../src/lib/store/report-share';
@@ -114,6 +115,8 @@ interface Pending {
   public?: boolean;
   /** The progress last shown ("q<position>" or a percentage) and when. */
   shown?: string; shownAt?: number;
+  /** The pixel battle shown while it runs: the first character's pre-rendered look (scripts/render-fight-gifs.mjs). */
+  gif?: string;
 }
 
 const inflate = promisify(gunzip);
@@ -410,9 +413,12 @@ async function startRun(app: AppCtx, i: Interaction, discordId: string, received
   // Before the token is stored: from then on the task may post the result, and a late "Queued" would overwrite it.
   const share = i.data?.options?.find((o) => o.name === 'share')?.value === true;
   const then = share ? 'The result will be posted in this channel.' : '';
-  await edit({ content: `${pool.trim()} ${then}`.trim(), embeds: [progressEmbed({ label, fight: fight.fight })] });
+  const look = fightGif(picked[0].character.className, picked[0].character.spec);
+  const gif = look ? `${app.config.publicOrigin}/discord/fight/${look}.gif` : undefined;
+  await edit({ content: `${pool.trim()} ${then}`.trim(), embeds: [progressEmbed({ label, fight: fight.fight, image: gif })] });
   const pending: Pending = {
     token, label, presetId: fight.presetId, fight: fight.fight, exp: receivedMs + TOKEN_TTL_S * 1000, kind: compare ? 'compare' : 'sim', owner: discordId,
+    ...(gif ? { gif } : {}),
     ...(ids.length > 1 ? { jobs: ids } : {}), ...(groups ? { note: roleNote(groups) } : {}), ...(share ? { share: discordId } : {}),
   };
   const saved = await tryRedis(app.redis, app.log,
@@ -656,6 +662,7 @@ async function showProgress(app: AppCtx, key: string, pending: Pending, views: J
   if (shown === pending.shown) return;
   const res = await editReply(app, pending.token, { embeds: [progressEmbed({
     label: pending.label, fight: fightOf(pending), position: queued && !running ? queued.position : undefined, pct: running ? pct : undefined,
+    image: pending.gif,
   })] });
   if (!res?.ok) return;
   // XX: never recreate a key another instance has just taken.

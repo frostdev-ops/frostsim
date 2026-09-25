@@ -36,10 +36,11 @@
   const date = (iso: string) => new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
   const signed = (n: number, digits = 1) => `${n >= 0 ? '+' : '−'}${Math.abs(n).toFixed(digits)}`
 
-  // A save moves the slot's updatedAt, which may add a gear snapshot.
+  // A save moves the slot's updatedAt, which may add a gear snapshot; a finished run adds a report to upload.
   $effect(() => {
     const id = slotId
     void slot?.updatedAt
+    void app.reports.length
     if (id) void sync(id, localId)
     else history = null
   })
@@ -55,7 +56,7 @@
       if (id !== slotId) return
       history = h
       const known = new Set(h.sims.map((s) => s.reportId).filter(Boolean))
-      const fresh = app.reports.filter((r) => r.characterId === local).map(simPoint).filter((p): p is SimPoint => !!p && !known.has(p.reportId))
+      const fresh = app.reports.map((r) => simPoint(r, local)).filter((p): p is SimPoint => !!p && !known.has(p.reportId))
       let added = 0
       for (let i = 0; i < fresh.length; i += 50) added += (await api<{ added: number }>(`/characters/${id}/sims`, 'POST', { points: fresh.slice(i, i + 50) })).added
       if (!added) return
@@ -132,18 +133,18 @@
     <div class="charts">
       <figure>
         <figcaption class="xs muted">Item level</figcaption>
-        {#if ilvlChart && levels.length > 1}
+        {#if ilvlChart}
           <svg viewBox="-6 -6 {W + 12} {H + 12}" role="img" aria-label="Item level over time">
             <path d={ilvlChart.d} class="line ilvl" />
             {#each ilvlChart.dots as p, i (i)}<circle cx={p.cx} cy={p.cy} r="3.5" class="dot ilvl"><title>{p.label}</title></circle>{/each}
           </svg>
         {:else}
-          <p class="empty xs muted">Save this character again after a gear change to start the line.</p>
+          <p class="empty xs muted">{history.snapshots.length ? 'This export has no item levels. Update it from the Armory or the addon to start the line.' : 'Save this character to start the line.'}</p>
         {/if}
       </figure>
       <figure>
         <figcaption class="xs muted">DPS <span class="legend"><i class="run"></i>your sims <i class="patch"></i>patch re-sims</span></figcaption>
-        {#if dpsChart && shown.length > 1}
+        {#if dpsChart}
           <svg viewBox="-6 -6 {W + 12} {H + 12}" role="img" aria-label="DPS over time">
             <path d={dpsChart.d} class="line dps" />
             {#each dpsChart.dots as p, i (i)}

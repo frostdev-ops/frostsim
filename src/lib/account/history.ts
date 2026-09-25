@@ -45,16 +45,20 @@ export function gearChanges(before: GearItem[], after: GearItem[]): GearChange[]
 
 export interface SimPoint { reportId: string; createdAt: string; dps: number; dpsError?: number; fightStyle?: string; targets?: number; gameBuild?: string }
 
-/** A finished Quick Sim as a history point, or null. Other tools change gear or talents on purpose, so only Quick Sim tracks the
- *  character as it is. */
-export function simPoint(r: StoredReport): SimPoint | null {
-  if (r.tool !== 'quick' || r.completion !== 'complete' || !(Number(r.summary.dps) > 0)) return null
+/** A finished Quick Sim as a history point for `characterId` (the run's main character or one run beside it), or null. Other tools
+ *  change gear or talents on purpose, so only Quick Sim tracks the character as it is. */
+export function simPoint(r: StoredReport, characterId = r.characterId): SimPoint | null {
+  if (r.tool !== 'quick' || r.completion !== 'complete') return null
+  const member = r.characterId === characterId ? null : r.summary.members?.find((m) => m.characterId === characterId)
+  if (r.characterId !== characterId && !member) return null
+  const dps = member ? member.dps : r.summary.dps
+  if (!(Number(dps) > 0)) return null
   const settings = (r.requestSnapshot as { settings?: { fightStyle?: unknown; targets?: unknown } } | null)?.settings
   return {
     reportId: r.id,
     createdAt: new Date(r.createdAt).toISOString(),
-    dps: r.summary.dps!,
-    dpsError: r.summary.confidenceMargin,
+    dps: dps!,
+    dpsError: member ? member.confidenceMargin : r.summary.confidenceMargin,
     fightStyle: typeof settings?.fightStyle === 'string' ? settings.fightStyle : undefined,
     targets: typeof settings?.targets === 'number' ? settings.targets : undefined,
     gameBuild: r.engine.wowVersion,

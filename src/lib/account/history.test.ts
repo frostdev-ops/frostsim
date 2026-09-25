@@ -48,4 +48,13 @@ describe('simPoint', () => {
     expect(simPoint(report({ completion: 'partial' }))).toBeNull()
     expect(simPoint(report({ summary: {} }))).toBeNull()
   })
+
+  it('gives each character of a multi-character run its own result, and nothing to a character not in it', () => {
+    const r = report({ characterId: 'main', summary: { dps: 1000, confidenceMargin: 5, members: [
+      { characterId: 'main', name: 'Ann', dps: 1000, confidenceMargin: 5 }, { characterId: 'alt', name: 'Bo', dps: 800, confidenceMargin: 7 },
+    ] } })
+    expect(simPoint(r, 'main')).toMatchObject({ dps: 1000, dpsError: 5 })
+    expect(simPoint(r, 'alt')).toMatchObject({ reportId: 'r1', dps: 800, dpsError: 7 })
+    expect(simPoint(r, 'other')).toBeNull()
+  })
 })

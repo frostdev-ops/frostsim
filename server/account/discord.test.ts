@@ -3,7 +3,7 @@
 // JSON the register script sends. Compute, packs and storeShare are fakes; SQL, Redis and Discord's API are stand-ins.
 
 import { generateKeyPairSync, sign as edSign } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from './app';
@@ -261,12 +261,15 @@ describe('/sim', () => {
     expect(job.request.accuracy).toEqual(ACCURACY.high);
     expect(job.request.profile).toContain('warlock=');
     expect(store.get(`discord:${JOB}`)!.ttl).toBe(TOKEN_TTL_S);
+    const gif = `${ORIGIN}/discord/fight/warlock-demonology.gif`;
     expect(JSON.parse(store.get(`discord:${JOB}`)!.value)).toEqual({
-      token: TOKEN, label: 'Main_Warlock', presetId: 'hectic-add-cleave', fight: 'Hectic Add Cleave', exp: NOW + 900_000, kind: 'sim', owner: ALICE,
+      token: TOKEN, label: 'Main_Warlock', presetId: 'hectic-add-cleave', fight: 'Hectic Add Cleave', exp: NOW + 900_000, kind: 'sim', owner: ALICE, gif,
     });
     expect(edits[0].url).toBe(`https://discord.com/api/v10/webhooks/${APP_ID}/${TOKEN}/messages/@original`);
     expect(edits[0].body).toMatchObject({ content: '', components: [], allowed_mentions: { parse: [] } });
-    expect(edits[0].body.embeds![0]).toMatchObject({ title: 'Simulating Main_Warlock · Hectic Add Cleave', description: 'Simulating…' });
+    expect(edits[0].body.embeds![0]).toMatchObject({ title: 'Simulating Main_Warlock · Hectic Add Cleave', description: 'Simulating…', image: { url: gif } });
+    // Every look the bot can name is a file the renderer wrote.
+    expect(existsSync(new URL('../../public/discord/fight/warlock-demonology.gif', import.meta.url))).toBe(true);
   });
 
   it('looks up an Armory character by name, realm and region through the Battle.net proxy', async () => {

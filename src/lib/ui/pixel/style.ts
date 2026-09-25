@@ -61,11 +61,32 @@ const SPECS: Record<string, Partial<Base>> = {
   'death_knight/blood': { glow: '#ff5c6c' },
 }
 
-export function heroStyle(className?: string, spec?: string): HeroStyle {
+/** simc and addon exports write these classes without the underscore. */
+const CLASS_KEYS: Record<string, string> = { deathknight: 'death_knight', demonhunter: 'demon_hunter' }
+
+function keys(className?: string, spec?: string): { cls: string; spec: string } {
   const cls = (className ?? '').toLowerCase().replace(/[\s-]+/g, '_')
-  const base = CLASSES[cls] ?? CLASSES.mage
-  const merged = { ...base, ...SPECS[`${cls}/${(spec ?? '').toLowerCase().replace(/[\s-]+/g, '_')}`] }
+  return { cls: CLASS_KEYS[cls] ?? cls, spec: (spec ?? '').toLowerCase().replace(/[\s-]+/g, '_') }
+}
+
+export function heroStyle(className?: string, spec?: string): HeroStyle {
+  const k = keys(className, spec)
+  const base = CLASSES[k.cls] ?? CLASSES.mage
+  const merged = { ...base, ...SPECS[`${k.cls}/${k.spec}`] }
   return { ...merged, shot: merged.shot ?? 'bolt', pets: merged.pets ?? [], holy: merged.holy ?? false }
+}
+
+/** Every distinct hero look: one per class, and one per spec that changes it. Named as the pre-rendered Discord GIFs are. */
+export const FIGHT_GIFS: readonly { name: string; className: string; spec?: string }[] = [
+  ...Object.keys(CLASSES).map((c) => ({ name: c, className: c })),
+  ...Object.keys(SPECS).map((k) => ({ name: k.replace('/', '-'), className: k.split('/')[0], spec: k.split('/')[1] })),
+]
+
+/** The pre-rendered GIF for a character (scripts/render-fight-gifs.mjs): its spec's look when that differs, else its class's. */
+export function fightGif(className?: string, spec?: string): string | null {
+  const k = keys(className, spec)
+  if (!CLASSES[k.cls]) return null
+  return SPECS[`${k.cls}/${k.spec}`] ? `${k.cls}-${k.spec}` : k.cls
 }
 
 export type MobKind = 'slime' | 'imp' | 'skeleton' | 'boss' | 'dummy'
