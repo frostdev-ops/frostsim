@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdDecompressSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
-import { buildNative, hcloudCredentials, nativeTargets, r2Credentials, remoteBuilder, sigV4, sweepBuilders, writeNativeStatus } from './update-engines.mjs';
+import { buildNative, hcloudCredentials, hetznerBuilders, nativeTargets, r2Credentials, sigV4, sweepBuilders, writeNativeStatus } from './update-engines.mjs';
 
 const green = { status: 'completed', conclusion: 'success', event: 'push', head_branch: 'midnight', path: '.github/workflows/main.yml',
   repository: { full_name: 'simulationcraft/simc' }, head_repository: { full_name: 'simulationcraft/simc' }, head_sha: 'a'.repeat(40) };
@@ -171,30 +171,6 @@ describe('native builds', () => {
 describe('remote native builds', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'frostsim-builder-test-'));
   const hc = { token: 'tok', serverType: 'cpx62', location: 'nbg1' };
-  /** Fake Hetzner: records every call, answers creates, 204s deletes. */
-  function hetzner() {
-    const calls = [];
-    const fetchFn = async (url, init) => {
-      const path = url.replace('https://api.hetzner.cloud/v1', '');
-      calls.push({ method: init.method, path, body: init.body ? JSON.parse(init.body) : undefined, auth: init.headers.authorization });
-      if (init.method === 'POST' && path === '/ssh_keys') return Response.json({ ssh_key: { id: 7 } });
-      if (init.method === 'POST' && path === '/servers') return Response.json({ server: { id: 9, public_net: { ipv4: { ip: '192.0.2.1' } } } });
-      return new Response(null, { status: 204 });
-    };
-    return { calls, fetchFn };
-  }
-  /** Fake exec: records commands; makes ssh-keygen's key and the copied-back binary exist. */
-  function execs({ sshFails = false } = {}) {
-    const commands = [];
-    const exec = (cwd, command, args) => {
-      commands.push([command, ...args].join(' '));
-      if (command === 'ssh-keygen') { const key = args[args.indexOf('-f') + 1]; writeFileSync(key, 'private'); writeFileSync(`${key}.pub`, 'ssh-ed25519 AAAA frostsim-native-build'); }
-      if (command === 'ssh' && sshFails) throw new Error('connection refused');
-      if (command === 'scp' && args.at(-2)?.endsWith(':/w/build/native/simc')) writeFileSync(args.at(-1), 'ELF from the builder');
-    };
-    return { commands, exec };
-  }
-
   it('reads hcloud.env with defaults, is off without it, and refuses a readable or tokenless one', () => {
     const env = (name, text, mode = 0o640) => { const file = join(tmp, name); writeFileSync(file, text, { mode }); chmodSync(file, mode); return file; };
     expect(hcloudCredentials(join(tmp, 'absent.env'))).toBeNull();
@@ -205,36 +181,26 @@ describe('remote native builds', () => {
     expect(() => hcloudCredentials(env('empty.env', 'HCLOUD_BUILD_LOCATION=fsn1\n'))).toThrow(/HCLOUD_TOKEN/);
   });
 
-  it('builds on a labelled Ubuntu 24.04 server, copies the binary back for the local smoke and upload, and deletes the server', async () => {
-    const work = mkdtempSync(join(tmp, 'work-'));
-    const { calls, fetchFn } = hetzner();
-    const { commands, exec } = execs();
-    const builder = await remoteBuilder(hc, work, { fetchFn, exec, sleep: async () => {} });
-    const server = calls.find((c) => c.path === '/servers' && c.method === 'POST');
-    expect(server.body).toMatchObject({ server_type: 'cpx62', image: 'ubuntu-24.04', location: 'nbg1', ssh_keys: [7], labels: { frostsim: 'native-build' } });
-    expect(server.auth).toBe('Bearer tok');
-
-    const output = join(tmp, 'out'), pack = join(output, 'engine/versions/p1');
-    mkdirSync(join(pack, 'source'), { recursive: true });
-    writeFileSync(join(pack, 'source/simc.tar.gz'), 'tar');
-    const dir = mkdtempSync(join(tmp, 'build-'));
-    builder.compile(pack, dir);
-    expect(readFileSync(join(dir, 'build/native/simc'), 'utf8')).toBe('ELF from the builder');
-    expect(commands.some((c) => c.startsWith('scp') && c.includes('source/simc.tar.gz root@192.0.2.1:/root/simc.tar.gz'))).toBe(true);
-    const remote = commands.find((c) => c.includes('cmake -S vendor/simc'));
-    expect(remote).toContain('-DSC_NO_NETWORKING=ON -DCMAKE_CXX_FLAGS=-DSC_USE_PTR=0');
-    expect(remote).not.toContain('ccache');
-    expect(commands.every((c) => !c.startsWith('ssh ') || c.includes('StrictHostKeyChecking=no'))).toBe(true);
-
-    await builder.close();
-    expect(calls.filter((c) => c.method === 'DELETE').map((c) => c.path)).toEqual(['/servers/9', '/ssh_keys/7']);
-  });
-
-  it('deletes the server and key when setup fails, before throwing', async () => {
-    const work = mkdtempSync(join(tmp, 'work-'));
-    const { calls, fetchFn } = hetzner();
-    await expect(remoteBuilder(hc, work, { fetchFn, exec: execs({ sshFails: true }).exec, sleep: async () => {} })).rejects.toThrow(/never accepted ssh/);
-    expect(calls.filter((c) => c.method === 'DELETE').map((c) => c.path)).toEqual(['/servers/9', '/ssh_keys/7']);
+  it('launches a labelled Ubuntu 24.04 Hetzner builder with the job as user data, sees it gone once off, and deletes it', async () => {
+    const calls = [];
+    let status = 'running';
+    const fetchFn = async (url, init) => {
+      const path = url.replace('https://api.hetzner.cloud/v1', '');
+      calls.push({ method: init.method, path, body: init.body ? JSON.parse(init.body) : undefined, auth: init.headers.authorization });
+      if (init.method === 'POST') return Response.json({ server: { id: 9 } });
+      if (init.method === 'GET') return path === '/servers/404' ? new Response('', { status: 404 }) : Response.json({ server: { id: 9, status } });
+      return new Response(null, { status: 204 });
+    };
+    const provider = hetznerBuilders(hc, fetchFn);
+    expect(await provider.launch('#!/bin/bash\necho job\n', 'engine-1')).toBe('9');
+    expect(calls[0]).toMatchObject({ method: 'POST', path: '/servers', auth: 'Bearer tok', body: { name: 'frostsim-engine-1', server_type: 'cpx62',
+      image: 'ubuntu-24.04', location: 'nbg1', labels: { frostsim: 'engine-build' }, user_data: '#!/bin/bash\necho job\n' } });
+    expect(await provider.gone('9')).toBe(false);
+    status = 'off';
+    expect(await provider.gone('9')).toBe(true);
+    expect(await provider.gone('404')).toBe(true);
+    await provider.remove('9');
+    expect(calls.at(-1)).toMatchObject({ method: 'DELETE', path: '/servers/9' });
   });
 
   it('sweeps only builders older than two hours', async () => {
@@ -242,7 +208,7 @@ describe('remote native builds', () => {
     const deleted = [];
     const fetchFn = async (url, init) => {
       if (init.method === 'GET') {
-        expect(url).toContain('label_selector=frostsim%3Dnative-build');
+        expect(url).toContain('label_selector=frostsim%3Dengine-build');
         return Response.json({ servers: [{ id: 1, created: '2026-09-25T09:00:00Z' }, { id: 2, created: '2026-09-25T11:30:00Z' }] });
       }
       deleted.push(url);
@@ -291,7 +257,7 @@ describe('writeNativeStatus', () => {
 
 describe('EC2 builds', async () => {
   const { AwsClient } = await import('aws4fetch');
-  const { builderUserData, buildPools, ec2BuildCredentials, engineJobScript, nativeJobScript, presignV4, runOnBuilder, sweepEc2Builders } = await import('./update-engines.mjs');
+  const { builderUserData, buildPools, ec2BuildCredentials, ec2Builders, engineJobScript, nativeJobScript, presignV4, runOnBuilder, runRemote, sweepEc2Builders } = await import('./update-engines.mjs');
   const { execFileSync } = await import('node:child_process');
   const tmp = mkdtempSync(join(tmpdir(), 'frostsim-ec2-test-'));
   const env = (name, text, mode = 0o640) => { const file = join(tmp, name); writeFileSync(file, text, { mode }); chmodSync(file, mode); return file; };
@@ -336,7 +302,12 @@ describe('EC2 builds', async () => {
     const script = engineJobScript({ node: '26.8.2', emsdk: { version: '6.0.9' } });
     for (const step of ['node-v26.8.2-linux-x64.tar.xz', 'sha256sum -c -', '--branch 6.0.9', 'npm ci --ignore-scripts', 'bash scripts/bootstrap-engine.sh',
       'bash scripts/build-engine.sh\n', 'bash scripts/build-engine.sh --fallback', '--fallback vendor/simc/profiles/MID2/MID2_Mage_Frost.simc',
-      'FROSTSIM_ENGINE=1 npx vitest run src/lib/simc', 'npm run check', 'cp -R public/engine ../out/engine']) expect(script).toContain(step);
+      'FROSTSIM_ENGINE=1 npx vitest run src/lib/simc', 'node scripts/generate-presentation.mjs\nnpm run check', 'cp -R public/engine ../out/engine']) expect(script).toContain(step);
+    expect(script).toContain('CCACHE_COMPILERCHECK=string:emsdk-6.0.9');
+    expect(script.indexOf('ccache restored')).toBeLessThan(script.indexOf('build-engine.sh'));
+    expect(script.indexOf('-T /root/ccache.tar.zst')).toBeGreaterThan(script.indexOf('cp -R public/engine'));
+    expect(nativeJobScript()).toContain('-DCMAKE_CXX_COMPILER_LAUNCHER=ccache');
+    expect(nativeJobScript()).toContain('CCACHE_COMPILERCHECK=content');
     expect(nativeJobScript()).toContain('tar -xzf simc.tar.gz -C vendor/simc');
     expect(nativeJobScript()).not.toContain('emsdk');
   });
@@ -386,12 +357,14 @@ describe('EC2 builds', async () => {
   it('runs a job: uploads it, launches in the next pool on a capacity error, pulls out/ back, terminates, cleans up R2', async () => {
     const c = cloud();
     const into = mkdtempSync(join(tmp, 'into-'));
-    await runOnBuilder(ec2, r2, job(), into, { name: 't1', timeoutMs: 60_000, fetchFn: c.fetchFn, sleep: async () => {} });
+    await runOnBuilder(ec2Builders(ec2, c.fetchFn), r2, job(), into, { name: 't1', timeoutMs: 60_000, fetchFn: c.fetchFn, sleep: async () => {} });
     expect(readFileSync(join(into, 'out/simc'), 'utf8')).toBe('ELF');
     expect(c.calls.filter(x => x.includes('RunInstances'))).toHaveLength(2);
     expect(c.calls).toContain('ec2 TerminateInstances');
     expect(c.objects.size).toBe(0);
     expect(c.calls[0]).toBe('R2 PUT builds/t1/in.tgz');
+    // No cache asked for: no cache.env, and the cache object is never touched.
+    expect(c.calls.some(x => x.includes('ccache/'))).toBe(false);
   });
 
   it('after a Spot quota refusal, tries only smaller builders', async () => {
@@ -410,20 +383,59 @@ describe('EC2 builds', async () => {
       }
       return c.fetchFn(url, init);
     };
-    await runOnBuilder(small, r2, job(), mkdtempSync(join(tmp, 'into-')), { name: 't4', timeoutMs: 60_000, fetchFn, sleep: async () => {} });
+    await runOnBuilder(ec2Builders(small, fetchFn), r2, job(), mkdtempSync(join(tmp, 'into-')), { name: 't4', timeoutMs: 60_000, fetchFn, sleep: async () => {} });
     expect(tried).toEqual(['c7a.16xlarge', 'c7a.8xlarge']);
+  });
+
+  it('waits out a Spot quota held by a builder that is still shutting down, then launches', async () => {
+    let refusals = 2, waits = 0;
+    const c = cloud();
+    const fetchFn = async (url, init) => {
+      const body = String(init.body ?? '');
+      if (new URLSearchParams(body).get('Action') === 'RunInstances' && refusals > 0) {
+        refusals--;
+        return new Response('<Response><Errors><Error><Code>MaxSpotInstanceCountExceeded</Code></Error></Errors></Response>', { status: 400 });
+      }
+      return c.fetchFn(url, init);
+    };
+    const one = { ...ec2, types: ['c7a.8xlarge'] };
+    const onePrices = `<r>${price('c7a.8xlarge', 'us-east-1b', '0.5')}</r>`;
+    const priced = async (url, init) => new URLSearchParams(String(init.body ?? '')).get('Action') === 'DescribeSpotPriceHistory' ? new Response(onePrices) : fetchFn(url, init);
+    await runOnBuilder(ec2Builders(one, priced, async () => { waits++; }), r2, job(), mkdtempSync(join(tmp, 'into-')), { name: 't8', timeoutMs: 60_000, fetchFn: priced, sleep: async () => {} });
+    expect(waits).toBe(2);
   });
 
   it('fails with the log tail on a nonzero exit, and on an instance gone without reporting; terminates either way', async () => {
     const failed = cloud({ exitCode: '2' });
-    await expect(runOnBuilder(ec2, r2, job(), mkdtempSync(join(tmp, 'into-')), { name: 't2', timeoutMs: 60_000, fetchFn: failed.fetchFn, sleep: async () => {} }))
+    await expect(runOnBuilder(ec2Builders(ec2, failed.fetchFn), r2, job(), mkdtempSync(join(tmp, 'into-')), { name: 't2', timeoutMs: 60_000, fetchFn: failed.fetchFn, sleep: async () => {} }))
       .rejects.toThrow(/exited with 2: [\s\S]*something broke/);
     expect(failed.calls).toContain('ec2 TerminateInstances');
     let clock = 0;
     const lost = cloud({ vanish: true });
-    await expect(runOnBuilder(ec2, r2, job(), mkdtempSync(join(tmp, 'into-')), { name: 't3', timeoutMs: 3_600_000, fetchFn: lost.fetchFn,
-      sleep: async () => { clock += 20_000; }, now: () => clock })).rejects.toThrow(/terminated without reporting/);
+    await expect(runOnBuilder(ec2Builders(ec2, lost.fetchFn), r2, job(), mkdtempSync(join(tmp, 'into-')), { name: 't3', timeoutMs: 3_600_000, fetchFn: lost.fetchFn,
+      sleep: async () => { clock += 20_000; }, now: () => clock })).rejects.toThrow(/stopped without reporting/);
     expect(lost.objects.size).toBe(0);
+  });
+
+  it('hands the job presigned URLs for its cache, and never deletes the cache', async () => {
+    const c = cloud();
+    const dir = job();
+    await runOnBuilder(ec2Builders(ec2, c.fetchFn), r2, dir, mkdtempSync(join(tmp, 'into-')), { name: 't7', timeoutMs: 60_000, cache: 'engine', fetchFn: c.fetchFn, sleep: async () => {} });
+    const env = readFileSync(join(dir, 'cache.env'), 'utf8');
+    expect(env).toMatch(/^CACHE_GET='https:\/\/a{32}\.r2\.cloudflarestorage\.com\/frostsim-engines\/ccache\/engine\.tar\.zst\?X-Amz-Algorithm=/m);
+    expect(env).toMatch(/^CACHE_PUT='https:.*ccache\/engine\.tar\.zst\?/m);
+    expect(c.calls.some(x => x.startsWith('R2 DELETE ccache/'))).toBe(false);
+  });
+
+  it('falls back through the providers in order and reports which one built the job', async () => {
+    const c = cloud();
+    const refused = { name: 'EC2 Spot', launch: async () => { throw new Error('quota'); }, gone: async () => false, remove: async () => {}, sweep: async () => [] };
+    const second = { ...ec2Builders(ec2, c.fetchFn), name: 'Hetzner' };
+    const into = mkdtempSync(join(tmp, 'into-'));
+    expect(await runRemote({ r2, providers: [refused, second] }, job(), into, { name: 't5', timeoutMs: 60_000, fetchFn: c.fetchFn, sleep: async () => {} })).toBe('Hetzner');
+    expect(readFileSync(join(into, 'out/simc'), 'utf8')).toBe('ELF');
+    await expect(runRemote({ r2, providers: [refused] }, job(), into, { name: 't6', timeoutMs: 60_000, fetchFn: c.fetchFn, sleep: async () => {} }))
+      .rejects.toThrow(/^EC2 Spot: quota$/);
   });
 
   it('sweeps only builders launched more than two hours ago', async () => {

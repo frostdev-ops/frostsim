@@ -233,7 +233,8 @@ async function build(candidate, commit, output, id) {
       assert.deepEqual(generatedWeekly.weekly, previousWeekly.weekly);
     } catch { throw new GateError('Upstream changed the guided consumable defaults (generate-weekly-defaults.mjs); Frostsim needs an update'); }
     // The compiles, smokes, tests and type check go to an EC2 builder when ec2.env exists; this host is the fallback.
-    const remote = await remoteEngineBuild(work, lock.toolchain);
+    const builtOn = await remoteEngineBuild(work, lock.toolchain) ?? 'host';
+    const remote = builtOn !== 'host';
     if (!remote) {
       run(work, 'bash', ['scripts/build-engine.sh']);
       run(work, 'bash', ['scripts/build-engine.sh', '--fallback']);
@@ -266,7 +267,7 @@ async function build(candidate, commit, output, id) {
     for (const file of ['engine.lock.json', 'patches', 'scripts', 'package.json', 'package-lock.json']) cpSync(join(work, file), join(source, file), { recursive: true });
     cpSync(join(work, 'vendor/simc/LICENSE'), join(source, 'LICENSE'));
     verifyPack(pack, commit);
-    writeJson(join(pack, 'validation.json'), { checkedAt: new Date().toISOString(), commit, builtOn: remote ? 'ec2' : 'host',
+    writeJson(join(pack, 'validation.json'), { checkedAt: new Date().toISOString(), commit, builtOn,
       checks: ['both-wasm-builds', 'manifest-and-catalog-hashes', 'both-node-smokes', 'unit-and-real-engine-tests', 'types'],
       browserAcceptance: 'Browser loader acceptance belongs to the application deployment; these are engine checks.' });
     // nginx serves these through gzip_static / brotli_static.
@@ -415,20 +416,18 @@ export function presignV4(url, method, { accessKeyId, secretAccessKey, region, s
   return `${origin}${path}?${query}&X-Amz-Signature=${signature}`;
 }
 
-// Remote native builds: the VPS has 4 cores shared with nginx and the APIs, so a cold native build takes about an hour there.
-// ec2.env (below) builds each pack on an EC2 Spot builder; without it, with hcloud.env, one temporary Hetzner server per run
-// compiles every pending pack in minutes. It runs Ubuntu 24.04, the
-// worker OS, so the binary links the workers' glibc. The binary comes back here for the same smoke, compression and upload,
-// and the server is always deleted. Any remote failure builds that pack here instead.
+// Remote builds: the VPS has 4 cores shared with nginx and the APIs, so a cold engine or native build takes the better part of an
+// hour there. Builders come from, in order, EC2 Spot (ec2.env) and Hetzner (hcloud.env); this host is the last resort. Both run
+// Ubuntu 24.04, the worker OS, so a native binary links the workers' glibc, and both use the same pull model (below).
 const HCLOUD_API = 'https://api.hetzner.cloud/v1';
-const BUILDER_LABEL = { frostsim: 'native-build' };
-/** A builder older than this is a leak from a crashed run; each run deletes those first. */
+const BUILDER_LABEL = { frostsim: 'engine-build' };
+/** A builder older than this is a leak from a crashed run; each run removes those first. */
 const BUILDER_MAX_AGE_MS = 2 * 3600_000;
 /** scripts/update-engines.mjs's native flags without the launcher: the builder is fresh, so ccache would only cost time. */
 const NATIVE_CMAKE = ['-S', 'vendor/simc', '-B', 'build/native', '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', '-DBUILD_GUI=OFF',
   '-DBUILD_TESTING=OFF', '-DSC_NO_NETWORKING=ON', '-DCMAKE_CXX_FLAGS=-DSC_USE_PTR=0'];
 
-/** Hetzner token for remote builds, read like r2.env. null when the file is absent: every pack builds here. */
+/** Hetzner token for remote builds, read like r2.env. null when the file is absent: no Hetzner builds. */
 export function hcloudCredentials(file = process.env.FROSTSIM_HCLOUD_ENV_FILE || '/opt/frostsim/engine-updater/hcloud.env') {
   if (!existsSync(file)) return null;
   // The token can create servers on the project's bill.
@@ -440,72 +439,46 @@ export function hcloudCredentials(file = process.env.FROSTSIM_HCLOUD_ENV_FILE ||
   return { token, serverType: value('HCLOUD_BUILD_SERVER_TYPE') || 'cpx62', location: value('HCLOUD_BUILD_LOCATION') || 'nbg1' };
 }
 
+/** One Hetzner API call. A missing server (GET or DELETE 404) is null. */
 async function hcloudCall(hc, method, path, body, fetchFn) {
   const response = await fetchFn(HCLOUD_API + path, {
     method, headers: { authorization: `Bearer ${hc.token}`, 'content-type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(60_000),
   });
-  if (method === 'DELETE' && response.status === 404) return null;
+  if ((method === 'DELETE' || method === 'GET') && response.status === 404) return null;
   if (!response.ok) throw new Error(`hcloud ${method} ${path.split('?')[0]}: HTTP ${response.status}`);
   const text = await response.text();
   return text ? JSON.parse(text) : {};
 }
 
-/** Deletes builders a crashed run left behind; returns their ids. */
+/** Deletes Hetzner builders a crashed run left behind; returns their ids. */
 export async function sweepBuilders(hc, { fetchFn = fetch, now = Date.now() } = {}) {
-  const { servers = [] } = await hcloudCall(hc, 'GET', '/servers?label_selector=frostsim%3Dnative-build', null, fetchFn);
+  const { servers = [] } = await hcloudCall(hc, 'GET', '/servers?label_selector=frostsim%3Dengine-build', null, fetchFn);
   const stale = servers.filter(s => now - Date.parse(s.created) > BUILDER_MAX_AGE_MS);
   for (const s of stale) await hcloudCall(hc, 'DELETE', `/servers/${s.id}`, null, fetchFn);
   return stale.map(s => s.id);
 }
 
-/**
- * One temporary builder for this run. compile(pack, dir) leaves build/native/simc in dir. close() deletes the server and its
- * ssh key, and runs even when setup fails.
- */
-export async function remoteBuilder(hc, work, { fetchFn = fetch, exec = run, sleep = ms => new Promise(done => setTimeout(done, ms)) } = {}) {
-  const key = join(work, 'id_ed25519');
-  exec(work, 'ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-C', 'frostsim-native-build', '-f', key]);
-  const name = `frostsim-native-build-${Date.now()}`;
-  let keyId = null, serverId = null;
-  const close = async () => {
-    if (serverId) await hcloudCall(hc, 'DELETE', `/servers/${serverId}`, null, fetchFn).catch(err => console.error(`Builder ${serverId} NOT deleted: ${err.message}`));
-    if (keyId) await hcloudCall(hc, 'DELETE', `/ssh_keys/${keyId}`, null, fetchFn).catch(() => {});
+/** Hetzner as a builder provider. A server that shut itself down still bills until it is deleted, which runOnBuilder always does. */
+export function hetznerBuilders(hc, fetchFn = fetch) {
+  return {
+    name: 'Hetzner',
+    async launch(userData, name) {
+      // Default public networking: the builder needs IPv4 (GitHub and nodejs.org), and R2 did not answer over IPv6 in Phase 0.
+      const { server } = await hcloudCall(hc, 'POST', '/servers', { name: `frostsim-${name}`, server_type: hc.serverType, image: 'ubuntu-24.04',
+        location: hc.location, labels: BUILDER_LABEL, user_data: userData }, fetchFn);
+      console.log(`Builder hcloud ${server.id}: ${hc.serverType} in ${hc.location}`);
+      return String(server.id);
+    },
+    gone: async id => { const data = await hcloudCall(hc, 'GET', `/servers/${id}`, null, fetchFn); return !data?.server || data.server.status === 'off'; },
+    remove: async id => { await hcloudCall(hc, 'DELETE', `/servers/${id}`, null, fetchFn); },
+    sweep: () => sweepBuilders(hc, { fetchFn }),
   };
-  try {
-    keyId = (await hcloudCall(hc, 'POST', '/ssh_keys', { name, public_key: readFileSync(`${key}.pub`, 'utf8').trim(), labels: BUILDER_LABEL }, fetchFn)).ssh_key.id;
-    const { server } = await hcloudCall(hc, 'POST', '/servers', {
-      name, server_type: hc.serverType, image: 'ubuntu-24.04', location: hc.location, ssh_keys: [keyId], labels: BUILDER_LABEL,
-    }, fetchFn);
-    serverId = server.id;
-    const host = `root@${server.public_net.ipv4.ip}`;
-    const ssh = ['-i', key, '-o', 'BatchMode=yes', '-o', 'StrictHostKeyChecking=no', '-o', 'UserKnownHostsFile=/dev/null', '-o', 'LogLevel=ERROR',
-      '-o', 'ConnectTimeout=10', '-o', 'ServerAliveInterval=15'];
-    for (let attempt = 0; ; attempt++) {
-      try { exec(work, 'ssh', [...ssh, host, 'true'], { stdio: 'ignore' }); break; }
-      catch { if (attempt >= 60) throw new Error('the builder never accepted ssh'); await sleep(5000); }
-    }
-    exec(work, 'ssh', [...ssh, host, 'cloud-init status --wait >/dev/null || true; export DEBIAN_FRONTEND=noninteractive; '
-      + 'apt-get update -qq && apt-get install -y -qq --no-install-recommends cmake ninja-build g++ >/dev/null']);
-    const compile = (pack, dir) => {
-      exec(work, 'scp', [...ssh, '-q', join(pack, 'source/simc.tar.gz'), `${host}:/root/simc.tar.gz`]);
-      exec(work, 'ssh', [...ssh, host, 'set -e; rm -rf /w && mkdir -p /w/vendor/simc && cd /w && tar -xzf /root/simc.tar.gz -C vendor/simc && '
-        + `cmake ${NATIVE_CMAKE.join(' ')} >/dev/null && { cmake --build build/native >/w/build.log 2>&1 || { tail -40 /w/build.log; exit 1; }; }`]);
-      mkdirSync(join(dir, 'build/native'), { recursive: true });
-      exec(work, 'scp', [...ssh, '-q', `${host}:/w/build/native/simc`, join(dir, 'build/native/simc')]);
-      exec(work, 'chmod', ['755', join(dir, 'build/native/simc')]);
-    };
-    return { compile, close };
-  } catch (err) {
-    await close();
-    throw err;
-  }
 }
 
-// Remote builds on EC2 Spot (CLAUDE.md D14's compute account): the heavy compiles leave this host. The builder pulls a job over
-// presigned R2 URLs and pushes its outputs, log and exit code back the same way, so it needs no inbound port, no ssh and no
-// credentials of its own; it shuts itself down (and so terminates) when done. ec2.env holds a key that can only start Spot
-// instances tagged frostsim=engine-build and terminate those. Any remote failure builds here instead, as before.
+// The pull model: a builder fetches its job over presigned R2 URLs and pushes its outputs, log and exit code back the same way, so
+// it needs no inbound port, no ssh and no credentials of its own, then shuts itself down. EC2 Spot (CLAUDE.md D14's compute
+// account): ec2.env holds a key that can only start Spot instances tagged frostsim=engine-build and terminate those.
 const EC2_VERSION = '2016-11-15';
 const EC2_BUILD_TAG = 'engine-build';
 const UBUNTU_AMI = '/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id';
@@ -584,8 +557,25 @@ export async function buildPools(creds, fetchFn = fetch, now = new Date()) {
   return [...newest.values()].sort((a, b) => order(a.type) - order(b.type) || a.usd - b.usd).slice(0, EC2_MAX_POOLS);
 }
 
+/** A builder that just finished still counts against the Spot quota while it shuts down (1-2 min, measured): a quota refusal is
+ *  retried this many times, this far apart, before the next provider is tried. */
+const QUOTA_RETRIES = 4;
+const QUOTA_RETRY_MS = 45_000;
+
+/** launchOnce, retried while the Spot quota is taken (by a builder still shutting down, or by compute workers). */
+async function launchBuilder(creds, userData, name, fetchFn, sleep = ms => new Promise(done => setTimeout(done, ms))) {
+  for (let attempt = 0; ; attempt++) {
+    try { return await launchOnce(creds, userData, name, fetchFn); }
+    catch (err) {
+      if (err.code !== 'MaxSpotInstanceCountExceeded' || attempt >= QUOTA_RETRIES) throw err;
+      console.error(`Spot quota taken; retrying in ${QUOTA_RETRY_MS / 1000} s`);
+      await sleep(QUOTA_RETRY_MS);
+    }
+  }
+}
+
 /** Starts one tagged, terminate-on-shutdown Spot builder from the first pool with capacity. Returns its instance id. */
-async function launchBuilder(creds, userData, name, fetchFn) {
+async function launchOnce(creds, userData, name, fetchFn) {
   const [ami, pools] = await Promise.all([ubuntuAmi(creds, fetchFn), buildPools(creds, fetchFn)]);
   if (!pools.length) throw new Error('No Spot price for any build instance type in the configured zones');
   let last, ceiling = Infinity;
@@ -629,7 +619,18 @@ async function terminate(creds, id, fetchFn) {
   catch (err) { if (err.code !== 'InvalidInstanceID.NotFound') throw err; }
 }
 
-/** Terminates builders a crashed run left behind (older than two hours); returns their ids. */
+/** EC2 Spot as a builder provider. */
+export function ec2Builders(creds, fetchFn = fetch, sleep = undefined) {
+  return {
+    name: 'EC2 Spot',
+    launch: (userData, name) => launchBuilder(creds, userData, name, fetchFn, sleep),
+    gone: async id => ['shutting-down', 'terminated', 'stopped', 'stopping'].includes(await instanceState(creds, id, fetchFn)),
+    remove: id => terminate(creds, id, fetchFn),
+    sweep: () => sweepEc2Builders(creds, { fetchFn }),
+  };
+}
+
+/** Terminates EC2 builders a crashed run left behind (older than two hours); returns their ids. */
 export async function sweepEc2Builders(creds, { fetchFn = fetch, now = Date.now() } = {}) {
   const xml = await ec2Call(creds, 'DescribeInstances', { 'Filter.1.Name': `tag:frostsim`, 'Filter.1.Value.1': EC2_BUILD_TAG,
     'Filter.2.Name': 'instance-state-name', 'Filter.2.Value.1': 'pending', 'Filter.2.Value.2': 'running' }, fetchFn);
@@ -652,11 +653,11 @@ export function builderUserData(urls) {
 }
 
 /**
- * Runs one job on an EC2 Spot builder: `dir` (which must hold run.sh; it writes its results to out/) goes up as a tarball, and
- * out/ comes back extracted into `into`. Throws with the log's tail on failure; the instance and every job object are removed
- * either way.
+ * Runs one job on a builder from `provider` (ec2Builders, hetznerBuilders): `dir` (which must hold run.sh; it writes its results to
+ * out/) goes up as a tarball, and out/ comes back extracted into `into`. Throws with the log's tail on failure; the builder and every
+ * job object are removed either way.
  */
-export async function runOnBuilder(ec2, r2, dir, into, { name, timeoutMs, fetchFn = fetch, exec = run, now = Date.now,
+export async function runOnBuilder(provider, r2, dir, into, { name, timeoutMs, cache, fetchFn = fetch, exec = run, now = Date.now,
   sleep = ms => new Promise(done => setTimeout(done, ms)) }) {
   const prefix = `builds/${name}`;
   const keys = { input: `${prefix}/in.tgz`, output: `${prefix}/out.tgz`, log: `${prefix}/build.log`, exit: `${prefix}/exit` };
@@ -664,11 +665,17 @@ export async function runOnBuilder(ec2, r2, dir, into, { name, timeoutMs, fetchF
   const r2Auth = { ...r2, region: 'auto', service: 's3' };
   const urls = { input: presignV4(r2Url(r2, keys.input), 'GET', r2Auth, expires) };
   for (const key of ['output', 'log', 'exit']) urls[key] = presignV4(r2Url(r2, keys[key]), 'PUT', r2Auth, expires);
+  // `cache` names a ccache snapshot kept across builds (ccache/<cache>.tar.zst); the job restores it first and saves it last.
+  if (cache) {
+    const key = `ccache/${cache}.tar.zst`;
+    writeFileSync(join(dir, 'cache.env'), `CACHE_GET='${presignV4(r2Url(r2, key), 'GET', r2Auth, expires)}'\n`
+      + `CACHE_PUT='${presignV4(r2Url(r2, key), 'PUT', r2Auth, expires)}'\n`);
+  }
   let id = null;
   try {
     const tarball = execFileSync('tar', ['-czf', '-', '-C', dir, '.'], { maxBuffer: 1 << 30 });
     await r2Request(r2, 'PUT', keys.input, { body: tarball, headers: { 'content-type': 'application/gzip' }, fetchFn });
-    id = await launchBuilder(ec2, builderUserData(urls), name, fetchFn);
+    id = await provider.launch(builderUserData(urls), name);
     const deadline = now() + timeoutMs;
     let goneSince = null;
     for (;;) {
@@ -687,22 +694,30 @@ export async function runOnBuilder(ec2, r2, dir, into, { name, timeoutMs, fetchF
         return;
       }
       if (now() > deadline) throw new Error(`Builder ${id} did not finish within ${Math.round(timeoutMs / 60_000)} min`);
-      const state = await instanceState(ec2, id, fetchFn);
-      if (['shutting-down', 'terminated', 'stopped', 'stopping'].includes(state)) {
+      if (await provider.gone(id)) {
         goneSince ??= now();
-        if (now() - goneSince > EC2_LOST_MS) throw new Error(`Builder ${id} is ${state} without reporting (a Spot interruption?)`);
-      }
+        if (now() - goneSince > EC2_LOST_MS) throw new Error(`Builder ${id} stopped without reporting (a Spot interruption?)`);
+      } else goneSince = null;
     }
   } finally {
-    if (id) await terminate(ec2, id, fetchFn).catch(err => console.error(`Builder ${id} NOT terminated: ${err.message}`));
+    if (id) await provider.remove(id).catch(err => console.error(`Builder ${id} NOT removed: ${err.message}`));
     for (const key of Object.values(keys)) await r2Request(r2, 'DELETE', key, { fetchFn }).catch(() => {});
   }
 }
 
-/** The builder's shell prelude: fail fast, and the pinned Node and emsdk when a job needs them. */
-function builderPrelude({ node, emsdk } = {}) {
+/**
+ * The builder's shell prelude: fail fast, the pinned Node and emsdk when a job needs them, and ccache restored from R2 when the job
+ * carries cache.env (runOnBuilder's `cache`). The builder starts empty every time, so the cache is what makes a rebuild recompile only
+ * what changed, as the host's persistent ccache does. `compilerCheck` must be stable across builders: a fresh emsdk install has new
+ * mtimes every run, so the engine job keys on its pinned version.
+ */
+function builderPrelude({ node, emsdk, compilerCheck = 'content' } = {}) {
   return ['set -euo pipefail', 'export DEBIAN_FRONTEND=noninteractive HOME=/root',
-    'apt-get update -qq', 'apt-get install -y -qq --no-install-recommends cmake ninja-build g++ git python3 xz-utils ca-certificates curl >/dev/null',
+    'apt-get update -qq', 'apt-get install -y -qq --no-install-recommends cmake ninja-build g++ git python3 xz-utils ca-certificates curl ccache zstd >/dev/null',
+    `export CCACHE_DIR=/root/ccache CCACHE_BASEDIR=/root/w CCACHE_NOHASHDIR=1 CCACHE_MAXSIZE=8G CCACHE_COMPILERCHECK=${compilerCheck}`,
+    'if [ -f cache.env ]; then . ./cache.env; fi',
+    'if [ -n "${CACHE_GET:-}" ] && curl -fsS --retry 3 "$CACHE_GET" | zstd -dq | tar -xf - -C /root; then echo "ccache restored: $(du -sh /root/ccache | cut -f1)";',
+    'else rm -rf /root/ccache; echo "ccache: starting empty"; fi',
     ...(node ? [
       `curl -fsSLo /tmp/node.tar.xz https://nodejs.org/dist/v${node}/node-v${node}-linux-x64.tar.xz`,
       `curl -fsSLo /tmp/SHASUMS256.txt https://nodejs.org/dist/v${node}/SHASUMS256.txt`,
@@ -714,55 +729,89 @@ function builderPrelude({ node, emsdk } = {}) {
       'source /opt/emsdk/emsdk_env.sh >/dev/null 2>&1'] : [])];
 }
 
+/** The job's last step: the cache goes back to R2 (never fatal; the next build then starts from the previous cache). */
+const SAVE_CACHE = ['if [ -n "${CACHE_PUT:-}" ]; then ccache -s | grep -E "Hits|Misses" || true',
+  '  if tar -cf - -C /root ccache | zstd -T0 -3 -q >/root/ccache.tar.zst && curl -fsS --retry 3 -T /root/ccache.tar.zst "$CACHE_PUT" >/dev/null',
+  '  then echo "ccache saved: $(du -h /root/ccache.tar.zst | cut -f1)"; else echo "ccache not saved"; fi', 'fi'];
+
 /** The engine job: both wasm artifacts, both node smokes, the real-engine and unit tests and the type check, on every core. */
 export function engineJobScript(toolchain) {
   const smoke = variant => `bash scripts/engine-smoke.sh ${variant ? '--fallback ' : ''}vendor/simc/profiles/MID2/MID2_Mage_Frost.simc iterations=50 `
     + `threads=${variant ? 1 : 4} json=/root/w/out/${variant ? 'fallback' : 'threaded'}-report.json,version=2`;
-  return [...builderPrelude({ node: toolchain.node, emsdk: toolchain.emsdk.version }),
+  return [...builderPrelude({ node: toolchain.node, emsdk: toolchain.emsdk.version, compilerCheck: `string:emsdk-${toolchain.emsdk.version}` }),
     'cd ws', 'npm ci --ignore-scripts', 'bash scripts/bootstrap-engine.sh', 'export CMAKE_BUILD_PARALLEL_LEVEL=$(nproc)',
     'bash scripts/build-engine.sh', 'bash scripts/build-engine.sh --fallback', 'mkdir -p ../out', smoke(false), smoke(true),
-    'FROSTSIM_ENGINE=1 npx vitest run src/lib/simc', 'npm run check', 'cp -R public/engine ../out/engine', ''].join('\n');
+    // The type check imports public/presentation.json, which the host otherwise generates after this job; it reads only simc's source.
+    'FROSTSIM_ENGINE=1 npx vitest run src/lib/simc', 'node scripts/generate-presentation.mjs', 'npm run check', 'cp -R public/engine ../out/engine',
+    'cd ..', ...SAVE_CACHE, ''].join('\n');
 }
 
 /** The native job: a Linux simc from a pack's own source archive (the same flags as a local build, without ccache). */
 export function nativeJobScript() {
   return [...builderPrelude(), 'mkdir -p vendor/simc out && tar -xzf simc.tar.gz -C vendor/simc',
-    `cmake ${NATIVE_CMAKE.join(' ')} >/dev/null`, 'cmake --build build/native', 'cp build/native/simc out/simc', ''].join('\n');
+    `cmake ${NATIVE_CMAKE.join(' ')} -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache >/dev/null`,
+    'cmake --build build/native', 'cp build/native/simc out/simc', ...SAVE_CACHE, ''].join('\n');
 }
 
-/** EC2 and R2 credentials for remote builds, or null (either absent, or unreadable): everything then builds here. */
-function ec2Builds() {
-  try {
-    const ec2 = ec2BuildCredentials(), r2 = r2Credentials();
-    return ec2 && r2 ? { ec2, r2 } : null;
-  } catch (err) { console.error(`Remote builds off: ${err.message}`); return null; }
+/** R2 and the builder providers in fallback order (EC2 Spot, then Hetzner), or null when none is configured: this host builds. */
+function builders(fetchFn = fetch) {
+  let r2;
+  try { r2 = r2Credentials(); } catch (err) { console.error(`Remote builds off: ${err.message}`); return null; }
+  if (!r2) return null;
+  const providers = [];
+  for (const [file, read, make] of [['ec2.env', ec2BuildCredentials, ec2Builders], ['hcloud.env', hcloudCredentials, hetznerBuilders]]) {
+    try { const creds = read(); if (creds) providers.push(make(creds, fetchFn)); } catch (err) { console.error(`${file} ignored: ${err.message}`); }
+  }
+  return providers.length ? { r2, providers } : null;
+}
+
+/** Removes leaked builders of every provider; a failing sweep never stops a build. */
+async function sweepAll(chain) {
+  for (const provider of chain.providers) {
+    const swept = await provider.sweep().catch(() => []);
+    if (swept.length) console.error(`Removed leaked ${provider.name} builders ${swept.join(', ')}`);
+  }
+}
+
+/** Runs a job on the first provider that completes it. Returns that provider's name; throws with every failure when none did. */
+export async function runRemote(chain, dir, into, opts) {
+  const failures = [];
+  for (const provider of chain.providers) {
+    try {
+      await runOnBuilder(provider, chain.r2, dir, into, opts);
+      return provider.name;
+    } catch (err) {
+      failures.push(`${provider.name}: ${err.message}`);
+      console.error(`${provider.name} builder failed: ${err.message}`);
+    }
+  }
+  throw new Error(failures.join('; '));
 }
 
 /**
- * Builds the engine artifacts of `work` on an EC2 builder and copies them into its public/engine. True when that worked; false
- * (after logging why) when this host must build them itself.
+ * Builds the engine artifacts of `work` on a remote builder and copies them into its public/engine. Returns the provider that built
+ * them, or null (after logging why) when this host must build them itself.
  */
 async function remoteEngineBuild(work, toolchain, opts = {}) {
-  const creds = ec2Builds();
-  if (!creds) return false;
+  const chain = builders();
+  if (!chain) return null;
   const tmp = process.env.FROSTSIM_BUILD_TMP ?? tmpdir();
   const job = mkdtempSync(join(tmp, 'frostsim-job-')), into = mkdtempSync(join(tmp, 'frostsim-out-'));
   try {
-    const swept = await sweepEc2Builders(creds.ec2, opts).catch(() => []);
-    if (swept.length) console.error(`Terminated leaked builders ${swept.join(', ')}`);
+    await sweepAll(chain);
     // The workspace without what the builder fetches or makes itself: the simc checkout, node_modules and build trees.
     cpSync(work, join(job, 'ws'), { recursive: true, filter: src => !/^\/(vendor|node_modules|build)(\/|$)/.test(src.slice(work.length)) });
     writeFileSync(join(job, 'run.sh'), engineJobScript(toolchain));
-    await runOnBuilder(creds.ec2, creds.r2, job, into, { name: `engine-${Date.now()}`, timeoutMs: 90 * 60_000, ...opts });
+    const provider = await runRemote(chain, job, into, { name: `engine-${Date.now()}`, timeoutMs: 90 * 60_000, cache: 'engine', ...opts });
     for (const variant of ['threaded', 'fallback']) {
       const dps = json(join(into, `out/${variant}-report.json`)).sim.players[0].collected_data.dps;
       assert(dps.mean > 0 && dps.count > 0, `Remote ${variant} smoke produced no DPS samples`);
     }
     cpSync(join(into, 'out/engine'), join(work, 'public/engine'), { recursive: true });
-    return true;
+    return provider;
   } catch (err) {
     console.error(`Remote engine build failed, building here: ${err.message}`);
-    return false;
+    return null;
   } finally {
     rmSync(job, { recursive: true, force: true });
     rmSync(into, { recursive: true, force: true });
@@ -818,42 +867,26 @@ export function writeNativeStatus(indexPath, status) {
   renameSync(`${indexPath}.tmp`, indexPath);
 }
 
-/** An EC2 builder per pack (ec2.env), else one Hetzner server for the run (hcloud.env), else null: the packs build here. */
+/** A remote compile for each pack (EC2 Spot, then Hetzner), or null when no provider is configured: the packs build here. */
 async function openBuilder() {
-  const creds = ec2Builds();
-  if (creds) {
-    const swept = await sweepEc2Builders(creds.ec2).catch(() => []);
-    if (swept.length) console.error(`Terminated leaked builders ${swept.join(', ')}`);
-    return { close: async () => {}, compile: async (pack, dir) => {
-      const tmp = process.env.FROSTSIM_BUILD_TMP ?? tmpdir();
-      const job = mkdtempSync(join(tmp, 'frostsim-job-')), into = mkdtempSync(join(tmp, 'frostsim-out-'));
-      try {
-        cpSync(join(pack, 'source/simc.tar.gz'), join(job, 'simc.tar.gz'));
-        writeFileSync(join(job, 'run.sh'), nativeJobScript());
-        await runOnBuilder(creds.ec2, creds.r2, job, into, { name: `native-${Date.now()}`, timeoutMs: 45 * 60_000 });
-        mkdirSync(join(dir, 'build/native'), { recursive: true });
-        cpSync(join(into, 'out/simc'), join(dir, 'build/native/simc'));
-        run(dir, 'chmod', ['755', join(dir, 'build/native/simc')]);
-      } finally {
-        rmSync(job, { recursive: true, force: true });
-        rmSync(into, { recursive: true, force: true });
-      }
-    } };
-  }
-  let hc;
-  try { hc = hcloudCredentials(); } catch (err) { console.error(`Remote builds off: ${err.message}`); return null; }
-  if (!hc) return null;
-  const work = mkdtempSync(join(process.env.FROSTSIM_BUILD_TMP ?? tmpdir(), 'frostsim-builder-'));
-  try {
-    const swept = await sweepBuilders(hc);
-    if (swept.length) console.error(`Deleted leaked builders ${swept.join(', ')}`);
-    const builder = await remoteBuilder(hc, work);
-    return { compile: builder.compile, close: async () => { await builder.close(); rmSync(work, { recursive: true, force: true }); } };
-  } catch (err) {
-    console.error(`Remote builder unavailable, building here: ${err.message}`);
-    rmSync(work, { recursive: true, force: true });
-    return null;
-  }
+  const chain = builders();
+  if (!chain) return null;
+  await sweepAll(chain);
+  return { close: async () => {}, compile: async (pack, dir) => {
+    const tmp = process.env.FROSTSIM_BUILD_TMP ?? tmpdir();
+    const job = mkdtempSync(join(tmp, 'frostsim-job-')), into = mkdtempSync(join(tmp, 'frostsim-out-'));
+    try {
+      cpSync(join(pack, 'source/simc.tar.gz'), join(job, 'simc.tar.gz'));
+      writeFileSync(join(job, 'run.sh'), nativeJobScript());
+      await runRemote(chain, job, into, { name: `native-${Date.now()}`, timeoutMs: 45 * 60_000, cache: 'native' });
+      mkdirSync(join(dir, 'build/native'), { recursive: true });
+      cpSync(join(into, 'out/simc'), join(dir, 'build/native/simc'));
+      run(dir, 'chmod', ['755', join(dir, 'build/native/simc')]);
+    } finally {
+      rmSync(job, { recursive: true, force: true });
+      rmSync(into, { recursive: true, force: true });
+    }
+  } };
 }
 
 /** Never fails the pack or the run: failures go to their own alert issue and `nativeStatus` in the index. */
