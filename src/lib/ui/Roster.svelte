@@ -1,6 +1,7 @@
 <script lang="ts">
   // Every character on this device as a card (D4). Picking one opens it below; each card can go straight to a Quick Sim with
   // that character, which sets Quick Sim's own pick and leaves every other screen's alone.
+  import type { Snippet } from 'svelte'
   import { Plus, Zap } from '@lucide/svelte'
   import { app, DRAFT, isBusy, pickCharacter } from '../app.svelte'
   import { classLabel, type ImportedCharacter } from '../import/character'
@@ -9,7 +10,8 @@
   import Portrait from './Portrait.svelte'
   import { portraitOptedIn } from '../portrait.svelte'
 
-  let { onimport }: { onimport: () => void } = $props()
+  /** `badge`: a line under a stored character's name, by its id. `tail`: cards after the characters, in place of the import card. */
+  let { onimport, badge, tail }: { onimport: () => void; badge?: Snippet<[string]>; tail?: Snippet } = $props()
 
   interface Card { id: string; label: string; character: ImportedCharacter; storedId?: string; updatedAt?: number }
   const cards = $derived<Card[]>([
@@ -45,12 +47,14 @@
           <strong class="truncate">{c.label}</strong>
           <span class="xs muted truncate">{sub(c.character)}</span>
           {#if c.storedId && lastDps.get(c.storedId)}<span class="xs dps">{fmtInt(lastDps.get(c.storedId)!)} DPS</span>{/if}
+          {#if c.storedId && badge}{@render badge(c.storedId)}{/if}
         </span>
       </button>
       <button class="sm ghost sim" disabled={isBusy()} onclick={() => simWith(c.id)} title="Quick Sim {c.label}" aria-label="Quick Sim {c.label}"><Zap size={16} /></button>
     </div>
   {/each}
-  <button class="card add" onclick={onimport}><Plus size={18} aria-hidden="true" /><span class="small">Import a character</span></button>
+  {#if tail}{@render tail()}
+  {:else}<button class="card add" onclick={onimport}><Plus size={18} aria-hidden="true" /><span class="small">Import a character</span></button>{/if}
 </section>
 
 <style>

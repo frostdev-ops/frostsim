@@ -1,9 +1,10 @@
 // Cloud character slots under /api/v1/characters (CLAUDE.md D15; DESIGN.md C5, P6): the addon export text itself, capped at
 // 64 KiB and re-parsed with parseAddonExport on both ends. Gated by `shares`: slots and hosted shares ship as one switch.
 //
-// POST always adds a character and needs count < entitlements.slots, checked under the user's row lock so concurrent saves cannot
-// overshoot. PUT /:id replaces one of the user's characters in place and needs no free slot. Labels need not be unique: two
-// characters can share a name, so replacing is always by id.
+// A slot is a character, not a label: POST replaces the user's character that is the same one in the game (name, class, realm and
+// region, isSameCharacter) and needs no free slot for it; a new character needs count < entitlements.slots, checked under the user's
+// row lock so concurrent saves cannot overshoot. PUT /:id replaces one of the user's characters in place and needs no free slot.
+// Labels need not be unique. Both answer the saved updatedAt, which the browser keeps to know which side is newer.
 //
 // History: every save whose equipped set differs from the last one adds a gear snapshot, the browser uploads its finished Quick Sims
 // of the character (POST /:id/sims), and the patch-resims task queues one cloud Quick Sim per character when the game build of the
@@ -16,7 +17,7 @@ import { HttpError, errorSummary, json } from './http';
 import { rateLimit } from './ratelimit';
 import { enqueueJob } from './compute/queue';
 import { defaultPackInfo } from './compute/packs';
-import { looksLikeProfile, parseAddonExport, type ImportedCharacter } from '../../src/lib/import/character';
+import { isSameCharacter, looksLikeProfile, parseAddonExport, type ImportedCharacter } from '../../src/lib/import/character';
 import { gearSnapshot, sameGear, type GearItem } from '../../src/lib/account/history';
 import { quickRequest } from '../../src/lib/simc/quick-request';
 
@@ -198,17 +199,25 @@ export const routes: Route[] = [
       const { label, raw, parsed } = parseSave(await ctx.json());
       const userId = ctx.session!.userId;
       const now = ctx.now();
-      const id = await ctx.sql.begin(async (tx) => {
+      const out = await ctx.sql.begin(async (tx) => {
         await tx`select 1 from users where id = ${userId} for update`;
+        const same = (await tx`select id, who from cloud_characters where user_id = ${userId} order by updated_at desc`)
+          .find((r) => r.who && isSameCharacter(r.who as ImportedCharacter, parsed));
+        if (same) {
+          await tx`update cloud_characters set label = ${label}, raw = ${raw}, bytes = ${Buffer.byteLength(raw)},
+            who = ${tx.json(who(parsed))}, updated_at = ${now} where id = ${same.id}`;
+          await recordSnapshot(tx, same.id, parsed, now);
+          return { id: same.id as string, status: 200 };
+        }
         const { slots } = await loadEntitlements(tx, { userId }, now);
         const [{ used }] = await tx`select count(*)::int as used from cloud_characters where user_id = ${userId}`;
         if (used >= slots) throw new HttpError(402, 'no-slots', 'Every cloud character slot is in use.');
         const [row] = await tx`insert into cloud_characters (user_id, label, raw, bytes, who, created_at, updated_at)
           values (${userId}, ${label}, ${raw}, ${Buffer.byteLength(raw)}, ${tx.json(who(parsed))}, ${now}, ${now}) returning id`;
         await recordSnapshot(tx, row.id, parsed, now);
-        return row.id as string;
+        return { id: row.id as string, status: 201 };
       });
-      return json({ id }, 201);
+      return json({ id: out.id, updatedAt: now }, out.status);
     },
   },
   {
@@ -224,7 +233,7 @@ export const routes: Route[] = [
         return updated;
       });
       if (!row) throw notFound();
-      return json({ id: row.id });
+      return json({ id: row.id, updatedAt: now });
     },
   },
   {

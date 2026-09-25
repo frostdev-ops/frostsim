@@ -71,6 +71,14 @@ ledger), `workers`, `cloud_characters` (the addon export text, not a parsed reco
 realm and region at save time), `character_snapshots`, `character_sims`, `shares`, `integration_grants`, `audit_log`, `guild_role_limits` (migration 005: per-role
 allowances inside a Discord server's pool, P5).
 
+Slots are the characters (2026-09-25). Signed in, every character on a device sits in a slot: the Character page's
+roster is the slot list, an import or update fills or rewrites the character's slot, a rename relabels it and a delete
+frees it on every device (`src/lib/account/slots.svelte.ts`, through `setCharacterSync` in `app.svelte.ts`). A sync on
+sign-in and on each visit to the Character page brings down characters saved elsewhere, drops ones deleted elsewhere and
+puts characters without a slot into free ones, newest first; the rest stay on that device only. `POST /characters`
+replaces the account's character that is the same one in the game (name, class, realm, region) instead of taking a
+second slot, and both writes answer `updatedAt` so the browser knows which side changed.
+
 Character history (migration 003). A save whose equipped set differs from the newest snapshot adds one to
 `character_snapshots`: the addon's own item names and levels, and the game's 16-slot average. The Character page uploads
 this device's finished Quick Sims of a slotted character to `character_sims` (`POST /characters/:id/sims`, deduped on the

@@ -157,7 +157,7 @@
     <details><summary>What happens when I run out of cloud sims?</summary><p>Your sims run in your browser again, like on the free plan, until your allowance resets next month.</p></details>
     <details><summary>What are patch re-sims?</summary><p>When a new game build reaches Frostsim, we sim each of your slotted characters once on a Patchwerk dummy and add the result to its DPS history. Each re-sim uses a little of your cloud allowance.</p></details>
     <details><summary>What are hybrid runs?</summary><p>With Avalanche, a run made of independent sims splits between your PC and a cloud server at once, then comes back as one report: the candidates of Top Gear, Droptimizer, Crest and compares, the characters of a Quick Sim with several characters, and the stats of Stat Weights. While it runs, the run panel says what went where. A Quick Sim of one character is a single sim, so it runs whole in the cloud. Only the cloud share uses your allowance.</p></details>
-    <details><summary>What if I switch to a smaller plan?</summary><p>Your saved characters stay. You can load, overwrite or clear them, and save new ones once you are back within your slots.</p></details>
+    <details><summary>What if I switch to a smaller plan?</summary><p>Your characters keep their slots. A character you import while you are over the limit stays on that device until you delete enough to be back within your slots.</p></details>
     <details><summary>Can I cancel?</summary><p>Yes, any time, from Manage billing in your account.</p></details>
     <details><summary>Is it open source?</summary><p>Yes. Frostsim, the cloud server and the cloud workers are GPL-3.0. <a href={SOURCE_URL} target="_blank" rel="noopener noreferrer">Read the code</a>.</p></details>
   </section>

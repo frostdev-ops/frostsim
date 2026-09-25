@@ -502,10 +502,21 @@ export function profilesetsSupported(): boolean {
 
 // --- characters --------------------------------------------------------------
 
+/** Told after every save, rename and delete made here; `background` ones (its own downloads) are not reported. */
+export interface CharacterSync { saved(record: StoredCharacter): void; deleted(record: StoredCharacter): void }
+let characterSync: CharacterSync | null = null
+
+/** Registered by account code (cloud character slots, CLAUDE.md D15), so anonymous use never loads any of it. */
+export function setCharacterSync(sync: CharacterSync | null): void {
+  characterSync = sync
+}
+
+/** `background`: a sync writing what another device saved. It leaves the focused character and the draft alone. */
 export async function saveCharacter(
   character: ImportedCharacter,
   label?: string,
   id = newId(),
+  background = false,
 ): Promise<StoredCharacter> {
   const now = Date.now()
   const existing = app.characters.find((c) => c.id === id)
@@ -525,16 +536,21 @@ export async function saveCharacter(
   const i = app.characters.findIndex((c) => c.id === id)
   if (i >= 0) app.characters[i] = record
   else app.characters.unshift(record)
-  // A saved draft replaces the draft wherever it was picked.
-  if (app.activeCharacterId === DRAFT || !existing) app.draft = null
-  for (const scope of PICK_SCOPES) if (app.picks[scope] === DRAFT) app.picks[scope] = id
-  pickCharacter(id)
+  if (!background) {
+    // A saved draft replaces the draft wherever it was picked.
+    if (app.activeCharacterId === DRAFT || !existing) app.draft = null
+    for (const scope of PICK_SCOPES) if (app.picks[scope] === DRAFT) app.picks[scope] = id
+    pickCharacter(id)
+    characterSync?.saved(record)
+  }
   resolveCharacter(character).catch(() => { /* reported in app state */ })
   void refreshUsage()
   return record
 }
 
-export async function deleteCharacter(id: string): Promise<void> {
+export async function deleteCharacter(id: string, background = false): Promise<void> {
+  const record = app.characters.find((c) => c.id === id)
+  if (record && !background) characterSync?.deleted($state.snapshot(record))
   const out = await db.del('characters', id)
   if (!out.ok) noteFailure(out.failure)
   app.characters = app.characters.filter((c) => c.id !== id)
@@ -554,6 +570,7 @@ export async function renameCharacter(id: string, label: string): Promise<void> 
   rec.updatedAt = Date.now()
   const out = await db.put('characters', $state.snapshot(rec))
   if (!out.ok) noteFailure(out.failure)
+  characterSync?.saved($state.snapshot(rec))
 }
 
 // --- reports -----------------------------------------------------------------

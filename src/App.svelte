@@ -106,12 +106,12 @@
   onMount(() => {
     trace('app.start', { route: router.name })
     void checkCapability()
-    void loadLibrary()
+    const library = loadLibrary()
     void register().then(() => refreshStatus(catalogBaseUrl()))
     interrupted = takeInterrupted()
     void initMedia()
     // Account code compiles out unless built with VITE_FEATURE_ACCOUNTS=1 (CLAUDE.md D15); it asks nothing without its marker or a sign-in landing.
-    if (import.meta.env.VITE_FEATURE_ACCOUNTS === true) void import('./lib/account/bootstrap').then((m) => m.bootstrap())
+    if (import.meta.env.VITE_FEATURE_ACCOUNTS === true) void import('./lib/account/bootstrap').then((m) => m.bootstrap(library))
   })
 
   // Decisive half of Top Gear trace: app.start after page.hide means page came back (explains vanished panel).
@@ -564,9 +564,6 @@
       {/await}
     {:else}
       <Screen />
-      {#if import.meta.env.VITE_FEATURE_ACCOUNTS === true && router.name === 'character'}
-        {#await import('./lib/account/CharacterSlots.svelte') then m}<m.default />{/await}
-      {/if}
     {/if}
 
     {#snippet failed(error, reset)}

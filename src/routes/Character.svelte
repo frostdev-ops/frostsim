@@ -265,7 +265,13 @@
       <p class="small muted">{draftSaved ? 'Draft saved on this device. ' : ''}Your export stays in your browser. A lookup sends only the region, realm and name.</p>
     </section>
   {:else}
-    <Roster onimport={() => openImport(false)} />
+    {#if import.meta.env.VITE_FEATURE_ACCOUNTS === true}
+      <!-- Signed in, the roster is the account's character slots (CLAUDE.md D15). -->
+      {#await import('../lib/account/SlotRoster.svelte')}<Roster onimport={() => openImport(false)} />
+      {:then m}<m.default onimport={() => openImport(false)} />{/await}
+    {:else}
+      <Roster onimport={() => openImport(false)} />
+    {/if}
     <!-- Character workspace (P12.2). -->
     <section class="panel stack">
       <CharacterBanner {character} characterId={stored?.id} embedded />
@@ -321,6 +327,10 @@
         </div>
       </section>
 
+      {#if import.meta.env.VITE_FEATURE_ACCOUNTS === true && stored}
+        {#await import('../lib/account/SlotHistory.svelte') then m}<m.default localId={stored.id} />{/await}
+      {/if}
+
       <footer class="row">
         <button class="sm ghost" onclick={() => { renaming = true; renameValue = stored?.label ?? character.name }}>Rename</button>
         <button class="sm" onclick={copyProfile}>Copy original export</button>
@@ -336,7 +346,7 @@
         {#if stored}
           <button
             class="sm danger"
-            onclick={() => { if (confirm(`Delete ${stored.label}? Reports keep their own snapshot.`)) void deleteCharacter(stored.id) }}
+            onclick={() => { if (confirm(`Delete ${stored.label}? Reports keep their own snapshot.${import.meta.env.VITE_FEATURE_ACCOUNTS === true ? ' If it is in a cloud slot, that slot and its history are cleared on every device.' : ''}`)) void deleteCharacter(stored.id) }}
           >
             Delete
           </button>

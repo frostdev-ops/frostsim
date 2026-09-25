@@ -4,9 +4,13 @@
   import { app } from '../app.svelte'
   import { api } from './api'
   import { gearChanges, simPoint, type GearItem, type SimPoint } from './history'
+  import { slotOf } from './slots.svelte'
 
-  interface Props { slotId: string; label: string; localId: string | null }
-  let { slotId, label, localId }: Props = $props()
+  /** The character on this device; nothing shows until it has a slot. */
+  let { localId }: { localId: string } = $props()
+  const slot = $derived(slotOf(localId))
+  const slotId = $derived(slot?.id ?? '')
+  const label = $derived(slot?.label ?? '')
 
   interface Snapshot { id: string; createdAt: string; itemLevel: number | null; gear: GearItem[] }
   interface Sim { createdAt: string; source: 'run' | 'patch'; dps: number; dpsError?: number; fightStyle?: string; targets?: number; gameBuild?: string; reportId?: string }
@@ -32,10 +36,12 @@
   const date = (iso: string) => new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
   const signed = (n: number, digits = 1) => `${n >= 0 ? '+' : '−'}${Math.abs(n).toFixed(digits)}`
 
+  // A save moves the slot's updatedAt, which may add a gear snapshot.
   $effect(() => {
     const id = slotId
-    const local = localId
-    void sync(id, local)
+    void slot?.updatedAt
+    if (id) void sync(id, localId)
+    else history = null
   })
   // The newest scenario unless the user picked one that still exists.
   $effect(() => {
@@ -43,13 +49,13 @@
   })
 
   /** Loads the history, uploads this device's Quick Sims of the character that it lacks, and reloads when any were added. */
-  async function sync(id: string, local: string | null): Promise<void> {
+  async function sync(id: string, local: string): Promise<void> {
     try {
       let h = await api<{ snapshots: Snapshot[]; sims: Sim[] }>(`/characters/${id}/history`)
       if (id !== slotId) return
       history = h
       const known = new Set(h.sims.map((s) => s.reportId).filter(Boolean))
-      const fresh = local ? app.reports.filter((r) => r.characterId === local).map(simPoint).filter((p): p is SimPoint => !!p && !known.has(p.reportId)) : []
+      const fresh = app.reports.filter((r) => r.characterId === local).map(simPoint).filter((p): p is SimPoint => !!p && !known.has(p.reportId))
       let added = 0
       for (let i = 0; i < fresh.length; i += 50) added += (await api<{ added: number }>(`/characters/${id}/sims`, 'POST', { points: fresh.slice(i, i + 50) })).added
       if (!added) return
@@ -97,6 +103,7 @@
 
 {#if history}
   <div class="history" aria-label="{label} history">
+    <h2 class="section-title">Gear and DPS history</h2>
     <div class="stats">
       <div class="stat">
         <span class="xs muted">Item level</span>
@@ -180,7 +187,8 @@
 {/if}
 
 <style>
-  .history { display: grid; gap: var(--s3); padding-top: var(--s3); border-top: 1px solid var(--border); }
+  .history { display: grid; gap: var(--s3); }
+  h2 { margin: 0; }
   .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: var(--s3); }
   .stat { display: grid; gap: 2px; }
   .stat strong { font: 700 24px var(--font-display); }

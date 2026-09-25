@@ -5,6 +5,7 @@
 import { toast } from '../app.svelte'
 import { navigate } from '../router.svelte'
 import { account, hasMarker, PENDING_GUILD, refresh } from './state.svelte'
+import { afterLibrary, syncSlots } from './slots.svelte'
 
 type Kind = 'good' | 'bad' | 'info'
 
@@ -29,7 +30,9 @@ const UNFINISHED: [Kind, string] = ['bad', 'Sign-in did not finish. Try again.']
 /** `<base64url payload>.<base64url HMAC-SHA256>`, the shape signed.ts mints. */
 const GUILD = /^#\/account\/guild\/([A-Za-z0-9_-]{1,600}\.[A-Za-z0-9_-]{43})$/
 
-export async function bootstrap(): Promise<void> {
+/** `library`: this device's characters loading, which a slot sync waits for. */
+export async function bootstrap(library: Promise<unknown> = Promise.resolve()): Promise<void> {
+  afterLibrary(library)
   const code = landing()
   guildLink()
   addEventListener('hashchange', guildLink)
@@ -38,6 +41,7 @@ export async function bootstrap(): Promise<void> {
   // A failure here is not shown: the dialog retries and reports it when opened.
   await refresh().catch(() => {})
   if (code !== null) announce(code)
+  if (account.me) void syncSlots()
 }
 
 /** Takes ?account=<code> (DESIGN.md P4) out of the address bar and returns it. */

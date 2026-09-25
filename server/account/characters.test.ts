@@ -17,6 +17,8 @@ const ORIGIN = 'https://sim.test';
 const SID = 'a'.repeat(43);
 const EXPORT = readFileSync(new URL('../../tests/fixtures/addon-export-demonology.simc', import.meta.url), 'utf8');
 const ID = '0b1e7a52-6a8c-4b0e-9b3e-5d7f1c2a9e40';
+/** The fixture as another character: one account holds one slot per character in the game. */
+const named = (name: string) => EXPORT.replace(/^warlock=.*$/m, `warlock=${name}`);
 const config = loadConfig({
   FEATURES: 'shares', PUBLIC_ORIGIN: ORIGIN, DATABASE_URL: 'postgres://unused', SESSION_SECRET: 's'.repeat(32),
   R2_ACCOUNT_ID: 'acct', R2_ACCESS_KEY_ID: 'id', R2_SECRET_ACCESS_KEY: 'secret',
@@ -95,21 +97,31 @@ describe('cloud characters', () => {
   });
 
   it('creates with 201 under the user row lock, and never replaces a same-label character', async () => {
-    const created = setup();
+    const created = setup({ row: { id: 'other', who: { name: 'Someone', className: 'warlock', region: 'us', server: 'testrealm' } } });
     const res = await created.send('POST', '/api/v1/characters', { label: '  Main  ', raw: EXPORT });
     expect(res.status).toBe(201);
-    expect(await res.json()).toEqual({ id: ID });
+    expect(await res.json()).toEqual({ id: ID, updatedAt: expect.any(String) });
     const insert = created.calls.find((c) => c.query.includes('insert into cloud_characters'))!;
     expect(insert.values.slice(0, 4)).toEqual(['u1', 'Main', EXPORT, Buffer.byteLength(EXPORT)]);
     expect(created.calls.some((c) => c.query.includes('for update'))).toBe(true);
     expect(created.calls.some((c) => c.query.includes('update cloud_characters'))).toBe(false);
   });
 
+  it('replaces the same character with POST instead of taking another slot, even with every slot in use', async () => {
+    const same = setup({ plan: null, used: 1, row: { id: ID, who: { name: 'testchar', className: 'warlock', region: 'US', server: 'Testrealm' } } });
+    const res = await same.send('POST', '/api/v1/characters', { label: 'Main', raw: EXPORT });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id: ID, updatedAt: expect.any(String) });
+    const update = same.calls.find((c) => c.query.includes('update cloud_characters'))!;
+    expect(update.values.at(-1)).toBe(ID);
+    expect(same.calls.some((c) => c.query.includes('insert into cloud_characters') || c.query.includes('count(*)'))).toBe(false);
+  });
+
   it('replaces one character by id with PUT: owner only, no slot needed, same validation', async () => {
     const mine = setup({ row: { id: ID }, plan: null, used: 3 });
     const res = await mine.send('PUT', `/api/v1/characters/${ID}`, { label: 'Alt', raw: EXPORT });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ id: ID });
+    expect(await res.json()).toEqual({ id: ID, updatedAt: expect.any(String) });
     const update = mine.calls.find((c) => c.query.includes('update cloud_characters'))!;
     expect(update.query).toContain('user_id = ?');
     expect(update.values).toEqual(['Alt', EXPORT, Buffer.byteLength(EXPORT), expect.objectContaining({ className: 'warlock' }), expect.any(Date), ID, 'u1']);
@@ -280,7 +292,7 @@ describe.skipIf(!PG)('cloud characters postgres integration (needs FROSTSIM_TEST
   it('never exceeds the slot limit under concurrent saves', async () => {
     // compute_m: the free slot plus 2.
     const u = await user('compute_m_monthly');
-    const results = await Promise.all(Array.from({ length: 12 }, (_, i) => u.send('POST', '/api/v1/characters', { label: `Alt ${i}`, raw: EXPORT })));
+    const results = await Promise.all(Array.from({ length: 12 }, (_, i) => u.send('POST', '/api/v1/characters', { label: `Alt ${i}`, raw: named(`Alt${i}`) })));
     const statuses = results.map((r) => r.status).sort();
     expect(statuses.filter((s) => s === 201)).toHaveLength(3);
     expect(statuses.filter((s) => s === 402)).toHaveLength(9);
@@ -291,8 +303,8 @@ describe.skipIf(!PG)('cloud characters postgres integration (needs FROSTSIM_TEST
   it('keeps two characters with one label apart, and PUT replaces only the one named by id', async () => {
     const u = await user('compute_s_monthly');
     const other = await user(null);
-    const ids = await Promise.all([1, 2].map(async () => {
-      const res = await u.send('POST', '/api/v1/characters', { label: 'Bob', raw: EXPORT });
+    const ids = await Promise.all([1, 2].map(async (i) => {
+      const res = await u.send('POST', '/api/v1/characters', { label: 'Bob', raw: named(`Bob${i}`) });
       expect(res.status).toBe(201);
       return ((await res.json()) as { id: string }).id;
     }));
@@ -305,7 +317,7 @@ describe.skipIf(!PG)('cloud characters postgres integration (needs FROSTSIM_TEST
     const rows = await sql`select id, label, raw, bytes from cloud_characters where user_id = ${u.id}`;
     const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
     expect(byId[ids[0]]).toMatchObject({ label: 'Bob (Realm A)', raw: edited, bytes: Buffer.byteLength(edited) });
-    expect(byId[ids[1]]).toMatchObject({ label: 'Bob', raw: EXPORT });
+    expect(byId[ids[1]]).toMatchObject({ label: 'Bob', raw: named('Bob2') });
   });
 
   it('keeps gear and DPS history per character, dedupes uploads, and deletes both with the character', async () => {

@@ -2,8 +2,9 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const mocks = vi.hoisted(() => ({ toast: vi.fn(), navigate: vi.fn(), setRemoteEngine: vi.fn() }))
+const mocks = vi.hoisted(() => ({ toast: vi.fn(), navigate: vi.fn(), setRemoteEngine: vi.fn(), syncSlots: vi.fn() }))
 vi.mock('../app.svelte', () => ({ toast: mocks.toast }))
+vi.mock('./slots.svelte', () => ({ afterLibrary: vi.fn(), syncSlots: mocks.syncSlots }))
 vi.mock('../router.svelte', () => ({ navigate: mocks.navigate }))
 vi.mock('../simc/job', () => ({ setRemoteEngine: mocks.setRemoteEngine }))
 vi.mock('../simc/remote', () => ({ createRemoteEngine: () => 'cloud-engine' }))
@@ -65,13 +66,16 @@ describe('account bootstrap', () => {
     let state = await boot()
     expect(paths()).toEqual(['/api/v1/me', '/api/v1/billing'])
     expect(state.account.me?.user.displayName).toBe('Ana')
+    expect(mocks.syncSlots).toHaveBeenCalledOnce()
 
+    mocks.syncSlots.mockClear()
     fetchMock.mockImplementation(async () => json({ error: 'signed-out', message: 'Sign in first.' }, 401))
     at('https://sim.test/#/', true)
     state = await boot()
     expect(state.account.me).toBeNull()
     expect(local.map.has('frostsim.account')).toBe(false)
     expect(mocks.setRemoteEngine).toHaveBeenLastCalledWith(null)
+    expect(mocks.syncSlots).not.toHaveBeenCalled()
   })
 
   it('handles ?account=signed-in: toast, marker, stripped query, then the refresh', async () => {
