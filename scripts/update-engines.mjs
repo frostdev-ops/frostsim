@@ -512,6 +512,8 @@ const UBUNTU_AMI = '/aws/service/canonical/ubuntu/server/24.04/stable/current/am
 /** Capacity errors worth the next pool; any other error (a quota, a policy) would repeat. */
 const EC2_TRY_NEXT = new Set(['InsufficientInstanceCapacity', 'SpotMaxPriceTooLow', 'Unsupported', 'InsufficientFreeAddressesInSubnet']);
 const EC2_MAX_POOLS = 8;
+/** vCPU of an x86 size (c7a.8xlarge: 32), as server/account/compute/ec2.ts reads it; 0 for anything else. */
+const vcpus = type => { const m = /^[a-z]\d+[a-z]*\.(large|xlarge|(\d+)xlarge)$/.exec(type); return !m ? 0 : m[1] === 'large' ? 2 : m[1] === 'xlarge' ? 4 : 4 * Number(m[2]); };
 const EC2_POLL_MS = 20_000;
 /** A builder whose instance is gone this long without an exit marker was lost (a Spot interruption, a crash). */
 const EC2_LOST_MS = 90_000;
@@ -526,7 +528,8 @@ export function ec2BuildCredentials(file = process.env.FROSTSIM_EC2_ENV_FILE || 
   const subnets = new Map((value('AWS_SUBNETS') ?? '').split(',').map(p => p.trim().split(':')).filter(p => p.length === 2 && p[0] && p[1]));
   const creds = { region: value('AWS_REGION'), accessKeyId: value('AWS_ACCESS_KEY_ID'), secretAccessKey: value('AWS_SECRET_ACCESS_KEY'),
     securityGroup: value('AWS_SECURITY_GROUP_ID'), subnets,
-    types: (value('AWS_BUILD_INSTANCE_TYPES') ?? 'c7a.16xlarge,c8a.16xlarge,c7a.8xlarge,c8a.8xlarge').split(',').map(t => t.trim()).filter(Boolean) };
+    // 32 vCPU first: the Spot quota is shared with the compute workers, and a 64-vCPU builder can hold all of it.
+    types: (value('AWS_BUILD_INSTANCE_TYPES') ?? 'c7a.8xlarge,c8a.8xlarge,c7a.16xlarge,c8a.16xlarge').split(',').map(t => t.trim()).filter(Boolean) };
   if (!/^[a-z]{2}-[a-z]+-\d$/.test(creds.region ?? '') || !creds.accessKeyId || !creds.secretAccessKey || !creds.securityGroup || !subnets.size) {
     throw new Error('ec2.env needs AWS_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_SECURITY_GROUP_ID and AWS_SUBNETS (zone:subnet,...)');
   }
@@ -585,8 +588,10 @@ export async function buildPools(creds, fetchFn = fetch, now = new Date()) {
 async function launchBuilder(creds, userData, name, fetchFn) {
   const [ami, pools] = await Promise.all([ubuntuAmi(creds, fetchFn), buildPools(creds, fetchFn)]);
   if (!pools.length) throw new Error('No Spot price for any build instance type in the configured zones');
-  let last;
+  let last, ceiling = Infinity;
   for (const pool of pools) {
+    // The Spot vCPU quota is shared with the compute workers: after a quota refusal only smaller builders can fit.
+    if (vcpus(pool.type) >= ceiling) continue;
     try {
       const xml = await ec2Call(creds, 'RunInstances', {
         ImageId: ami, InstanceType: pool.type, MinCount: '1', MaxCount: '1', SubnetId: creds.subnets.get(pool.zone),
@@ -606,7 +611,8 @@ async function launchBuilder(creds, userData, name, fetchFn) {
       console.log(`Builder ${id}: ${pool.type} in ${pool.zone} at about $${pool.usd}/h`);
       return id;
     } catch (err) {
-      if (!EC2_TRY_NEXT.has(err.code)) throw err;
+      if (err.code === 'MaxSpotInstanceCountExceeded') ceiling = vcpus(pool.type);
+      else if (!EC2_TRY_NEXT.has(err.code)) throw err;
       last = err;
     }
   }

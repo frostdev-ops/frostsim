@@ -314,7 +314,7 @@ describe('EC2 builds', async () => {
     const ok = 'AWS_REGION=us-east-1\nAWS_ACCESS_KEY_ID=id\nAWS_SECRET_ACCESS_KEY=s\nAWS_SECURITY_GROUP_ID=sg-1\nAWS_SUBNETS=us-east-1a:subnet-a, us-east-1b:subnet-b\n';
     expect(ec2BuildCredentials(join(tmp, 'absent.env'))).toBeNull();
     expect(ec2BuildCredentials(env('ok.env', ok))).toMatchObject({ region: 'us-east-1', securityGroup: 'sg-1',
-      subnets: new Map([['us-east-1a', 'subnet-a'], ['us-east-1b', 'subnet-b']]), types: ['c7a.16xlarge', 'c8a.16xlarge', 'c7a.8xlarge', 'c8a.8xlarge'] });
+      subnets: new Map([['us-east-1a', 'subnet-a'], ['us-east-1b', 'subnet-b']]), types: ['c7a.8xlarge', 'c8a.8xlarge', 'c7a.16xlarge', 'c8a.16xlarge'] });
     expect(() => ec2BuildCredentials(env('open.env', ok, 0o644))).toThrow(/readable by other users/);
     expect(() => ec2BuildCredentials(env('partial.env', 'AWS_REGION=us-east-1\n'))).toThrow(/AWS_ACCESS_KEY_ID/);
   });
@@ -392,6 +392,26 @@ describe('EC2 builds', async () => {
     expect(c.calls).toContain('ec2 TerminateInstances');
     expect(c.objects.size).toBe(0);
     expect(c.calls[0]).toBe('R2 PUT builds/t1/in.tgz');
+  });
+
+  it('after a Spot quota refusal, tries only smaller builders', async () => {
+    const tried = [];
+    const small = { ...ec2, types: ['c7a.16xlarge', 'c7a.8xlarge'] };
+    const smallPrices = `<r>${price('c7a.16xlarge', 'us-east-1a', '1.1')}${price('c7a.16xlarge', 'us-east-1b', '1.2')}${price('c7a.8xlarge', 'us-east-1b', '0.5')}</r>`;
+    const c = cloud();
+    const fetchFn = async (url, init) => {
+      const body = String(init.body ?? '');
+      const action = init.headers?.['x-amz-target'] ?? new URLSearchParams(body).get('Action');
+      if (action === 'DescribeSpotPriceHistory') return new Response(smallPrices);
+      if (action === 'RunInstances') {
+        const type = new URLSearchParams(body).get('InstanceType');
+        tried.push(type);
+        if (type === 'c7a.16xlarge') return new Response('<Response><Errors><Error><Code>MaxSpotInstanceCountExceeded</Code></Error></Errors></Response>', { status: 400 });
+      }
+      return c.fetchFn(url, init);
+    };
+    await runOnBuilder(small, r2, job(), mkdtempSync(join(tmp, 'into-')), { name: 't4', timeoutMs: 60_000, fetchFn, sleep: async () => {} });
+    expect(tried).toEqual(['c7a.16xlarge', 'c7a.8xlarge']);
   });
 
   it('fails with the log tail on a nonzero exit, and on an instance gone without reporting; terminates either way', async () => {
