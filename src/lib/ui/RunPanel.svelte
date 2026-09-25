@@ -13,7 +13,8 @@
   import SimLog from './SimLog.svelte'
 
   const job = $derived(app.job)
-  const busy = $derived(isBusy())
+  // A blocked engine keeps the tab busy, but a job that already ended shows its outcome, not a live run.
+  const busy = $derived(isBusy() && !(job && ['complete', 'error', 'cancelled'].includes(job.status)))
   const p = $derived(run.progress)
   const configuration = $derived(run.request?.mode === 'raw' ? 'Custom SimC input' : run.request?.settings.fightStyle === 'DungeonRoute' ? 'Dungeon Route · runs through the final pull' : run.request ? `${run.request.settings.fightStyle.replace(/([a-z])([A-Z])/g, '$1 $2')} · ${fmtSeconds(run.request.settings.maxTime)} · ${run.request.settings.targets} target${run.request.settings.targets === 1 ? '' : 's'}` : '')
 
