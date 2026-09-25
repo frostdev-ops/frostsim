@@ -18,6 +18,13 @@ A spec entry that is byte-identical in two sources (a machine that resumed from 
 is counted once. Sources must share engine, profiles, fight style and target error, and a merged
 file is refused as a source: always merge from the original runs.
 
+Partial re-sims: after an engine bump that touches only some specs, sim just those, then pass the
+previous bundled data (merged or not) with --carry. Specs the new runs lack are copied from it
+unchanged, drawer files included, and keep their own engine stamp on the spec entry:
+
+  python3 scripts/merge_power_infusion.py pi-runs/mac/power-infusion.json \
+      --carry HEAD:src/lib/catalog/generated/power-infusion.json
+
 Writes src/lib/catalog/generated/power-infusion.json and pi-detail/ (or --out). Standard library
 only; Python 3.9+.
 """
@@ -167,19 +174,43 @@ def merge(sources: list) -> tuple[dict, dict, list]:
     return summary, out_details, report
 
 
+def carry(summary: dict, details: dict, prev: tuple) -> list:
+    """Copy the specs the new runs lack from prev = (label, summary, {profile: detail}), in place.
+    A carried spec keeps the engine it was simmed on; everything else in META must match."""
+    label, old, old_details = prev
+    diff = [k for k in META if k != 'engine' and old.get(k) != summary[k]]
+    if diff:
+        raise SystemExit(f'{label} differs in {", ".join(diff)}; cannot carry its specs')
+    have = {s['name'] for s in summary['specs']}
+    moved = [s for s in old['specs'] if s['name'] not in have]
+    for spec in moved:
+        summary['specs'].append(dict(spec, engine=spec.get('engine') or old['engine']))
+        if old_details.get(spec['profile']):
+            details[spec['profile']] = old_details[spec['profile']]
+    summary['specs'].sort(key=lambda s: s['name'])
+    if moved:
+        summary['carriedFrom'] = label
+    return [f'{s["name"]:<30} carried from {label} ({(s.get("engine") or old["engine"])["commit"][:10]})'
+            for s in moved]
+
+
+def load(source: str) -> tuple:
+    summary = read(source)
+    return (source, summary,
+            {s['profile']: read(source, f"{DETAIL}/{DETAIL}-{s['profile']}.json") for s in summary['specs']})
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('sources', nargs='+', help='power-infusion.json paths or GIT_REF:PATH')
     ap.add_argument('--out', type=Path, default=OUT, help='merged output (default: the file the app bundles)')
+    ap.add_argument('--carry', help='previous data (path or GIT_REF:PATH); specs the sources lack are kept from it')
     ap.add_argument('--dry-run', action='store_true', help='print what would be combined, write nothing')
     opts = ap.parse_args()
 
-    loaded = []
-    for source in opts.sources:
-        summary = read(source)
-        details = {s['profile']: read(source, f"{DETAIL}/{DETAIL}-{s['profile']}.json") for s in summary['specs']}
-        loaded.append((source, summary, details))
-    summary, details, report = merge(loaded)  # everything is read before anything is written
+    summary, details, report = merge([load(s) for s in opts.sources])  # everything is read before anything is written
+    if opts.carry:
+        report += carry(summary, details, load(opts.carry))
     print('\n'.join(report))
     if opts.dry_run:
         return
