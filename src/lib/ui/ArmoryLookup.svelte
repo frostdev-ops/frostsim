@@ -115,6 +115,6 @@
   @media (max-width: 560px) { .lookup { grid-template-columns: 5rem minmax(0, 1fr); } }
   .matches { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
   .matches:empty { display: none; }
-  .matches button { width: 100%; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; text-align: left; }
+  .matches button { width: 100%; display: flex; flex-wrap: wrap; align-items: baseline; justify-content: flex-start; gap: 4px 10px; text-align: left; }
   .matches strong { color: var(--class-color, inherit); }
 </style>
