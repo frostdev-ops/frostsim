@@ -345,6 +345,8 @@ class Runner:
                 if self.stopping or not self.pending:
                     return
                 task = self.pending.popleft()
+                if not self.pending:
+                    self.cond.notify_all()  # workers above the job count wait on pending; let them exit
                 self.running[i] = (task, time.monotonic())
                 jobs = self.jobs
             try:

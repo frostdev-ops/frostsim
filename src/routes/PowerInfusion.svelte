@@ -2,7 +2,7 @@
   // Power Infusion value per spec at 1-10 targets, precomputed offline from upstream MID2 profiles (CLAUDE.md D13).
   // Reference data, not the user's character; regenerate with npm run data:power-infusion.
   import raw from '../lib/catalog/generated/power-infusion.json'
-  import { HOLDS, piRows, SPREADS, type PiData, type PiGain, type PiRank, type Spread } from '../lib/powerInfusion'
+  import { HOLDS, piRows, SPREADS, type PiData, type PiSpec, type PiGain, type PiRank, type Spread } from '../lib/powerInfusion'
   import { fmtDelta, fmtDeltaPct, fmtInt, fmtPct } from '../lib/format'
   import Tip from '../lib/ui/Tip.svelte'
   import PiMainTarget from './PiMainTarget.svelte'
@@ -15,6 +15,10 @@
   const TARGETS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
   // How many independent runs each spec's numbers average (merge_power_infusion.py), for the source line.
   const runs = [...new Set(data.specs.map((s) => s.sources ?? 1))].sort((a, b) => a - b)
+  // Specs a partial re-sim carried over keep the engine they ran on (merge_power_infusion.py --carry).
+  const byCommit = new Map<string, PiSpec[]>()
+  for (const s of data.specs) if (s.engine) byCommit.set(s.engine.commit, [...(byCommit.get(s.engine.commit) ?? []), s])
+  const carried = [...byCommit.values()]
   const hold = `${HOLDS * 100}%`
   const spread = `${SPREADS * 100}%`
 
@@ -253,6 +257,10 @@
       alone, shown from two targets on. {data.fightStyle},
       target error {data.targetError}% per run{runs.at(-1)! > 1 ? `, each spec averaged over ${runs.length > 1 ? `${runs[0]} to ${runs.at(-1)}` : runs[0]} independent runs` : ''}, simc {data.engine.simcVersion} ({data.engine.commit.slice(0, 10)}),
       WoW {data.engine.wowVersion}, generated {data.generatedAt}.
+      {#each carried as specs (specs[0].engine!.commit)}
+        {specs.map((s) => s.name).join(', ')}: carried over from simc {specs[0].engine!.simcVersion}
+        ({specs[0].engine!.commit.slice(0, 10)}), WoW {specs[0].engine!.wowVersion}.
+      {/each}
     </p>
   </section>
 </div>
