@@ -69,6 +69,8 @@ let world: {
   /** The rate-limit counter every INCR returns, and the keys it was asked for. */
   submits: number;
   rateKeys: string[];
+  /** guild_role_limits rows, when a test sets any. */
+  roleLimits?: { role_id: string; core_seconds: number | null }[];
 };
 
 function fakeSql(): Sql {
@@ -81,6 +83,7 @@ function fakeSql(): Sql {
     if (q.includes('select id, label from cloud_characters')) return world.characters.filter((c) => c.user_id === v[0]);
     if (q.includes('from subscriptions where user_id') || q.includes('from subscriptions where guild_id')) return world.subscriptions[v[0] as string] ?? [];
     if (q.includes('comp_core_seconds')) return [{ core_seconds: 0, max_threads: null }];
+    if (q.includes('from guild_role_limits')) return world.roleLimits ?? [];
     if (q.includes('sum(core_seconds)')) return [{ used: world.usedCoreSeconds }];
     if (q.includes("from compute_jobs where source = 'discord'")) return world.discordJobs.map((id) => ({ id }));
     return [];
@@ -266,6 +269,22 @@ describe('/sim', () => {
     await vi.waitFor(() => expect(edits).toHaveLength(1));
     expect(mocks.enqueueJob.mock.calls.map(([, job]) => job.guildId)).toEqual([POOL_GUILD, null]);
     expect(edits[0].body.content).toMatch(/This server's pool is used up, so it runs on your own plan\./);
+  });
+
+  it('runs on the member\'s own plan when their roles get none of the pool, or their share is used', async () => {
+    const { redis } = fakeRedis();
+    world.roleLimits = [{ role_id: POOL_GUILD, core_seconds: 0 }];
+    await call(redis, sim([{ name: 'character', type: 3, value: CHAR }], inGuild(ALICE, POOL_GUILD)));
+    await vi.waitFor(() => expect(edits).toHaveLength(1));
+    expect(mocks.enqueueJob.mock.calls[0][1]).toMatchObject({ guildId: null });
+    expect(edits[0].body.content).toMatch(/Your roles in this server don't include its cloud runs\. It runs on your own plan\./);
+
+    const RAIDER = '800000000000000001';
+    world.roleLimits = [{ role_id: POOL_GUILD, core_seconds: 0 }, { role_id: RAIDER, core_seconds: 3600 }];
+    world.usedCoreSeconds = 10;
+    await call(redis, sim([{ name: 'character', type: 3, value: CHAR }], { ...inGuild(ALICE, POOL_GUILD), member: { permissions: '0', roles: [RAIDER], user: { id: ALICE } } }));
+    await vi.waitFor(() => expect(edits).toHaveLength(2));
+    expect(mocks.enqueueJob.mock.calls[1][1]).toMatchObject({ guildId: POOL_GUILD });
   });
 
   it('does not fall back for a guild refusal other than a used-up pool', async () => {

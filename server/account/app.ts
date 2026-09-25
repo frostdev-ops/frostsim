@@ -21,6 +21,7 @@ import * as worker from './compute/worker-routes';
 import * as characters from './characters';
 import * as shares from './shares';
 import * as discord from './discord';
+import * as guildRoles from './guild-roles';
 import * as integrations from './integrations';
 
 /** Everything a handler or task may touch. Inject fakes in tests. */
@@ -76,7 +77,7 @@ export interface Task {
   run(ctx: AppCtx): Promise<void>;
 }
 
-const MODULES = [oauth, users, admin, billing, compute, worker, characters, shares, discord, integrations];
+const MODULES = [oauth, users, admin, billing, compute, worker, characters, shares, discord, guildRoles, integrations];
 export const ROUTES: readonly Route[] = MODULES.flatMap((m) => m.routes);
 export const TASKS: readonly Task[] = [...sessionTasks, ...MODULES.flatMap((m) => m.tasks)];
 

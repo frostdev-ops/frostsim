@@ -171,7 +171,7 @@
     { id: 'reports', label: 'Reports', icon: ChartColumn, routes: ['reports'] },
   ]
   /** #/plans (CLAUDE.md D15) is a page outside the tool groups, like the `s/` alias; compiled out without VITE_FEATURE_ACCOUNTS. */
-  const onPlans = $derived(import.meta.env.VITE_FEATURE_ACCOUNTS === true && router.raw === 'plans')
+  const onPlans = $derived(import.meta.env.VITE_FEATURE_ACCOUNTS === true && (router.raw === 'plans' || router.raw === 'discord'))
   const group = $derived(onPlans ? undefined : NAV_GROUPS.find((g) => g.routes.includes(router.name)))
   // Each screen works on its own character (app.svelte.ts picks); arriving on one focuses its pick. Shared reports and #/plans
   // alias the Reports and Character routes, so they have none.
@@ -546,7 +546,8 @@
     {#if router.raw.startsWith('r/') || (import.meta.env.VITE_FEATURE_ACCOUNTS === true && router.raw.startsWith('s/'))}
       <SharedReport />
     {:else if import.meta.env.VITE_FEATURE_ACCOUNTS === true && onPlans}
-      {#await import('./lib/account/Plans.svelte') then m}<m.default />{/await}
+      {#if router.raw === 'discord'}{#await import('./lib/account/DiscordSettings.svelte') then m}<m.default />{/await}
+      {:else}{#await import('./lib/account/Plans.svelte') then m}<m.default />{/await}{/if}
     {:else if lazyLoader}
       {#await lazyLoader()}
         <p class="muted small">Loading&hellip;</p>

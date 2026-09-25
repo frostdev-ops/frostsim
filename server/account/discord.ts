@@ -10,7 +10,8 @@ import type { AppCtx, RequestCtx, Route, Task } from './app';
 import { GUILD_CHECKOUT_PURPOSE } from './billing';
 import type { Config } from './config';
 import type { Db } from './db';
-import { loadEntitlements } from './entitlements';
+import { loadEntitlements, type GuildEntitlement } from './entitlements';
+import { memberAllowance, memberRefusal, roleLimits } from './guild-roles';
 import { HttpError, errorSummary, json } from './http';
 import { tryRedis } from './redis';
 import { MAX_SHARE_JSON, MAX_UPLOAD, storeShare } from './shares';
@@ -69,7 +70,7 @@ interface Interaction {
   token?: string;
   guild_id?: string;
   /** Sent in a guild; `permissions` is the member's computed permission bit set, as a decimal string. */
-  member?: { permissions?: string; user?: { id?: string } };
+  member?: { permissions?: string; roles?: string[]; user?: { id?: string } };
   /** Sent in a DM. */
   user?: { id?: string };
   data?: { name?: string; options?: Option[] };
@@ -162,11 +163,11 @@ async function editDeferred(app: Pick<AppCtx, 'config' | 'fetch' | 'log'>, token
   await editReply(app, token, content);
 }
 
-/** The guild when it has a live discord_guild_monthly pool, else null: the run then draws on the user's own allowance. A pool that is
- *  used up also falls back to the member's own allowance (startSim). */
-async function activePool(app: AppCtx, guildId: string | undefined): Promise<string | null> {
+/** The guild's live discord_guild_monthly pool, else null: the run then draws on the user's own allowance. A pool that is used up,
+ *  or a member past their role's share of it (guild-roles.ts), also falls back to the member's own allowance (startSim). */
+async function activePool(app: AppCtx, guildId: string | undefined): Promise<GuildEntitlement | null> {
   if (!guildId || !SNOWFLAKE.test(guildId)) return null;
-  return (await loadEntitlements(app.sql, { guildId }, app.now())).guilds.length ? guildId : null;
+  return (await loadEntitlements(app.sql, { guildId }, app.now())).guilds[0] ?? null;
 }
 
 /** /sim after the deferred reply: every outcome, refusals included, lands as an edit of that ephemeral reply. */
@@ -185,7 +186,10 @@ async function startSim(app: AppCtx, i: Interaction, discordId: string, received
   if (!built) return edit(`No cloud character by that name. Save characters to your Frostsim account: ${manageUrl(app.config)}`);
   const packId = await defaultPack(app);
   if (!packId) return edit('Frostsim Cloud has no engine build ready right now. Try again later.');
-  let guildId = await activePool(app, i.guild_id);
+  const active = await activePool(app, i.guild_id);
+  // Past the member's role allowance: straight to their own plan, as when the pool is used up.
+  const refusal = active ? await memberRefusal(app, active.guildId, userId, i.member?.roles ?? [], active) : null;
+  let guildId = active && !refusal ? active.guildId : null;
   let job = await enqueueJob(app, { userId, guildId, source: 'discord', packId, request: built.request, characterId: built.id });
   // The server's pool is used up for this period: run it on the member's own plan instead, if they have one.
   const fellBack = !job.ok && guildId !== null && job.code === 'no-allowance';
@@ -193,8 +197,8 @@ async function startSim(app: AppCtx, i: Interaction, discordId: string, received
     guildId = null;
     job = await enqueueJob(app, { userId, guildId, source: 'discord', packId, request: built.request, characterId: built.id });
   }
-  if (!job.ok) return edit(`${job.message} ${manageUrl(app.config)}`);
-  const pool = fellBack ? " This server's pool is used up, so it runs on your own plan." : '';
+  if (!job.ok) return edit(`${refusal ? `${refusal} ` : ''}${job.message} ${manageUrl(app.config)}`);
+  const pool = refusal ? ` ${refusal} It runs on your own plan.` : fellBack ? " This server's pool is used up, so it runs on your own plan." : '';
   // Before the token is stored: from then on the task may post the result, and a late "Queued" would overwrite it.
   await edit(`Queued **${plain(built.label)}** on ${fightLabel(presetId)} in Frostsim Cloud.${pool} This message updates when it finishes.`);
   const pending: Pending = { token, label: built.label, presetId, exp: receivedMs + TOKEN_TTL_S * 1000 };
@@ -219,14 +223,14 @@ async function linkText(app: AppCtx, discordId: string): Promise<string> {
   return `Sign in to Frostsim with Discord, or link Discord to the account you already have, at ${manageUrl(app.config)}`;
 }
 
-async function usageLine(app: AppCtx, label: string, who: { userId: string } | { guildId: string },
+async function usageLine(app: AppCtx, label: string, who: { userId: string } | { guildId: string; userId?: string },
   pool: { coreSeconds: number; maxThreads: number; periodStart: Date; periodEnd: Date }): Promise<string> {
   const used = await usedCoreSeconds(app.sql, who, pool.periodStart, pool.periodEnd);
   return `${label}: ${hours(used)} of ${hours(pool.coreSeconds)} core-hours used, up to ${pool.maxThreads} threads a run, `
     + `period ends ${pool.periodEnd.toISOString().slice(0, 10)}.`;
 }
 
-async function usageText(app: AppCtx, discordId: string, guildId: string | undefined): Promise<string> {
+async function usageText(app: AppCtx, discordId: string, guildId: string | undefined, roleIds: readonly string[]): Promise<string> {
   const userId = await linkedUser(app, discordId);
   if (!userId) return `Link this Discord account to Frostsim first: ${manageUrl(app.config)}`;
   const now = app.now();
@@ -236,7 +240,11 @@ async function usageText(app: AppCtx, discordId: string, guildId: string | undef
     : await usageLine(app, 'You', { userId }, mine)];
   if (guildId && SNOWFLAKE.test(guildId)) {
     const [guild] = (await loadEntitlements(app.sql, { guildId }, now)).guilds;
-    if (guild) lines.push(await usageLine(app, "This server's pool", { guildId }, guild));
+    if (guild) {
+      lines.push(await usageLine(app, "This server's pool", { guildId }, guild));
+      const share = memberAllowance(guildId, await roleLimits(app.sql, guildId), roleIds);
+      if (share !== null) lines.push(await usageLine(app, 'Your share of it', { guildId, userId }, { ...guild, coreSeconds: share }));
+    }
   }
   return lines.join('\n');
 }
@@ -281,7 +289,7 @@ async function interactions(ctx: RequestCtx): Promise<Response> {
     case 'link':
       return reply(await linkText(ctx, discordId));
     case 'usage':
-      return reply(await usageText(ctx, discordId, i.guild_id));
+      return reply(await usageText(ctx, discordId, i.guild_id, i.member?.roles ?? []));
     case 'frostsim':
       return reply(subscribeText(ctx, i, discordId));
     default:

@@ -147,6 +147,7 @@
     <div class="how stack-sm">
       <a class="button discord" href="/api/v1/discord/install">Add Frostsim to Discord</a>
       <p class="small muted">Then run <code>/frostsim subscribe</code> in your server to start its pool.</p>
+      {#if account.billing?.subscriptions.some((s) => s.guildId)}<a class="small" href="#/discord">Set how much each role gets</a>{/if}
     </div>
   </section>
 
