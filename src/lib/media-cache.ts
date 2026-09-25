@@ -3,7 +3,7 @@ const MEDIA_CACHE = 'frostsim-media-v1'
 export const EXPIRY = 'x-frostsim-media-expires'
 const MAX_ENTRIES = 2000
 const persistent = typeof caches === 'undefined' ? Promise.resolve(null) : caches.open(MEDIA_CACHE).catch(() => null)
-let pruning: Promise<void> | undefined
+let pruning: Promise<void> | undefined, saves = 0
 
 export function mediaExpiry(response: Response): number {
   const control = response.headers.get('cache-control') ?? ''
@@ -32,7 +32,8 @@ export async function saveMedia(url: string, response: Response, expiry: number)
     const headers = new Headers(response.headers)
     headers.set(EXPIRY, String(expiry))
     await disk.put(url, new Response(response.body, { headers }))
-    // Coalesce bursts into one scan; writes during pruning get the following pass.
+    // Scan on the first save and every 100th after; the cap may overshoot by that much between scans.
+    if (saves++ % 100) return
     const previous = pruning
     if (previous) await previous
     if (!pruning) pruning = (async () => {

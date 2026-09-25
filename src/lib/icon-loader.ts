@@ -1,5 +1,5 @@
 // One visible-image queue for item and spell icons; off-screen entries don't exhaust API burst budget before visible icons load.
-const cache = new Map<string, { promise: Promise<string | null>; expiresAt: number; consumers: (() => boolean)[] }>()
+const cache = new Map<string, { promise: Promise<string | null>; expiresAt: number; consumers: (() => boolean)[]; value?: string }>()
 import { cachedMedia, saveMedia, mediaExpiry, EXPIRY } from './media-cache'
 const MAX_ICONS = 2000
 const queue: { run: () => Promise<void>; needed: () => boolean; readyAt: number }[] = []
@@ -30,7 +30,7 @@ export function loadIcon(url: string, needed: () => boolean = () => true): Promi
     if (hit.expiresAt === Infinity) hit.consumers.push(needed)
     return hit.promise
   }
-  const entry = { promise: null as unknown as Promise<string | null>, expiresAt: Infinity, consumers: [needed] }
+  const entry: { promise: Promise<string | null>; expiresAt: number; consumers: (() => boolean)[]; value?: string } = { promise: null as unknown as Promise<string | null>, expiresAt: Infinity, consumers: [needed] }
   const promise = new Promise<string | null>((resolve, reject) => {
     let attempt = 0
     const wanted = () => entry.consumers.some(wants => wants())
@@ -59,11 +59,12 @@ export function loadIcon(url: string, needed: () => boolean = () => true): Promi
         try { for (;;) { const { done, value } = await reader.read(); if (done) break; size += value.length; if (size > 1024 * 1024) throw new Error('Icon too large'); chunks.push(value) } }
         finally { await reader.cancel().catch(() => {}) }
         let binary = ''
-        for (const chunk of chunks) for (const byte of chunk) binary += String.fromCharCode(byte)
+        for (const chunk of chunks) for (let i = 0; i < chunk.length; i += 0x8000) binary += String.fromCharCode(...chunk.subarray(i, i + 0x8000))
         entry.expiresAt = cached ? Number(response.headers.get(EXPIRY)) : mediaExpiry(response)
         if (!cached) void saveMedia(url, new Response(new Blob(chunks as BlobPart[]), { headers: response.headers }), entry.expiresAt)
         entry.consumers = []
-        resolve(`data:${response.headers.get('content-type')!.split(';')[0]};base64,${btoa(binary)}`)
+        entry.value = `data:${response.headers.get('content-type')!.split(';')[0]};base64,${btoa(binary)}`
+        resolve(entry.value)
       } catch (e) {
         if (cache.get(url) === entry) cache.delete(url)
         entry.consumers = []; reject(e)
@@ -81,13 +82,24 @@ export function loadIcon(url: string, needed: () => boolean = () => true): Promi
   return promise
 }
 
+/** Already-decoded icon for this session, so a remount paints on its first frame. */
+export function peekIcon(url: string): string | undefined {
+  const hit = cache.get(url)
+  return hit && hit.expiresAt > Date.now() ? hit.value : undefined
+}
+
 const waiting = new Map<Element, () => void>()
 let observer: IntersectionObserver | undefined
 /** Svelte action; successful bytes use data: URLs (CSP-permitted). Intersection observer defers off-screen loads, gen token prevents stale updates. */
 export function deferredIcon(node: HTMLImageElement, url: string) {
-  let generation = 0
+  let generation = 0, current: string | undefined
   function watch(next: string) {
+    if (next === current) return
+    current = next
     const token = ++generation
+    observer?.unobserve(node); waiting.delete(node)
+    const ready = peekIcon(next)
+    if (ready) { node.src = ready; return }
     node.removeAttribute('src')
     const start = () => {
       observer?.unobserve(node); waiting.delete(node)

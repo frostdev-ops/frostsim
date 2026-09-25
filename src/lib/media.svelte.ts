@@ -52,13 +52,27 @@ export function configureMedia(next: { region?: string; locale?: string }): void
 }
 
 /** Asks once whether this deployment has item data at all. */
-export async function initMedia(): Promise<void> {
-  if (media.configured !== null) return
-  try {
-    media.configured = await api().isConfigured()
-  } catch {
-    media.configured = false
+let checking: Promise<void> | undefined
+const SEEN = 'frostsim-media-configured'
+export function initMedia(): Promise<void> {
+  if (media.configured !== null && !checking) return Promise.resolve()
+  // A repeat visit paints cached icons at once; the check below corrects the seed.
+  if (media.configured === null) {
+    try { if (localStorage.getItem(SEEN) === '1') { media.configured = true; mediaVersion.n++ } } catch { /* storage blocked */ }
   }
+  return checking ??= check()
+}
+
+async function check(): Promise<void> {
+  let configured: boolean
+  try {
+    configured = await api().isConfigured()
+  } catch {
+    configured = false
+  }
+  try { localStorage.setItem(SEEN, configured ? '1' : '0') } catch { /* storage blocked */ }
+  checking = undefined
+  media.configured = configured
   if (!media.configured) {
     media.unavailableReason =
       'Item icons and tooltips are not available in this deployment, so items show their catalog data only. Everything else, including simulation, is unaffected.'
@@ -141,6 +155,7 @@ async function loadTooltip(itemId: number): Promise<void> {
 
 export function resetMedia(): void {
   client = null
+  checking = undefined
   tooltips.clear()
   iconMissing.clear()
   media.configured = null
