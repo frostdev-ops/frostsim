@@ -288,7 +288,9 @@ export function parsePlayerDetail(raw: unknown, playerName: string): PlayerDetai
     consumables: {
       potion: str(p.potion), flask: str(p.flask), food: str(p.food), augmentation: str(p.augmentation),
       temporaryEnchant: str(p.temporary_enchant),
-      potionUsed: typeof p.potion_used === 'boolean' ? p.potion_used : undefined,
+      // Not the report's `potion_used`: simc clears that flag when an iteration resets (player.cpp), so it reads false even when the
+      // potion action ran every iteration. The action's own execute count is the record.
+      potionUsed: str(p.potion) ? asArr(p.stats).some((s) => str(asObj(s)?.name) === 'potion' && (mean(asObj(s)?.num_executes) ?? 0) > 0) : undefined,
     },
     raidBuffs: {
       ...Object.fromEntries(Object.entries(asObj(asObj(asObj(raw)?.sim)?.overrides) ?? {})

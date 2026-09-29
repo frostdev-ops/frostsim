@@ -324,6 +324,22 @@ describe('parsePlayerDetail action sequence', () => {
   })
 })
 
+describe('parsePlayerDetail consumables', () => {
+  const withPlayer = (over: Record<string, unknown>) => ({ ...report, sim: { ...report.sim, players: [{ ...report.sim.players[0], ...over }] } })
+  const stat = (name: string, executes: number) => ({ id: 1, name, school: 'physical', type: 'damage', num_executes: { sum: executes, count: 1, mean: executes } })
+  const potion = (raw: unknown) => parsePlayerDetail(raw, 'MID2_Mage_Frost_Spellslinger').consumables?.potionUsed
+
+  it('says the potion was used when its action executed, whatever simc\'s potion_used flag reads after the iteration reset', () => {
+    // A real report: potion_used false, and the potion action executing 1.6 times an iteration.
+    expect(potion(withPlayer({ potion: 'liquid_luster_2', potion_used: false, stats: [stat('potion', 1.58), stat('frostbolt', 20)] }))).toBe(true)
+  })
+  it('says it was not used when the action never ran, and says nothing when no potion is set', () => {
+    expect(potion(withPlayer({ potion: 'liquid_luster_2', potion_used: true, stats: [stat('potion', 0), stat('frostbolt', 20)] }))).toBe(false)
+    expect(potion(withPlayer({ potion: 'liquid_luster_2', stats: [stat('frostbolt', 20)] }))).toBe(false)
+    expect(potion(withPlayer({ potion: undefined, potion_used: false, stats: [stat('frostbolt', 20)] }))).toBeUndefined()
+  })
+})
+
 describe('parsePlayerDetail failure', () => {
   it('names the players it does have when asked for one it does not', () => {
     expect(() => parsePlayerDetail(report, 'Nobody')).toThrow(PlayerNotInReportError)
