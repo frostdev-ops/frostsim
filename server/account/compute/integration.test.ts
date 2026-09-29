@@ -16,7 +16,7 @@ import { sha256Hex } from '../signed';
 import type { SimRequest } from '../../../src/lib/simc/assemble';
 import { DEFAULT_SETTINGS } from '../../../src/lib/simc/options';
 import { SCOPE_LOCK, cancelJob, claimJob, completeJob, enqueueJob, expireJobs, failJob, jobView, progressJob, resultBytes, tasks as queueTasks } from './queue';
-import { HEARTBEAT_LOSS_MS, tick } from './autoscaler';
+import { HEARTBEAT_LOSS_MS, PROVIDER_COOLDOWN_MS, tick } from './autoscaler';
 import { rememberOffers } from './fleet';
 import { routes as clientRoutes } from './routes';
 import { routes as workerRoutes } from './worker-routes';
@@ -60,6 +60,8 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
   const servers = new Map<number, { id: number }>();
   const hcloudCalls: { method: string; path: string; body: any }[] = [];
   let nextServer = 1000;
+  /** Status every hcloud create answers with while set. */
+  let createFails = 0;
   const fakeFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const req = input instanceof Request ? input : new Request(input, init);
     const url = new URL(req.url);
@@ -72,6 +74,7 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
         return Response.json({ server_types: [{ cores, prices: [{ location: 'fsn1', price_hourly: { net: '0.5', gross: '0.595' } }] }] });
       }
       if (req.method === 'POST' && url.pathname === '/v1/servers') {
+        if (createFails) return Response.json({ error: { code: 'blocked' } }, { status: createFails });
         const server = { id: nextServer++ };
         servers.set(server.id, server);
         return Response.json({ server, root_password: null });
@@ -728,6 +731,21 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
       expect(hcloudCalls.filter((c) => c.method === 'POST')).toHaveLength(1);
     });
 
+    it('skips a provider whose create failed until its cooldown ends', async () => {
+      await enqueue(await user());
+      createFails = 403;
+      await tick(app());
+      expect(hcloudCalls.filter((c) => c.method === 'POST')).toHaveLength(1);
+      expect(logs.some((l) => l.startsWith('compute: creating a hetzner server failed') && l.endsWith('skipping hetzner for 5 min'))).toBe(true);
+      createFails = 0;
+      clock += PROVIDER_COOLDOWN_MS - 1000;
+      await tick(app());
+      expect(hcloudCalls.filter((c) => c.method === 'POST')).toHaveLength(1);
+      clock += 1000;
+      await tick(app());
+      expect(hcloudCalls.filter((c) => c.method === 'POST')).toHaveLength(2);
+    });
+
     it('creates nothing once this month\'s worker-hours reach the cap', async () => {
       const busy = await addWorker({ hcloudId: 901 });
       servers.set(901, { id: 901 });
@@ -745,5 +763,6 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
       await tick(app());
       expect(hcloudCalls.filter((c) => c.method === 'POST')).toHaveLength(0);
     });
+
   });
 });

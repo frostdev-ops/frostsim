@@ -22,6 +22,10 @@ export const BOOT_GRACE_MS = 10 * 60_000;
 export const DRAIN_BEFORE_MS = 5 * 60_000;
 /** A server missing from a listing right after it was created is not treated as gone yet. */
 const LISTING_GRACE_MS = 60_000;
+/** A provider whose create call failed is skipped this long, so the next cheapest one serves the queue meanwhile
+ *  (EC2 answered every launch with 400 Blocked on 2026-09-29 and nothing started). */
+export const PROVIDER_COOLDOWN_MS = 5 * 60_000;
+const coolingUntil = new Map<ProviderName, number>();
 
 export interface FleetWorker {
   id: string;
@@ -229,7 +233,9 @@ export async function tick(app: AppCtx): Promise<void> {
   if (!fc) return;
   const provs = providers(fc, app.fetch);
   const byName = new Map(provs.map((p) => [p.name, p]));
-  const fleet = await loadFleet(app, fc, provs);
+  const loaded = await loadFleet(app, fc, provs);
+  const now = loaded.now.getTime();
+  let fleet: Fleet = { ...loaded, offers: loaded.offers.filter((o) => !((coolingUntil.get(o.provider) ?? 0) > now)) };
   const plan = decide(fleet, fc);
   for (const { provider, id, reason } of plan.remove) {
     try {
@@ -244,7 +250,19 @@ export async function tick(app: AppCtx): Promise<void> {
   if (plan.drain.length) {
     await app.sql`update workers set status = 'draining' where id in ${app.sql(plan.drain)} and deleted_at is null and status = 'ready'`;
   }
-  if (plan.create) await createWorker(app, fc, byName.get(plan.create[0].provider)!, plan.create);
+  // A failed provider cools down and the order is recomputed from the rest in the same tick.
+  let create = plan.create;
+  while (create) {
+    const failed = create[0].provider;
+    try {
+      return await createWorker(app, fc, byName.get(failed)!, create);
+    } catch (err) {
+      coolingUntil.set(failed, now + PROVIDER_COOLDOWN_MS);
+      app.log(`compute: creating a ${failed} server failed (${errorSummary(err)}); skipping ${failed} for ${PROVIDER_COOLDOWN_MS / 60_000} min`);
+      fleet = { ...fleet, offers: fleet.offers.filter((o) => o.provider !== failed) };
+      create = decide(fleet, fc).create;
+    }
+  }
 }
 
 export const tasks: Task[] = [
