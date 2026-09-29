@@ -600,6 +600,15 @@
         (i): i is ItemInstance => !!i,
       ),
       changedSlots: [row.scenario.slot],
+      // Every slot the candidate changes, so a two-hander shows the off hand it empties.
+      changes: [...(row.scenario.candidate.delta.gear?.entries() ?? [])].map(([slot, item]) => {
+        const worn = equippedBySlot.get(slot)
+        return {
+          slot: SLOT_LABELS[slot],
+          name: item ? display(item as ItemInstance, app.resolved).name : 'empty',
+          replaces: worn ? display(worn, app.resolved).name : 'nothing',
+        }
+      }),
     })),
   )
 

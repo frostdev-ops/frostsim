@@ -1038,10 +1038,17 @@
     return changeList(state).map((c) => `${c.slot}: ${c.name}`).join(', ') || state.candidate.provenance.label
   }
 
-  function changeList(state: (typeof measured)[number]): { slot: string; name: string }[] {
+  function changeList(state: (typeof measured)[number]): { slot: string; name: string; replaces?: string }[] {
     const gear = state.candidate.delta.gear
-    const changes = [...(gear?.entries() ?? [])]
-      .map(([slot, item]) => ({ slot: SLOT_LABELS[slot], name: item ? display(item as ItemInstance, app.resolved).name : 'empty' }))
+    const changes: { slot: string; name: string; replaces?: string }[] = [...(gear?.entries() ?? [])]
+      .map(([slot, item]) => {
+        const worn = equippedBySlot.get(slot)
+        return {
+          slot: SLOT_LABELS[slot],
+          name: item ? display(item as ItemInstance, app.resolved).name : 'empty',
+          replaces: worn ? display(worn, app.resolved).name : 'nothing',
+        }
+      })
     for (const [kind, option] of Object.entries(state.candidate.delta.consumables ?? {})) {
       changes.push({ slot: titleCase(kind), name: titleCase(option) })
     }
