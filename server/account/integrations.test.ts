@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { artifactGate } from '../../tests/artifact-gate.js';
 import { createApp, type RequestCtx } from './app';
 import { loadConfig } from './config';
 import type { Sql } from './db';
@@ -345,7 +346,8 @@ describe('resolve and jobs', () => {
   });
 });
 
-describe('droptimizer', () => {
+const catalogGate = artifactGate('public/catalogs/12.1.0.69814-dca34b3038a3-c015720/items.json', 'npm run catalog:build');
+describe.skipIf(catalogGate)('droptimizer' + catalogGate, () => {
   const PACK = 'c97e14c7a5ad-dc0508afe741';
   const RAID = 1320;
   beforeAll(() => {

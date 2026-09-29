@@ -5,12 +5,14 @@ import { mkdtempSync, mkdirSync, readFileSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { artifactGate } from '../../tests/artifact-gate.js';
 import type { Catalog } from '../../src/lib/catalog/catalog';
 import { parseAddonExport } from '../../src/lib/import/character';
 import { cloudRun } from './compute/queue';
 import { DropProblem, candidateCap, droptimizerRequest, droptimizerResult, dropSources, packCatalog, parseSelector } from './loothing-drop';
 
 const CATALOG = resolve('public/catalogs/12.1.0.69814-dca34b3038a3-c015720');
+const gate = artifactGate(join(CATALOG, 'items.json'), 'npm run catalog:build');
 const PACK = 'c97e14c7a5ad-dc0508afe741';
 const NOW = Date.parse('2026-09-25T12:00:00Z');
 const RAID = 1320;
@@ -19,6 +21,7 @@ const REPORT = JSON.parse(readFileSync('tests/fixtures/simc-report-affliction.js
 
 let catalog: Catalog;
 beforeAll(async () => {
+  if (gate) return;
   // The layout scripts/update-engines.mjs publishes: <index dir>/engine/versions/<pack>/catalog.
   const root = mkdtempSync(join(tmpdir(), 'drop-'));
   mkdirSync(join(root, 'engine/versions', PACK), { recursive: true });
@@ -35,7 +38,7 @@ const problem = (run: () => unknown) => {
   return 'no error';
 };
 
-describe('sources', () => {
+describe.skipIf(gate)('sources' + gate, () => {
   it('lists raids with verified difficulties and this season\'s dungeons with key levels', () => {
     const { instances } = dropSources(catalog, NOW);
     const raid = instances.find((i) => i.instanceId === RAID)!;
@@ -46,7 +49,7 @@ describe('sources', () => {
   });
 });
 
-describe('request', () => {
+describe.skipIf(gate)('request' + gate, () => {
   it('builds one profileset per usable drop and slot, at the verified heroic level, with the bosses each drops from', () => {
     const { request, meta } = droptimizerRequest(catalog, character, parseSelector({ instanceIds: [RAID], difficulty: 'heroic' }), 'patchwerk', NOW);
     expect(meta.candidates.length).toBeGreaterThan(0);
@@ -110,7 +113,9 @@ describe('request', () => {
     expect(problem(() => droptimizerRequest(catalog, character, parseSelector({ instanceIds: [999999], difficulty: 'heroic' }), 'patchwerk', NOW))).toBe('unavailable');
     expect(problem(() => droptimizerRequest(catalog, character, parseSelector({ instanceIds: [RAID], difficulty: 'heroic' }), 'patchwerk', Date.parse('2027-01-01')))).toBe('unavailable');
   });
+});
 
+describe('selector', () => {
   it('refuses a malformed selector', () => {
     for (const bad of [{}, { instanceIds: [] }, { instanceIds: ['1320'] }, { instanceIds: [RAID] }, { instanceIds: [RAID], difficulty: 'heroic', keyLevel: 10 },
       { instanceIds: [RAID], difficulty: 'lfr' }, { instanceIds: [RAID], keyLevel: 1 }, { instanceIds: [RAID], difficulty: 'heroic', bonusRoll: 'yes' },
@@ -121,7 +126,7 @@ describe('request', () => {
   });
 });
 
-describe('candidate cap', () => {
+describe.skipIf(gate)('candidate cap' + gate, () => {
   it('allows 20 candidates a plan thread, at least 20 and at most 200, and refuses a selection past it', () => {
     expect([0, 1, 8, 16, 64].map(candidateCap)).toEqual([20, 20, 160, 200, 200]);
     const selector = parseSelector({ instanceIds: [RAID], difficulty: 'heroic' });
@@ -130,7 +135,7 @@ describe('candidate cap', () => {
   });
 });
 
-describe('result', () => {
+describe.skipIf(gate)('result' + gate, () => {
   it('rows each candidate against the baseline, best gain first, and marks one simc left out as missing', () => {
     const { meta } = droptimizerRequest(catalog, character, parseSelector({ instanceIds: [RAID], difficulty: 'heroic' }), 'patchwerk', NOW);
     const [a, b, c] = meta.candidates;
