@@ -25,7 +25,7 @@
     /** Why this row has no number: 'missing' | 'blocked' | a status string. */
     status?: string
     /** One line per change, stacked in place of the label. `label` stays the text form for the table. */
-    changes?: { slot: string; name: string }[]
+    changes?: { slot: string; name: string; /** What it takes the place of; 'nothing' for an empty slot. */ replaces?: string }[]
     /** Rendered under the label, e.g. which slots changed. */
     detail?: string
     /** Marks a candidate that uses an item the character does not own. */
@@ -68,6 +68,10 @@
   function widthOf(delta: number): number {
     return (Math.abs(delta) / reach) * 96
   }
+
+  /** Text form of a row, with what each change replaces, for the table and the row's tooltip. */
+  const textOf = (r: ComparisonRow) =>
+    r.changes?.some((c) => c.replaces) ? r.changes.map((c) => `${c.slot}: ${c.name} (replaces ${c.replaces})`).join(', ') : r.label
 
   const shown = $derived(showAll ? ranked : ranked.slice(0, visible))
 
@@ -138,9 +142,9 @@
             </div>
           {/if}
           {#if row.changes?.length && !onselect}
-            <span class="name changes" title={row.label}>
+            <span class="name changes" title={textOf(row)}>
               {#each row.changes as change, j (j)}
-                <span class="truncate"><span class="slot">{change.slot}</span>{change.name}</span>
+                <span class="truncate"><span class="slot">{change.slot}</span>{change.name}{#if change.replaces}<span class="from"> replaces {change.replaces}</span>{/if}</span>
               {/each}
             </span>
           {:else if onselect}
@@ -253,7 +257,7 @@
             {@const delta = (row.mean ?? 0) - baseline.mean}
             <tr>
               <th scope="row">
-                {row.label}
+                {textOf(row)}
                 {#if row.indistinguishable}<span class="chip">too close to call</span>{/if}
                 {#if row.hypothetical}<span class="chip warn">hypothetical</span>{/if}
               </th>
@@ -346,6 +350,7 @@
   .icons { flex: none; width: calc(var(--icons) * 36px + (var(--icons) - 1) * 0.28rem + 6px); }
   .changes { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
   .slot { display: inline-block; min-width: 4.6rem; color: var(--text-muted); font-size: var(--fs-xs); margin-right: 0.4em; }
+  .from { color: var(--text-muted); font-size: var(--fs-xs); }
   .label .chip { flex: none; }
   .crown { color: var(--good); font-size: 0.8em; filter: drop-shadow(0 0 6px var(--good)); animation: crown 2.4s ease-in-out infinite; }
   @keyframes crown { 50% { filter: drop-shadow(0 0 2px var(--good)); } }
