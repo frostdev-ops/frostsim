@@ -58,3 +58,4 @@ dist-server/
 
 # Local account-server environment (npm run account:serve). Same rule as .dev.vars (CLAUDE.md D15).
 .dev.account.env
+.openrouter.env
