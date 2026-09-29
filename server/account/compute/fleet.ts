@@ -81,9 +81,16 @@ export function roomFor(fleet: Pick<FleetConfig, 'hetzner' | 'ec2'>, live: reado
 
 const offerCache = new Map<ProviderName, Offer[]>();
 export const rememberOffers = (name: ProviderName, offers: Offer[]) => offerCache.set(name, offers);
-/** The offers each configured provider last returned; empty until the autoscaler's first tick. */
-export const cachedOffers = (fleet: FleetConfig): Offer[] =>
-  (['hetzner', 'ec2'] as const).filter((p) => fleet[p]).flatMap((p) => offerCache.get(p) ?? []);
+/** The offers each configured provider last returned, minus providers cooling down; empty until the autoscaler's first tick. */
+export const cachedOffers = (fleet: FleetConfig, now: Date): Offer[] =>
+  (['hetzner', 'ec2'] as const).filter((p) => fleet[p] && !cooling(p, now)).flatMap((p) => offerCache.get(p) ?? []);
+
+/** A provider whose create call failed is skipped this long, so the next cheapest one serves the queue meanwhile
+ *  (EC2 answered every launch with 400 Blocked on 2026-09-29 and nothing started). */
+export const PROVIDER_COOLDOWN_MS = 5 * 60_000;
+const coolingUntil = new Map<ProviderName, number>();
+export const coolDown = (name: ProviderName, now: Date) => coolingUntil.set(name, now.getTime() + PROVIDER_COOLDOWN_MS);
+export const cooling = (name: ProviderName, now: Date) => (coolingUntil.get(name) ?? 0) > now.getTime();
 
 // ---- Cheapest placement ----
 

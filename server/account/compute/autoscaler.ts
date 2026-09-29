@@ -7,9 +7,10 @@ import { randomBytes } from 'node:crypto';
 import type { AppCtx, Task } from '../app';
 import { errorSummary } from '../http';
 import { sha256Hex } from '../signed';
-import { cloudModel, expectedRunS, forgetWorker, liteColumns, liteWork } from './queue';
+import type { SimRequest } from '../../../src/lib/simc/assemble';
+import { cloudModel, cloudRun, expectedRunS, forgetWorker, liteColumns, liteWork } from './queue';
 import {
-  BILLING, DEFAULT_RUN_S, EC2_IDLE_S, HOUR_MS, cheapest, fleetConfig, hourlyUsdSql, monthSpend, providers, rememberOffers, roomFor, spendRows,
+  BILLING, DEFAULT_RUN_S, EC2_IDLE_S, HOUR_MS, PROVIDER_COOLDOWN_MS, cheapest, coolDown, cooling, fleetConfig, hourlyUsdSql, monthSpend, providers, rememberOffers, roomFor, spendRows,
   type FleetConfig, type Offer, type Provider, type ProviderName,
 } from './fleet';
 
@@ -22,10 +23,6 @@ export const BOOT_GRACE_MS = 10 * 60_000;
 export const DRAIN_BEFORE_MS = 5 * 60_000;
 /** A server missing from a listing right after it was created is not treated as gone yet. */
 const LISTING_GRACE_MS = 60_000;
-/** A provider whose create call failed is skipped this long, so the next cheapest one serves the queue meanwhile
- *  (EC2 answered every launch with 400 Blocked on 2026-09-29 and nothing started). */
-export const PROVIDER_COOLDOWN_MS = 5 * 60_000;
-const coolingUntil = new Map<ProviderName, number>();
 
 export interface FleetWorker {
   id: string;
@@ -234,8 +231,8 @@ export async function tick(app: AppCtx): Promise<void> {
   const provs = providers(fc, app.fetch);
   const byName = new Map(provs.map((p) => [p.name, p]));
   const loaded = await loadFleet(app, fc, provs);
-  const now = loaded.now.getTime();
-  let fleet: Fleet = { ...loaded, offers: loaded.offers.filter((o) => !((coolingUntil.get(o.provider) ?? 0) > now)) };
+  let fleet: Fleet = { ...loaded, offers: loaded.offers.filter((o) => !cooling(o.provider, loaded.now)) };
+  fleet = await narrowQueued(app, fleet);
   const plan = decide(fleet, fc);
   for (const { provider, id, reason } of plan.remove) {
     try {
@@ -257,12 +254,32 @@ export async function tick(app: AppCtx): Promise<void> {
     try {
       return await createWorker(app, fc, byName.get(failed)!, create);
     } catch (err) {
-      coolingUntil.set(failed, now + PROVIDER_COOLDOWN_MS);
+      coolDown(failed, fleet.now);
       app.log(`compute: creating a ${failed} server failed (${errorSummary(err)}); skipping ${failed} for ${PROVIDER_COOLDOWN_MS / 60_000} min`);
       fleet = { ...fleet, offers: fleet.offers.filter((o) => o.provider !== failed) };
+      fleet = await narrowQueued(app, fleet);
       create = decide(fleet, fc).create;
     }
   }
+}
+
+/** Queued jobs are sized to the widest server on offer when enqueued; with that provider cooling down, a job wider than every
+ *  offer and live worker would never be claimed, so it is narrowed to the widest one left. Metering and the reserve follow at claim. */
+async function narrowQueued(app: AppCtx, fleet: Fleet): Promise<Fleet> {
+  const widest = Math.max(0, ...fleet.offers.map((o) => o.cores),
+    ...fleet.workers.filter((w) => w.status !== 'draining').map((w) => w.cores));
+  if (!fleet.offers.length || !fleet.queued.some((j) => j.threads > widest)) return fleet;
+  // The payload carries threads= (and the profileset work split), so it is assembled again from the stored request.
+  const wide = await app.sql`select id, request from compute_jobs where status = 'queued' and threads > ${widest} and request is not null`;
+  for (const job of wide) {
+    const prepared = cloudRun(job.request as SimRequest, widest);
+    if ('problem' in prepared) continue;
+    const { run } = prepared;
+    await app.sql`update compute_jobs set threads = ${run.threads}, payload = ${app.sql.json({ profile: run.profile, args: run.args })}
+      where id = ${job.id} and status = 'queued'`;
+    app.log(`compute: narrowed queued job ${job.id} to ${run.threads} threads, the widest server on offer`);
+  }
+  return { ...fleet, queued: fleet.queued.map((j) => (j.threads > widest ? { ...j, threads: widest } : j)) };
 }
 
 export const tasks: Task[] = [

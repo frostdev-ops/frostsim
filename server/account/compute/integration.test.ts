@@ -16,8 +16,8 @@ import { sha256Hex } from '../signed';
 import type { SimRequest } from '../../../src/lib/simc/assemble';
 import { DEFAULT_SETTINGS } from '../../../src/lib/simc/options';
 import { SCOPE_LOCK, cancelJob, claimJob, completeJob, enqueueJob, expireJobs, failJob, jobView, progressJob, resultBytes, tasks as queueTasks } from './queue';
-import { HEARTBEAT_LOSS_MS, PROVIDER_COOLDOWN_MS, tick } from './autoscaler';
-import { rememberOffers } from './fleet';
+import { HEARTBEAT_LOSS_MS, tick } from './autoscaler';
+import { PROVIDER_COOLDOWN_MS, rememberOffers } from './fleet';
 import { routes as clientRoutes } from './routes';
 import { routes as workerRoutes } from './worker-routes';
 
@@ -718,17 +718,18 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
       expect((await sql`select status from workers where id = ${w.id}`)[0].status).toBe('deleted');
     });
 
-    it('caps a job at the configured server type\'s cores, and never counts a wider queued job as demand', async () => {
+    it('caps a job at the configured server type\'s cores, and narrows a wider queued job to the widest server on offer', async () => {
       const small = { HCLOUD_SERVER_TYPE: 'ccx33' };
       const wide = await enqueue(await user()); // 32 threads, queued under the default config before any ccx33 price is known
       expect(wide).toMatchObject({ ok: true });
       await tick(app(small)); // caches ccx33's 8 cores
-      expect(hcloudCalls.filter((c) => c.method === 'POST')).toHaveLength(0);
+      const narrowed = await jobRow((wide as { id: string }).id);
+      expect(narrowed).toMatchObject({ status: 'queued', threads: 8 });
+      expect(narrowed.payload.args).toContain('threads=8');
+      expect(hcloudCalls.filter((c) => c.method === 'POST')).toHaveLength(1);
       const capped = await enqueueJob(app(small), { userId: await user(), guildId: null, source: 'web', packId: PACK, request: simRequest() });
       expect(capped).toMatchObject({ ok: true });
       expect(await jobRow((capped as { id: string }).id)).toMatchObject({ threads: 8 });
-      await tick(app(small));
-      expect(hcloudCalls.filter((c) => c.method === 'POST')).toHaveLength(1);
     });
 
     it('skips a provider whose create failed until its cooldown ends', async () => {

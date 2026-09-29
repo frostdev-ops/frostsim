@@ -141,7 +141,7 @@ export async function enqueueJob(
  *  never be claimed. Cold (no offers seen yet), the plan's width. */
 function jobThreads(app: App, maxThreads: number): number {
   const fleet = fleetConfig(app.config);
-  const widest = fleet ? Math.max(0, ...cachedOffers(fleet).map((o) => o.cores)) : 0;
+  const widest = fleet ? Math.max(0, ...cachedOffers(fleet, app.now()).map((o) => o.cores)) : 0;
   return widest ? Math.min(maxThreads, widest) : maxThreads;
 }
 
@@ -160,7 +160,7 @@ async function enqueueReserve(app: App, threads: number): Promise<number | null>
   const fleet = fleetConfig(app.config);
   const [row] = await app.sql`select max(${hourlyUsdSql(app.sql, fleet?.usdPerEur ?? null)} / cores)::float8 as per_core
     from workers where deleted_at is null and cores > 0`;
-  const perCore = Math.max(row?.per_core ?? 0, ...(fleet ? cachedOffers(fleet) : []).map((o) => o.maxHourlyUsd / o.cores));
+  const perCore = Math.max(row?.per_core ?? 0, ...(fleet ? cachedOffers(fleet, app.now()) : []).map((o) => o.maxHourlyUsd / o.cores));
   if (!(perCore > 0)) return null;
   const idle = await loadIdleFactors(app.sql, app.now());
   return worstCaseUsd(threads, RUN_MAX_S, coreRate(perCore, 1), Math.max(idle.hetzner, idle.ec2));
@@ -343,7 +343,7 @@ export async function capacityView(app: App, userId: string): Promise<Capacity> 
   const fleet = fleetConfig(app.config);
   // The servers the autoscaler could still add for this width: the widest one, and how many fit their providers' limits.
   const live = workers.map((w) => ({ provider: w.provider, cores: w.cores ?? 0 }));
-  const addable = fleet ? cachedOffers(fleet).filter((o) => o.cores >= threads && roomFor(fleet, live, o)) : [];
+  const addable = fleet ? cachedOffers(fleet, app.now()).filter((o) => o.cores >= threads && roomFor(fleet, live, o)) : [];
   const serverCores = Math.max(threads, ...addable.map((o) => o.cores));
   return {
     threads,
@@ -373,7 +373,7 @@ export async function capacityProblem(app: App, threads: number): Promise<string
   const fleet = fleetConfig(app.config);
   if (!fleet) return 'Frostsim Cloud has no workers available.';
   // A job wider than every server on offer could never be claimed. The autoscaler keeps offers warm; cold, it is let through.
-  const offers = cachedOffers(fleet);
+  const offers = cachedOffers(fleet, app.now());
   if (offers.length) {
     const wide = offers.filter((o) => o.cores >= threads);
     if (!wide.length) return 'Frostsim Cloud servers are too small for this run.';
