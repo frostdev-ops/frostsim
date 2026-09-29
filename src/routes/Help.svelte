@@ -187,6 +187,10 @@
             {#if app.engineStatus.reason}<span class="muted xs">— {app.engineStatus.reason}</span>{/if}
           </dd>
         {/if}
+        {#if app.engine?.notes?.changelog.length}
+          <dt>Latest changes</dt>
+          <dd><ul>{#each app.engine.notes.changelog as line}<li>{line}</li>{/each}</ul></dd>
+        {/if}
         <dt>Engine licence</dt>
         <dd class="mono">GPL-3.0-only <a href={app.engine && app.engine.id !== 'local' ? `${app.engine.baseUrl}source/simc.tar.gz` : 'https://github.com/simulationcraft/simc'}>source</a></dd>
         <dt>Frostsim licence</dt>

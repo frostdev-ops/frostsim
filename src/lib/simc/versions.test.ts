@@ -68,3 +68,23 @@ describe('engineHealth', () => {
     expect(engineHealth(running, status({ upstreamHead: sha('f'), upstreamDate: '2026-09-23T06:00:00Z' }), now).level).toBe('ok')
   })
 })
+
+describe('engine notes', () => {
+  const withNotes = (notes: unknown) => ({ ...index([{ ...pack('a1', 'x', '2026-09-23T00:00:00Z'), notes } as EnginePack]) })
+  it('keeps well-formed notes and drops malformed ones without rejecting the index', () => {
+    const good = { banner: 'Frost Mage changed.', changelog: ['Frostbolt +5%'] }
+    expect(parseEngineIndex(withNotes(good)).packs[0].notes).toEqual(good)
+    expect(parseEngineIndex(withNotes({ banner: null, changelog: [] })).packs[0].notes).toEqual({ banner: null, changelog: [] })
+    for (const bad of [{ banner: 'x'.repeat(201), changelog: [] }, { banner: 'x', changelog: Array(7).fill('a') }, { banner: 'x', changelog: [1] }, { banner: 3, changelog: [] }, 'text', null]) {
+      expect(parseEngineIndex(withNotes(bad)).packs[0].notes).toBeUndefined()
+    }
+    expect('notes' in parseEngineIndex(index([pack('a1', 'x', '2026-09-23T00:00:00Z')])).packs[0]).toBe(false)
+  })
+  it('does not say a newer engine is on its way when the updater judged the newer commits to change nothing', () => {
+    const now = Date.parse('2026-09-23T12:00:00Z')
+    const running = pack('a1', 'x', '2026-09-23T00:00:00Z')
+    const ahead: EngineStatus = { checkedAt: '2026-09-23T11:00:00Z', upstreamHead: sha('f'), upstreamDate: '2026-09-23T13:00:00Z', upstreamCiUrl: null, state: 'current', reason: null }
+    expect(engineHealth(running, ahead, now).level).toBe('info')
+    expect(engineHealth(running, { ...ahead, noRebuild: true }, now).message).toBeNull()
+  })
+})
