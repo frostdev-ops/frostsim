@@ -25,7 +25,7 @@ describe('loothingDetail', () => {
   it('ranks the top abilities and non-constant buffs, and keeps only measured stat weights', () => {
     expect(c.abilities.length).toBeLessThanOrEqual(15);
     expect(c.abilities[0]).toMatchObject({ name: 'Unstable Affliction', spellId: 1259790 });
-    expect(c.abilities.map((a) => a.dps)).toEqual([...c.abilities.map((a) => a.dps)].sort((a, b) => b! - a!));
+    expect(c.abilities.map((a) => a.dps)).toEqual(c.abilities.map((a) => a.dps).sort((a, b) => b! - a!));
     expect(c.buffs.length).toBeLessThanOrEqual(15);
     expect(c.scaleFactors?.map((f) => f.stat)).toEqual(['Crit', 'Haste']);
     expect(c.stats.crit_rating).toBe(player.collected_data.buffed_stats.stats.crit_rating);
