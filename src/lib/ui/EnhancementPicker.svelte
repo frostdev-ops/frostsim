@@ -27,6 +27,7 @@
   let consumableOptions = $state(new Map<string, Consumable[]>())
   let loaded = $state(false)
   let error = $state('')
+  let consumableError = $state('')
   let retry = $state(0)
   let searches = $state<Record<string, string>>({})
   let drafts = $state<Record<string, number[]>>({})
@@ -57,6 +58,31 @@
   const gemSlot = $derived(socketLayouts.has(activeGemSlot) ? activeGemSlot : [...socketLayouts.keys()][0])
   const enchantSlot = $derived(enchantOptions.has(activeEnchantSlot) ? activeEnchantSlot : [...enchantOptions.keys()][0])
 
+  // A new character/level needs fresh eligibility; gear clicks keep the controls mounted.
+  $effect(() => {
+    character.level
+    catalogClient()
+    retry
+    loaded = false
+  })
+
+  // Consumables depend on the character and catalog, never on selected gear.
+  $effect(() => {
+    const client = catalogClient()
+    const level = character.level ?? 0
+    retry
+    consumableOptions = new Map()
+    consumableError = ''
+    if (!client) return
+    let cancelled = false
+    void Promise.all(KINDS.map(async (c) => [c.key, (await client.consumables(c.kind))
+      .filter((v) => !level || v.reqLevel <= level)
+      .sort((a, b) => b.level - a.level || b.craftingQuality - a.craftingQuality || a.name.localeCompare(b.name))] as const))
+      .then((rows) => { if (!cancelled) consumableOptions = new Map(rows) })
+      .catch((e) => { if (!cancelled) consumableError = e instanceof Error ? e.message : 'Could not load consumable options.' })
+    return () => { cancelled = true }
+  })
+
   // Capture dependencies before awaiting; changed inventory invalidates old responses.
   $effect(() => {
     const ready = app.catalogState === 'ready'
@@ -67,7 +93,7 @@
     const client = catalogClient()
     if (!ready || !client) return
     let cancelled = false
-    loaded = false
+    // Keep controls mounted during gear changes; rebuilding every option blocks item selection.
     error = ''
     void Promise.all([
       Promise.all([...layouts].map(async ([slot, variants]) =>
@@ -76,14 +102,10 @@
         const rows = (await Promise.all(candidates.map((item) => client.enchantsFor(item, level)))).flat()
         return [slot, [...new Map(rows.map((e) => [e.enchantId, { ...e, name: plainGameText(e.name ?? e.option) }])).values()].sort((a, b) => b.enchantId - a.enchantId)] as const
       })),
-      Promise.all(KINDS.map(async (c) => [c.key, (await client.consumables(c.kind))
-        .filter((v) => !level || v.reqLevel <= level)
-        .sort((a, b) => b.level - a.level || b.craftingQuality - a.craftingQuality || a.name.localeCompare(b.name))] as const)),
-    ]).then(([gemRows, enchantRows, consumableRows]) => {
+    ]).then(([gemRows, enchantRows]) => {
       if (cancelled) return
       gemOptions = new Map(gemRows)
       enchantOptions = new Map(enchantRows.filter(([, rows]) => rows.length))
-      consumableOptions = new Map(consumableRows)
       loaded = true
     }).catch((e) => {
       if (!cancelled) error = e instanceof Error ? e.message : 'Could not load enhancement options.'
@@ -129,7 +151,7 @@
   {:else if error}
     <p role="alert">{error} <button type="button" onclick={() => retry++}>Retry</button></p>
   {:else if !loaded}
-    <p class="muted" role="status">Loading gems, enchants and consumables…</p>
+    <p class="muted" role="status">Loading gems and enchants…</p>
   {:else}
     <div class="category-heading"><div><h3>Gems</h3></div><span class="chip">{Object.values(gems).reduce((sum, values) => sum + (values?.length ?? 0), 0)} sets selected</span></div>
     {#if gemSlot}
@@ -177,7 +199,9 @@
 
 <section id="gear-consumables" class="enhancement-section" aria-labelledby="consumables-title">
   <header class="section-heading"><h2 id="consumables-title">Consumables</h2></header>
-  {#if loaded}
+  {#if consumableError}
+    <p role="alert">{consumableError} <button type="button" onclick={() => retry++}>Retry</button></p>
+  {:else if consumableOptions.size}
     <div class="consumable-grid">
       {#each KINDS as kind (kind.key)}
         <div class="consumable-category">
@@ -214,7 +238,7 @@
   .search-label { display: grid; gap: var(--s2); font-size: var(--fs-sm); color: var(--text-muted); margin: var(--s4) 0; }
   .search-label input { min-width: 0; width: 100%; min-height: 2.8rem; }
   .option-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(16rem, 100%), 1fr)); gap: var(--s3); }
-  .enchant-options { max-height: 28rem; overflow-y: auto; overscroll-behavior: contain; padding: 3px; align-content: start; }
+  .enchant-options { max-height: 28rem; overflow-y: auto; overscroll-behavior: contain; padding: 3px; align-content: start; content-visibility: auto; contain-intrinsic-size: auto 28rem; }
   .option-card { display: flex; align-items: center; gap: var(--s3); min-height: 5rem; border: 1px solid var(--border); border-radius: var(--r3); padding: var(--s3) var(--s4); cursor: pointer; font-size: var(--fs-md); line-height: 1.45; background: var(--surface-2); transition: background 160ms ease, border-color 160ms ease, transform 160ms ease; }
   .option-card:hover { border-color: var(--border-strong); background: var(--surface-3); transform: translateY(-1px); }
   .option-card.selected { border-color: var(--accent); background: var(--accent-soft); }
@@ -232,7 +256,7 @@
   .consumable-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(17rem, 100%), 1fr)); gap: var(--s5); }
   .consumable-category { min-width: 0; }
   .consumable-category header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--s2); }
-  .consumable-options { display: grid; gap: var(--s3); max-height: 32rem; overflow-y: auto; overscroll-behavior: contain; padding: 3px; scrollbar-width: thin; }
+  .consumable-options { display: grid; gap: var(--s3); max-height: 32rem; overflow-y: auto; overscroll-behavior: contain; padding: 3px; scrollbar-width: thin; content-visibility: auto; contain-intrinsic-size: auto 32rem; }
   .clear-selection { margin-top: var(--s3); }
   .empty-state { border: 1px dashed var(--border-strong); border-radius: var(--r3); padding: var(--s5); color: var(--text-muted); font-size: var(--fs-md); }
   @media (max-width: 640px) { .enhancement-section { padding: var(--s4); } .category-heading { align-items: start; } }
