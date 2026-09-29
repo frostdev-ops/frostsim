@@ -109,6 +109,13 @@ describe('explain: what is sent and what is kept', () => {
     expect(ledger('update')[0].values).toEqual([0.002, 'openai/gpt-x', 100, 20, '7']);
   });
 
+  it('tells the model it is reading a simulator\'s record: no rotation advice, no stat advice without weights, no enchant claims', async () => {
+    const run = setup({}, [{ content: 'ok' }]);
+    await run.send(report());
+    const system: string = run.chats()[0].messages[0].content;
+    for (const rule of [/is a simulator/, /not the player's choices, so never give rotation/, /only when scale factors are in the data/, /never say a slot is missing one/, /ignore mana overflow/]) expect(system).toMatch(rule);
+  });
+
   it('refuses a body that is not gzip JSON of a known kind, without an upstream call or a ledger row', async () => {
     const { send, requests, ledger } = setup();
     const bad = [

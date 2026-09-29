@@ -22,6 +22,12 @@ describe('loothingDetail', () => {
     expect(c.fightLength.mean).toBeCloseTo(player.collected_data.fight_length.mean, 1);
   });
 
+  it('reports the potion as used when the potion action ran, though simc\'s own potion_used flag reads false', () => {
+    expect(player.potion_used).toBe(false);
+    expect(player.stats.find((x: { name: string }) => x.name === 'potion').num_executes.mean).toBeGreaterThan(0);
+    expect(c.consumables).toMatchObject({ potion: 'liquid_luster_2', potionUsed: true });
+  });
+
   it('ranks the top abilities and non-constant buffs, and keeps only measured stat weights', () => {
     expect(c.abilities.length).toBeLessThanOrEqual(15);
     expect(c.abilities[0]).toMatchObject({ name: 'Unstable Affliction', spellId: 1259790 });
