@@ -76,10 +76,14 @@
     gap: 0.28rem;
     align-items: center;
   }
-  /* Ranked row: no wrap (extra line breaks column scan). */
+  /* Ranked row: no wrap (extra line breaks column scan). Icons keep their width; the label beside truncates. */
   .strip.inline {
     flex-wrap: nowrap;
+    flex-shrink: 0;
     overflow: hidden;
+    /* Keeps the changed-slot ring (drawn 2px outside the icon) inside the clip. */
+    padding: 3px;
+    margin: -3px;
     max-width: 100%;
   }
   .cell {

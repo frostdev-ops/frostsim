@@ -1,0 +1,11 @@
+{
+  "name": "frostsim-sim-bench",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "workers_dev": true,
+  "containers": [
+    { "class_name": "SimBench", "image": "./Dockerfile", "instance_type": "standard-4", "max_instances": 20 }
+  ],
+  "durable_objects": { "bindings": [{ "name": "SIM", "class_name": "SimBench" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SimBench"] }]
+}
