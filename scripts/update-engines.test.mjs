@@ -478,3 +478,173 @@ describe('presentationData', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 });
+
+import { compareRange, compareState, newestPackFor, parseNotes, patchedFiles, pathVerdict, rebuildDecision, releaseNotes, rememberedSkip, triage, triageAllowed } from './update-engines.mjs';
+
+describe('pathVerdict', () => {
+  it('skips a diff that reaches no binary: CI, docs, profiles, APL sources, GUI, PTR-only tables', () => {
+    const names = ['.github/workflows/main.yml', 'profiles/MID2/MID2_Mage_Frost.simc', 'ActionPriorityLists/mage_frost.simc', 'qt/main.cpp', 'README.md',
+      'engine/report/json/Changelog.md', 'engine/dbc/generated/client_data_version_ptr.inc', 'simc_vs2022.sln', 'flake.lock', 'dbc_extract3/x.py'];
+    expect(pathVerdict(names)).toEqual({ verdict: 'skip', files: [] });
+  });
+  it('builds for game data, build config, the JSON writer and the files our patches edit, however the rest of the diff reads', () => {
+    for (const file of ['engine/dbc/generated/spell_data.inc', 'engine/dbc/generated/client_data_version.inc', 'engine/config.hpp',
+      'CMakeLists.txt', 'engine/CMakeLists.txt', 'source_files/cmake_engine.txt', 'engine/lib/fmt/core.h', 'engine/report/json/report_json.cpp']) {
+      expect(pathVerdict(['README.md', file]), file).toEqual({ verdict: 'build', files: [file] });
+    }
+    expect(pathVerdict(['engine/report/charts.cpp'], ['engine/report/charts.cpp']).verdict).toBe('build');
+    expect(pathVerdict(['engine/report/charts.cpp']).verdict).toBe('ask');
+    // dbc code is judged like any engine code; only the generated tables are game data.
+    expect(pathVerdict(['engine/dbc/sc_spell_info.cpp'])).toEqual({ verdict: 'ask', files: ['engine/dbc/sc_spell_info.cpp'] });
+  });
+  it('asks about engine source and returns only the files to judge', () => {
+    expect(pathVerdict(['engine/class_modules/sc_mage.cpp', 'README.md', 'profiles/a.simc'])).toEqual({ verdict: 'ask', files: ['engine/class_modules/sc_mage.cpp'] });
+  });
+  it('reads the patched files from the real patches/ headers', () => {
+    expect(patchedFiles()).toEqual(expect.arrayContaining(['engine/sim/profileset.cpp', 'engine/util/concurrency.cpp', 'engine/report/charts.cpp']));
+    expect(patchedFiles(join(tmpdir(), 'no-such-patches'))).toEqual([]);
+  });
+});
+
+const range = (over = {}) => ({ status: 'ahead', total_commits: 2, commits: [{ commit: { message: '[Mage] Fix Frostbolt damage\n\nbody' } }, { commit: { message: 'CI: bump checkout' } }],
+  files: [{ filename: 'engine/class_modules/sc_mage.cpp', status: 'modified', patch: '@@ -1 +1 @@\n-a\n+b' }], ...over });
+
+describe('compareRange', () => {
+  it('pages through up to 300 files and keeps the first page of commit subjects', async () => {
+    const pages = [];
+    const gh = async path => { pages.push(path); const page = Number(/&page=(\d)/.exec(path)[1]);
+      return range({ files: Array.from({ length: page < 3 ? 100 : 40 }, (_, i) => ({ filename: `f${page}-${i}` })), ...(page > 1 ? { commits: [] } : {}) }); };
+    const out = await compareRange('a', 'b', gh);
+    expect(pages).toEqual(['/compare/a...b?per_page=100&page=1', '/compare/a...b?per_page=100&page=2', '/compare/a...b?per_page=100&page=3']);
+    expect(out).toMatchObject({ status: 'ahead', total: 2, subjects: ['[Mage] Fix Frostbolt damage', 'CI: bump checkout'] });
+    expect(out.files).toHaveLength(240);
+  });
+});
+
+describe('compareState', () => {
+  it('lists the commits and the patches of the files to judge; null when a patch is missing or the text is too long', () => {
+    const r = { total: 2, subjects: ['a', 'b'], files: range().files };
+    expect(compareState(r, ['engine/class_modules/sc_mage.cpp'])).toBe('2 commits since the last published engine:\n- a\n- b\n\n--- engine/class_modules/sc_mage.cpp (modified)\n@@ -1 +1 @@\n-a\n+b');
+    expect(compareState({ ...r, files: [{ filename: 'x', status: 'modified' }] }, ['x'])).toBeNull();
+    expect(compareState(r, ['engine/class_modules/sc_mage.cpp'], 50)).toBeNull();
+  });
+});
+
+describe('rebuildDecision', () => {
+  const now = Date.parse('2026-09-29T12:00:00Z');
+  const base = { upstreamCommit: 'b'.repeat(40), publishedAt: '2026-09-28T12:00:00Z', compat: 'c', commitDate: '2026-09-28T00:00:00Z' };
+  const args = (over = {}) => ({ base, commit: 'd'.repeat(40), key: 'k', now, gh: async () => range(), decideFn: async () => ({ answers: { code_semantics_changed: 0.01, affects_simulation: 0.02 }, cost: 0.00002 }), ...over });
+
+  it('builds when it cannot be sure: no base, a base over 7 days old, a failed or non-linear compare, too many files', async () => {
+    expect((await rebuildDecision(args({ base: undefined }))).build).toBe(true);
+    expect(await rebuildDecision(args({ base: { ...base, publishedAt: '2026-09-20T00:00:00Z' } }))).toMatchObject({ build: true, reason: expect.stringMatching(/7 days/) });
+    expect(await rebuildDecision(args({ gh: async () => { throw new Error('GitHub: HTTP 403'); } }))).toMatchObject({ build: true, reason: expect.stringMatching(/compare failed/) });
+    expect(await rebuildDecision(args({ gh: async () => range({ status: 'diverged' }) }))).toMatchObject({ build: true, reason: 'history is diverged' });
+    expect(await rebuildDecision(args({ gh: async () => range({ files: Array.from({ length: 100 }, (_, i) => ({ filename: `profiles/${i}.simc` })) }) }))).toMatchObject({ build: true, reason: 'over 300 files changed' });
+  });
+  it('skips on path alone without calling Jev, and builds on a build-class file', async () => {
+    let asked = 0;
+    const decideFn = async () => { asked++; return { answers: {}, cost: 0 }; };
+    const only = files => args({ decideFn, gh: async () => range({ files }) });
+    expect(await rebuildDecision(only([{ filename: '.github/workflows/main.yml' }, { filename: 'README.md' }]))).toMatchObject({ build: false, reason: 'only files outside the binary changed' });
+    expect(await rebuildDecision(only([{ filename: 'engine/dbc/generated/spell_data.inc' }]))).toMatchObject({ build: true, reason: 'build-class file: engine/dbc/generated/spell_data.inc' });
+    expect(await rebuildDecision(only([{ filename: 'x.md', previous_filename: 'engine/config.hpp' }]))).toMatchObject({ build: true });
+    expect(asked).toBe(0);
+  });
+  it('asks Jev about engine source: skips only when both facts are under 5%, sending the subjects and the patch', async () => {
+    let call;
+    const quiet = await rebuildDecision(args({ decideFn: async c => { call = c; return { answers: { code_semantics_changed: 0.01, affects_simulation: 0.02 }, cost: 0.00002 }; } }));
+    expect(quiet).toMatchObject({ build: false, reason: 'Jev: no behaviour change', jev: { code_semantics_changed: 0.01, affects_simulation: 0.02, cost: 0.00002 } });
+    expect(Object.keys(call.questions)).toEqual(['code_semantics_changed', 'affects_simulation']);
+    expect(call.state).toContain('[Mage] Fix Frostbolt damage');
+    expect(call.state).toContain('+b');
+    const loud = await rebuildDecision(args({ decideFn: async () => ({ answers: { code_semantics_changed: 0.9, affects_simulation: 0.04 }, cost: 0 }) }));
+    expect(loud).toMatchObject({ build: true, reason: 'Jev: behaviour may change' });
+  });
+  it('builds when the patch is missing or Jev fails', async () => {
+    expect((await rebuildDecision(args({ gh: async () => range({ files: [{ filename: 'engine/class_modules/sc_mage.cpp', status: 'modified' }] }) }))).reason).toMatch(/too large/);
+    expect(await rebuildDecision(args({ decideFn: async () => { throw new Error('Jev answer x: expected noul'); } }))).toMatchObject({ build: true, reason: expect.stringMatching(/Jev unavailable/) });
+  });
+});
+
+describe('newestPackFor', () => {
+  it('takes the newest pack of the compat only', () => {
+    const packs = [{ id: 'a', compat: 'x', commitDate: '2026-09-01' }, { id: 'b', compat: 'x', commitDate: '2026-09-03' }, { id: 'c', compat: 'y', commitDate: '2026-09-09' }];
+    expect(newestPackFor(packs, 'x').id).toBe('b');
+    expect(newestPackFor(packs, 'z')).toBeUndefined();
+  });
+});
+
+describe('rememberedSkip', () => {
+  const now = Date.parse('2026-09-29T12:00:00Z');
+  const base = { upstreamCommit: 'b'.repeat(40), publishedAt: '2026-09-28T12:00:00Z' };
+  const index = { skipped: [{ commit: 'd'.repeat(40), base: base.upstreamCommit }] };
+  it('is honored for a fresh base, so the same commit is not judged again', () => {
+    expect(rememberedSkip(index, 'd'.repeat(40), base, now)).toBe(true);
+    expect(rememberedSkip(index, 'e'.repeat(40), base, now)).toBe(false);
+    expect(rememberedSkip({}, 'd'.repeat(40), base, now)).toBe(false);
+  });
+  it('is ignored once the base is over 7 days old, so the stale-base rule can build, and when the base is another pack', () => {
+    expect(rememberedSkip(index, 'd'.repeat(40), { ...base, publishedAt: '2026-09-22T12:00:00Z' }, now)).toBe(true);
+    expect(rememberedSkip(index, 'd'.repeat(40), { ...base, publishedAt: '2026-09-22T11:59:59Z' }, now)).toBe(false);
+    expect(rememberedSkip(index, 'd'.repeat(40), { ...base, upstreamCommit: 'c'.repeat(40) }, now)).toBe(false);
+  });
+});
+
+describe('triageAllowed', () => {
+  it('only with a base pack to keep serving and no --ref: the first pack of a compat and an explicit ref still fall back to the host', () => {
+    expect(triageAllowed({ explicit: false, base: { id: 'a' } })).toBe(true);
+    expect(triageAllowed({ explicit: false, base: undefined })).toBe(false);
+    expect(triageAllowed({ explicit: true, base: { id: 'a' } })).toBe(false);
+    expect(triageAllowed({ explicit: true, base: undefined })).toBe(false);
+  });
+});
+
+describe('parseNotes', () => {
+  it('reads a banner and up to 6 bullets', () => {
+    expect(parseNotes('Frost Mage damage changed.\n- Frostbolt +5%\n- Fixed Icy Veins uptime')).toEqual({ banner: 'Frost Mage damage changed.', changelog: ['Frostbolt +5%', 'Fixed Icy Veins uptime'] });
+    expect(parseNotes(`Hi\n${Array.from({ length: 9 }, (_, i) => `- ${i}`).join('\n')}`).changelog).toHaveLength(6);
+    expect(parseNotes('- only a bullet')).toEqual({ banner: null, changelog: ['only a bullet'] });
+  });
+  it('rejects the whole text for markup, links, overlong lines or nothing at all', () => {
+    for (const text of ['<b>hi</b>', 'See https://x.io', 'Visit www.x.io', `${'a'.repeat(201)}`, `ok\n- ${'a'.repeat(161)}`, 'ok\n- <script>', '', undefined]) expect(parseNotes(text), String(text)).toBeNull();
+  });
+});
+
+describe('releaseNotes', () => {
+  const r = { total: 2, subjects: ['[Mage] Fix Frostbolt damage', 'CI: bump checkout'] };
+  const deps = (notice, text) => ({ key: 'k', range: r, decideFn: async () => ({ answers: { players_notice: notice }, cost: 0 }), chatFn: async () => ({ message: { content: text } }) });
+  const text = 'Frost Mage damage changed.\n- Frostbolt damage fixed';
+  it('keeps the banner only when players would notice; the changelog stays either way', async () => {
+    expect(await releaseNotes(deps(0.8, text))).toEqual({ changelog: ['Frostbolt damage fixed'], banner: 'Frost Mage damage changed.' });
+    expect(await releaseNotes(deps(0.2, text))).toEqual({ changelog: ['Frostbolt damage fixed'], banner: null });
+  });
+  it('gives the model room for its hidden reasoning and drops a reply cut off at the token limit', async () => {
+    let asked;
+    const chatFn = finish => async c => { asked = c; return { message: { content: text }, finish }; };
+    expect(await releaseNotes({ ...deps(0.8, text), chatFn: chatFn('stop') })).toEqual({ changelog: ['Frostbolt damage fixed'], banner: 'Frost Mage damage changed.' });
+    expect(asked.maxTokens).toBe(1500);
+    expect(await releaseNotes({ ...deps(0.8, text), chatFn: chatFn('length') })).toBeNull();
+  });
+  it('returns null for unusable model text, no commits, or nothing to say', async () => {
+    expect(await releaseNotes(deps(0.9, '<b>x</b>'))).toBeNull();
+    expect(await releaseNotes({ ...deps(0.9, text), range: { total: 0, subjects: [], files: [] } })).toBeNull();
+    expect(await releaseNotes(deps(0.2, 'No player-visible changes.'))).toBeNull();
+  });
+});
+
+describe('triage', () => {
+  const log = 'ssh: Builder exited with 2: make: *** [engine/sim/sim.cpp.o] Error 1';
+  it('classifies a failure that has a builder log', async () => {
+    let call;
+    expect(await triage(`ec2: ${log}`, { key: 'k', decideFn: async c => { call = c; return { answers: { failure: 'upstream_code' }, cost: 0 }; } })).toBe('upstream_code');
+    expect(call.state).toContain('sim.cpp.o');
+    expect(Object.keys(call.questions.failure.criteria)).toEqual(['upstream_code', 'our_integration', 'infrastructure', 'unknown']);
+  });
+  it('is unknown without a key, without a log, or when Jev fails, so the host still builds', async () => {
+    const never = async () => { throw new Error('should not be asked'); };
+    expect(await triage(log, { key: null, decideFn: never })).toBe('unknown');
+    expect(await triage('Builder i-1 did not finish within 90 min', { key: 'k', decideFn: never })).toBe('unknown');
+    expect(await triage(log, { key: 'k', decideFn: never })).toBe('unknown');
+  });
+});
