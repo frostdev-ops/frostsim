@@ -313,10 +313,13 @@ describe.skipIf(!PG)('cloud characters postgres integration (needs FROSTSIM_TEST
     const edited = EXPORT.replace('warlock=', 'warlock = ');
     expect((await other.send('PUT', `/api/v1/characters/${ids[0]}`, { label: 'Stolen', raw: edited })).status).toBe(404);
     const res = await u.send('PUT', `/api/v1/characters/${ids[0]}`, { label: 'Bob (Realm A)', raw: edited });
-    expect(await res.json()).toEqual({ id: ids[0] });
-    const rows = await sql`select id, label, raw, bytes from cloud_characters where user_id = ${u.id}`;
+    const body = await res.json();
+    expect(body).toEqual({ id: ids[0], updatedAt: expect.any(String) });
+    const rows = await sql`select id, label, raw, bytes, updated_at from cloud_characters where user_id = ${u.id}`;
     const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
     expect(byId[ids[0]]).toMatchObject({ label: 'Bob (Realm A)', raw: edited, bytes: Buffer.byteLength(edited) });
+    // The browser keeps this to know which side changed, so it must be the stored one.
+    expect(new Date(body.updatedAt).getTime()).toBe(byId[ids[0]].updated_at.getTime());
     expect(byId[ids[1]]).toMatchObject({ label: 'Bob', raw: named('Bob2') });
   });
 
