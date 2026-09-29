@@ -1576,6 +1576,7 @@
             <p class="small muted">No owned-only comparison is available yet. These are the reward measurements collected so far.</p>
             <table class="tbl"><thead><tr><th>Reward</th><th>DPS</th><th>Status</th></tr></thead><tbody>{#each vaultComparisons as row (row.id)}<tr><td>{#if row.icons?.[0]}<ItemLink itemId={row.icons[0].itemId} name={row.label} resolved={row.item} />{:else}{row.label}{/if}</td><td>{row.mean === undefined ? '—' : fmtInt(row.mean)}</td><td>{row.status}</td></tr>{/each}</tbody></table>
           {/if}
+          {#if import.meta.env.VITE_FEATURE_ACCOUNTS === true}{#await import('../lib/account/ExplainPanel.svelte') then m}<m.default kind="vault" rows={vaultComparisons} context={{ ownedBest: ownedBest?.measurement ? { mean: Math.round(ownedBest.measurement.mean), margin: ownedBest.measurement.margin, iterations: ownedBest.measurement.iterations } : null }} character={resultCharacter} />{/await}{/if}
         </section>
       {/if}
 
@@ -1628,6 +1629,7 @@
           <button class="primary" onclick={() => go(true)} disabled={busy || !lastSearch}>Run again</button>
           <button onclick={() => (setupOpen = true)}>Edit setup</button>
           {#if shareOutcome && result.baseline}<ShareReport outcome={shareOutcome} transform={s => searchSnapshot(s, result!, 'Top Gear')} />{/if}
+          {#if import.meta.env.VITE_FEATURE_ACCOUNTS === true && result.baseline}{#await import('../lib/account/ExplainPanel.svelte') then m}<m.default kind="topgear" rows={bars} context={{ currentGearMean: Math.round(baselineMean) }} character={resultCharacter} />{/await}{/if}
           {#if finalists.length}
             <details class="disclosure">
               <summary>Re-measure {finalists.length} setups</summary>

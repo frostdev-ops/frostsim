@@ -69,7 +69,7 @@ Data bucket: `shares/<id>.json.gz`, `results/<jobId>.json.gz` (a 1-day lifecycle
 quantity and `core_hours` from the Price metadata), `stripe_events` (idempotency), `compute_jobs` (the usage
 ledger), `workers`, `cloud_characters` (the addon export text, not a parsed record, plus `who`: name, class, spec,
 realm and region at save time), `character_snapshots`, `character_sims`, `shares`, `integration_grants`, `audit_log`, `guild_role_limits` (migration 005: per-role
-allowances inside a Discord server's pool, P5).
+allowances inside a Discord server's pool, P5), `ai_calls` (migration 008: the AI cost ledger, C11) and `ai_memory` (008: notes the explainer keeps per player and character).
 
 Slots are the characters (2026-09-25). Signed in, every character on a device sits in a slot: the Character page's
 roster is the slot list, an import or update fills or rewrites the character's slot, a rename relabels it and a delete
@@ -174,6 +174,23 @@ inflated, validated with `validateReport` on both ends. Blobs are served as `app
 HTML report is never hosted. Limits: 10 share writes a minute per user, 120 views a minute per IP. A share never
 uploaded within a day is revoked. When a user loses hosted shares, their shares expire 30 days later unless they
 resubscribe first.
+
+**C11 AI explanations** (`FEATURES=ai`, `ai.ts`). `POST /api/v1/ai/explain` takes `gzip(JSON({ kind, context, report?, character?, names?, build? }))`, at most 1 MiB
+compressed and 8 MiB inflated, one inflate at a time per process (the unit has 512 MB). It answers `{ text, model, costUsd, remaining }` and stores
+nothing but the ledger row and any notes the model saved. The character's name and realm, and every name in `names`, become `Character N` in everything sent upstream
+(whole words only, none under 2 characters) and come back in the answer. The model, `typesafe/jev-router` on OpenRouter, starts from the
+digest Loothing's agent reads (`loothing-detail.ts`) and may call `report_detail`, `wago_db2` (exact-value lookups for the result's own game build), `fetch`
+(https GET on `wago.tools`, and the `simulationcraft/simc` paths of `raw.githubusercontent.com`: no port, credentials or redirect, 30 KB, 10 s, 60 KB of tool output a call;
+`allowedUrl` is the SSRF boundary because loopback services live on this host) and, when a character is named, `memory_recall` and `memory_note` (20 notes a
+player and character, keyed by an HMAC of region, realm and name with SESSION_SECRET; only the author reads them; deleted with the account). Every request asks the
+router for `data_collection: deny` and a model under USD 3 (prompt) and 15 (completion) per million tokens, which bounds one turn. A call is limited to 6
+turns, 70 s (plus a last turn of at least 15 s) and USD 0.05 of billed cost as a soft limit; a turn's tools run together, and tools are switched off for the last turn, when 80% of the cost or all but 15 s is spent, and when a turn's worst case at the price ceiling would pass twice the cost limit. A report with more than 8 players is refused, its digest is capped at 48 KB and the context at 32 KB. Quota: 3 calls a day for a signed-in account, 30 for one
+with a compute plan (UTC day, counted in Postgres under an advisory lock per scope, so concurrent calls cannot pass it), a burst limit of 5 a minute, and
+`AI_MONTHLY_USD_CAP` over everyone (503 `ai-capacity`). Each call is a row in `ai_calls` at USD 0.05 before the first request, then what OpenRouter billed
+(a request that failed without a bill we saw keeps its reserve; an HTTP refusal from OpenRouter costs nothing and frees the row); `usedCostUsd` sums it with `compute_jobs`, so AI spend counts toward the plan cost cap. `user_id` is nulled on deletion, not cascaded: the guild
+pool and the monthly cap keep counting spend that happened. The Discord takeaway (`takeaway:true` on `/sim` and `/compare`, off by default) is the same call without tools,
+billed to the guild pool for a guild run, fetched beside the hosted link under the 20 s reply deadline and left out when anything fails. Unlike the rest of `/api/v1`, `/api/v1/ai/explain`
+may answer after 30 s, so nginx gives that one path 90 s.
 
 ## Protocols (P)
 

@@ -36,6 +36,10 @@ export interface Plan {
 /** Cloud character slots every signed-in account has, paid or not. */
 export const FREE_SLOTS = 1
 
+/** AI explanations per UTC day (server/account/ai.ts): a taste for a signed-in account, a working allowance for a compute plan. */
+export const AI_FREE_PER_DAY = 3
+export const AI_PLAN_PER_DAY = 30
+
 /** "Unlimited" slots: a fair-use ceiling, because each save stores up to 64 KiB and a truly unlimited count lets one account fill
  *  the database. Shown as unlimited (slotsLabel). */
 export const UNLIMITED_SLOTS = 100

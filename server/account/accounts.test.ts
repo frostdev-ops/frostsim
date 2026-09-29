@@ -431,7 +431,7 @@ describe('/me', () => {
     expect(res.headers.get('content-disposition')).toBe('attachment; filename="frostsim-account.json"');
     const body = await res.json();
     expect(Object.keys(body)).toEqual(['exportedAt', 'user', 'identities', 'sessions', 'subscriptions', 'computeJobs', 'cloudCharacters', 'characterSnapshots', 'characterSims',
-      'shares', 'integrationGrants', 'auditLog']);
+      'shares', 'integrationGrants', 'aiCalls', 'aiMemory', 'auditLog']);
     expect(body.sessions).toEqual([{ created_at: NOW.toISOString(), expires_at: NOW.toISOString(), last_seen_at: NOW.toISOString() }]);
     expect(w.events.filter((e) => e.includes('id_hash') && !e.includes('from sessions s join users'))).toEqual([]);
     // Job request/payload bodies (up to 1 MiB each) are exported as sizes only.

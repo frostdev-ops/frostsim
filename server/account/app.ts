@@ -23,6 +23,7 @@ import * as shares from './shares';
 import * as discord from './discord';
 import * as guildRoles from './guild-roles';
 import * as integrations from './integrations';
+import * as ai from './ai';
 
 /** Everything a handler or task may touch. Inject fakes in tests. */
 export interface AppCtx {
@@ -77,7 +78,7 @@ export interface Task {
   run(ctx: AppCtx): Promise<void>;
 }
 
-const MODULES = [oauth, users, admin, billing, compute, worker, characters, shares, discord, guildRoles, integrations];
+const MODULES = [oauth, users, admin, billing, compute, worker, characters, shares, discord, guildRoles, integrations, ai];
 export const ROUTES: readonly Route[] = MODULES.flatMap((m) => m.routes);
 export const TASKS: readonly Task[] = [...sessionTasks, ...MODULES.flatMap((m) => m.tasks)];
 

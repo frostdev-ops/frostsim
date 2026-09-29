@@ -22,7 +22,7 @@ import { ACCURACIES, COMMANDS, FIGHTS, REGIONS, register } from '../../scripts/d
 import { ALLOWED_REGIONS } from '../../src/lib/battlenet/contract';
 
 const mocks = vi.hoisted(() => ({
-  enqueueJob: vi.fn(), cancelJob: vi.fn(), jobView: vi.fn(), resultBytes: vi.fn(), defaultPack: vi.fn(), storeShare: vi.fn(),
+  enqueueJob: vi.fn(), cancelJob: vi.fn(), jobView: vi.fn(), resultBytes: vi.fn(), defaultPack: vi.fn(), storeShare: vi.fn(), takeaway: vi.fn(),
 }));
 vi.mock('./compute/queue', async (original) => ({
   ...(await original<typeof import('./compute/queue')>()),
@@ -30,6 +30,7 @@ vi.mock('./compute/queue', async (original) => ({
 }));
 vi.mock('./compute/packs', async (original) => ({ ...(await original<typeof import('./compute/packs')>()), defaultPack: mocks.defaultPack }));
 vi.mock('./shares', async (original) => ({ ...(await original<typeof import('./shares')>()), storeShare: mocks.storeShare }));
+vi.mock('./ai', async (original) => ({ ...(await original<typeof import('./ai')>()), takeaway: mocks.takeaway }));
 
 const ORIGIN = 'https://sim.test';
 const APP_ID = '111111111111111111';
@@ -311,6 +312,17 @@ describe('/sim', () => {
     expect(JSON.parse(store.get(`discord:${JOB}`)!.value)).toMatchObject({ share: ALICE });
   });
 
+  it('with takeaway, remembers the opt-in; without it, the run never asks for one', async () => {
+    const { store, redis } = fakeRedis();
+    await call(redis, sim([{ name: 'character', type: 3, value: CHAR }, { name: 'takeaway', type: 5, value: true }], inGuild(ALICE, GUILD)));
+    await vi.waitFor(() => expect(store.has(`discord:${JOB}`)).toBe(true));
+    expect(JSON.parse(store.get(`discord:${JOB}`)!.value)).toMatchObject({ takeaway: true });
+    const plain = fakeRedis();
+    await call(plain.redis, sim([{ name: 'character', type: 3, value: CHAR }], inGuild(ALICE, GUILD)));
+    await vi.waitFor(() => expect(plain.store.has(`discord:${JOB}`)).toBe(true));
+    expect(JSON.parse(plain.store.get(`discord:${JOB}`)!.value)).not.toHaveProperty('takeaway');
+  });
+
   it('accepts a typed label, defaults to Patchwerk at standard accuracy, and uses a guild pool only when the guild has one', async () => {
     const { redis } = fakeRedis();
     await call(redis, sim([{ name: 'character', type: 3, value: 'alt priest' }], inGuild(ALICE, POOL_GUILD)));
@@ -551,6 +563,57 @@ describe('reply task', () => {
     ]);
   });
 
+  describe('with takeaway:true', () => {
+    const asked = (exp = NOW + 600_000) => JSON.stringify({ token: TOKEN, label: 'Main_Warlock', presetId: 'patchwerk', exp, owner: ALICE, takeaway: true });
+    async function runAsked(view: JobView) {
+      const { store, redis } = fakeRedis();
+      world.discordJobs = [JOB];
+      store.set(`discord:${JOB}`, { value: asked(), ttl: TOKEN_TTL_S });
+      mocks.jobView.mockResolvedValue(view);
+      await task.run(deps(redis));
+    }
+    it('adds the model text as a Takeaway field, billed by the run\'s own account, and escapes it', async () => {
+      world.subscriptions[USER] = [sub('compute_m_monthly')];
+      mocks.resultBytes.mockResolvedValue(new Uint8Array(gzipSync(REPORT_TEXT)));
+      mocks.storeShare.mockResolvedValue({ id: 'AbCdEfGhIjKlMnOpQrStUv' });
+      mocks.takeaway.mockResolvedValue('Keep [Frostbolt](https://evil.example) up.');
+      await runAsked(done());
+      expect(mocks.takeaway).toHaveBeenCalledWith(expect.anything(), { report: JSON.parse(REPORT_TEXT), userId: USER, guildId: null });
+      const field = edits[0].body.embeds![0].fields!.find((f) => f.name === 'Takeaway')!;
+      expect(field.value).toContain('Keep');
+      expect(field.value).not.toContain('](https://evil.example)');
+    });
+    it('posts the embed without the field when there is no takeaway, and never asks unless the run opted in', async () => {
+      world.subscriptions[USER] = [sub('compute_m_monthly')];
+      mocks.resultBytes.mockResolvedValue(new Uint8Array(gzipSync(REPORT_TEXT)));
+      mocks.storeShare.mockResolvedValue({ id: 'AbCdEfGhIjKlMnOpQrStUv' });
+      mocks.takeaway.mockResolvedValue(null);
+      await runAsked(done());
+      expect(edits[0].body.embeds![0].fields?.some((f) => f.name === 'Takeaway') ?? false).toBe(false);
+      edits.length = 0;
+      await run(done());
+      expect(mocks.takeaway).toHaveBeenCalledTimes(1);
+    });
+    it('posts without it when the model outlasts the 20 s deadline', async () => {
+      world.subscriptions[USER] = [sub('compute_m_monthly')];
+      mocks.resultBytes.mockResolvedValue(new Uint8Array(gzipSync(REPORT_TEXT)));
+      mocks.storeShare.mockResolvedValue({ id: 'AbCdEfGhIjKlMnOpQrStUv' });
+      mocks.takeaway.mockReturnValue(new Promise(() => {}));
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      try {
+        const running = runAsked(done());
+        // The report is inflated on the real thread pool: let the run reach the takeaway before the clock moves.
+        await vi.waitFor(() => expect(mocks.takeaway).toHaveBeenCalled());
+        await vi.advanceTimersByTimeAsync(20_000);
+        await running;
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(edits[0].body.embeds![0].fields?.some((f) => f.name === 'Takeaway') ?? false).toBe(false);
+      expect(logs).toContain(`discord: AI takeaway for job ${JOB} took over 20 s; posted without it`);
+    });
+  });
+
   it('falls back to the worker\'s summary line when the report cannot be read', async () => {
     world.subscriptions[USER] = [];
     await run(done());
@@ -785,12 +848,12 @@ describe('command registration (scripts/discord-register-commands.mjs)', () => {
   it('names the options the handler reads and keeps within Discord\'s limits', () => {
     type Cmd = { name: string; options: { name: string; required?: boolean; choices?: unknown[]; autocomplete?: boolean; type: number }[] };
     const sim = (COMMANDS as unknown as Cmd[]).find((c) => c.name === 'sim')!;
-    expect(sim.options.map((o) => o.name)).toEqual(['character', 'name', 'realm', 'region', 'fight', 'route', 'accuracy', 'share']);
+    expect(sim.options.map((o) => o.name)).toEqual(['character', 'name', 'realm', 'region', 'fight', 'route', 'accuracy', 'share', 'takeaway']);
     expect(sim.options.filter((o) => o.autocomplete).map((o) => o.name)).toEqual(['character', 'realm', 'route']);
-    expect(sim.options[7]).toMatchObject({ type: 5 });
+    expect(sim.options.slice(7)).toMatchObject([{ type: 5 }, { type: 5 }]);
     expect(sim.options.some((o) => o.required)).toBe(false);
     const compare = (COMMANDS as unknown as Cmd[]).find((c) => c.name === 'compare')!;
-    expect(compare.options.map((o) => o.name)).toEqual([...COMPARE_SLOTS, 'region', 'fight', 'route', 'accuracy', 'share']);
+    expect(compare.options.map((o) => o.name)).toEqual([...COMPARE_SLOTS, 'region', 'fight', 'route', 'accuracy', 'share', 'takeaway']);
     expect(compare.options.filter((o) => o.required).map((o) => o.name)).toEqual(['character1', 'character2']);
     // Discord refuses a required option after an optional one.
     expect(compare.options.findIndex((o) => !o.required)).toBe(2);

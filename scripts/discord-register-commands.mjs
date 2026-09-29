@@ -44,6 +44,7 @@ const RUN_OPTIONS = [
   ROUTE,
   { type: STRING, name: 'accuracy', description: 'How precise the result is (default Standard)', choices: choices(ACCURACIES) },
   { type: BOOLEAN, name: 'share', description: 'Post the finished result in this channel for everyone (default: only you see it)' },
+  { type: BOOLEAN, name: 'takeaway', description: 'Add a short AI takeaway. Sends the result to an AI model (default: off)' },
 ];
 // Autocomplete lists your cloud characters, then Armory characters Frostsim has seen; typed Name-Realm is looked up in `region`.
 const slot = (n, required) => ({

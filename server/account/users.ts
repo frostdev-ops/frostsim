@@ -68,6 +68,9 @@ export async function exportAccount(db: Db, userId: string) {
       order by s.created_at`,
     shares: await db`select id, title, bytes, created_at, expires_at, revoked_at from shares where user_id = ${userId} order by created_at`,
     integrationGrants: await db`select integration, created_at from integration_grants where user_id = ${userId} order by integration`,
+    aiCalls: await db`select kind, source, guild_id, model, input_tokens, output_tokens, cost_usd::float8 as cost_usd, created_at from ai_calls
+      where user_id = ${userId} order by created_at`,
+    aiMemory: await db`select character_key, note, created_at from ai_memory where user_id = ${userId} order by created_at`,
     auditLog: await db`select at, actor, action, detail from audit_log where user_id = ${userId} order by at, id`,
   };
 }

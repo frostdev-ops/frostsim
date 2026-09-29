@@ -1,4 +1,4 @@
-// Metered compute use (CLAUDE.md D14; DESIGN.md C6): compute_jobs is the ledger. A job counts once it is claimed; its core_seconds
+// Metered compute use (CLAUDE.md D14; DESIGN.md C6): compute_jobs is the ledger (and, for the cost cap only, ai_calls). A job counts once it is claimed; its core_seconds
 // are written when it finishes or is cancelled while running (claim to now), so a running job contributes 0 until then. A job
 // cancelled while still queued meters 0.
 
@@ -17,10 +17,14 @@ export async function usedCoreSeconds(db: Db, who: Who, from: Date, to: Date): P
   return Number(row.used);
 }
 
-/** USD our servers cost for the jobs created in [from, to): finished jobs at their cost_usd, a running job at the worst case reserved
- *  for it at claim (queue.ts costProblem). Same scopes as usedCoreSeconds. */
+/** USD our servers and the AI calls cost for the jobs and calls created in [from, to): finished jobs at their cost_usd, a running job at
+ *  the worst case reserved for it at claim (queue.ts costProblem), an AI call at its billed cost (or its reserve while it runs). Same
+ *  scopes as usedCoreSeconds. */
 export async function usedCostUsd(db: Db, who: Who, from: Date, to: Date): Promise<number> {
-  const [row] = await db`select coalesce(sum(case when status = 'running' then coalesce(reserve_usd, 0) else cost_usd end), 0)::float8 as used
-    from compute_jobs where ${scopeOf(db, who)} and status in ('running', 'done', 'failed', 'cancelled') and created_at >= ${from} and created_at < ${to}`;
+  const [row] = await db`select (
+    (select coalesce(sum(case when status = 'running' then coalesce(reserve_usd, 0) else cost_usd end), 0) from compute_jobs
+      where ${scopeOf(db, who)} and status in ('running', 'done', 'failed', 'cancelled') and created_at >= ${from} and created_at < ${to})
+    + (select coalesce(sum(cost_usd), 0) from ai_calls where ${scopeOf(db, who)} and created_at >= ${from} and created_at < ${to})
+  )::float8 as used`;
   return Number(row.used);
 }

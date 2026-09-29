@@ -1,6 +1,6 @@
 // Account-server configuration from the environment (CLAUDE.md D15). Values never leave this module except to the code that uses them; startup prints names only.
 
-export const FEATURES = ['accounts', 'billing', 'compute', 'shares', 'discord'] as const;
+export const FEATURES = ['accounts', 'billing', 'compute', 'shares', 'discord', 'ai'] as const;
 export type Feature = (typeof FEATURES)[number];
 
 export const ENV_NAMES = [
@@ -15,6 +15,7 @@ export const ENV_NAMES = [
   'AWS_REGION', 'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_AMI_ID', 'AWS_SUBNETS', 'AWS_SECURITY_GROUP_ID', 'AWS_INSTANCE_TYPES',
   'AWS_MAX_VCPU',
   'LOOTHING_TOKEN_SHA256', 'ENGINE_INDEX_PATH', 'ENGINE_COMPAT', 'WOW_API_ORIGIN',
+  'OPENROUTER_API_KEY', 'AI_MONTHLY_USD_CAP',
 ] as const;
 export type EnvName = (typeof ENV_NAMES)[number];
 
@@ -41,6 +42,8 @@ export const FEATURE_ENV: Record<Feature, EnvName[]> = {
   compute: R2_KEYS,
   shares: R2_KEYS,
   discord: ['DISCORD_PUBLIC_KEY', 'DISCORD_APPLICATION_ID'],
+  // The cap is required: a key with no ceiling on what it may spend must not answer.
+  ai: ['OPENROUTER_API_KEY', 'AI_MONTHLY_USD_CAP'],
 };
 
 export interface Config {

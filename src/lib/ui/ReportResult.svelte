@@ -45,6 +45,7 @@
   <aside class="report-sidebar">
     <section class="panel stack-sm"><h2>Report options</h2><button class="primary" onclick={onrerun}>Run again</button><button onclick={onedit}>Edit setup</button>
       <ShareReport {outcome} />
+      {#if import.meta.env.VITE_FEATURE_ACCOUNTS === true}{#await import('../account/ExplainPanel.svelte') then m}<m.default kind="report" report={() => outcome.getRawJson().text()} {character} />{/await}{/if}
       <details class="disclosure"><summary>Export report</summary><div class="stack-sm">
         <button class="sm" onclick={() => download('report.json', outcome.getRawJson())}>Download JSON</button>
         <button class="sm" onclick={() => download('profile.simc', new Blob([outcome.effectiveProfile || outcome.request.profile], { type: 'text/plain' }))}>Download profile</button>

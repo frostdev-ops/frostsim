@@ -5,6 +5,7 @@
   import { registerShortcuts } from '../lib/shortcuts.svelte'
   import { advancedSettings } from '../lib/settings.svelte'
   import { buildProfile } from '../lib/import/serialize'
+  import { parseAddonExport } from '../lib/import/character'
   import { PROTECTED_OPTIONS } from '../lib/simc/options'
   import { advancedCapability } from '../lib/simc/client'
   import { fmtInt, titleCase } from '../lib/format'
@@ -591,6 +592,7 @@
               }}
             >Copy Pawn string</button>
           </div>
+          {#if import.meta.env.VITE_FEATURE_ACCOUNTS === true}{#await import('../lib/account/ExplainPanel.svelte') then m}<m.default kind="weights" context={{ weights: weights.map((w) => ({ stat: w.stat, value: Number(w.value.toFixed(3)) })), normalized }} character={outcome.request.characterSnapshot ?? parseAddonExport(outcome.request.profile)} />{/await}{/if}
         {:else}
           <Banner kind="warn" title="No stat weights in this report">
             <p>

@@ -2,7 +2,7 @@
   // P09: catalog-driven source navigation; art tile per journal instance with bosses and drops at user-stated item level; P09.1 explains when loot unavailable; P09.8 no drop probability shown.
   import { onDestroy } from 'svelte'
   import { cancelActiveJob, engineBusy } from '../lib/simc/client'
-  import { GEAR_SLOTS, SLOT_LABELS, type GearSlot, type ItemInstance } from '../lib/import/character'
+  import { GEAR_SLOTS, SLOT_LABELS, parseAddonExport, type GearSlot, type ItemInstance } from '../lib/import/character'
   import { buildProfile } from '../lib/import/serialize'
   import { droptimizer, gainOverBaseline, indistinguishable, iterationCeiling, planForTargetError, runAdaptiveSearch } from '../lib/optimization'
   import type {
@@ -874,6 +874,7 @@
     {#if result}
       {#if result.incomplete && engineLog.length}<details class="disclosure"><summary>SimulationCraft log</summary><SimLog lines={engineLog} /></details>{/if}
       {#if shareOutcome && result.baseline}<div class="row"><ShareReport outcome={shareOutcome} transform={s => searchSnapshot(s, result!, 'Droptimizer')} /></div>{/if}
+      {#if import.meta.env.VITE_FEATURE_ACCOUNTS === true && result.baseline && shareOutcome}{#await import('../lib/account/ExplainPanel.svelte') then m}<m.default kind="droptimizer" rows={bars} character={shareOutcome.request.characterSnapshot ?? parseAddonExport(shareOutcome.request.profile)} />{/await}{/if}
       {@const notes = [...new Set([...result.warnings, ...planWarnings])]}
       <section class="stack" id="result">
         {#if result.incomplete}

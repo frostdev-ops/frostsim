@@ -18,6 +18,7 @@ import { HttpError, error, errorSummary, json } from './http';
 import { renderFightGif } from './fight-gif';
 import { rateLimit } from './ratelimit';
 import { tryRedis } from './redis';
+import { takeaway } from './ai';
 import { compareEmbed, plain, progressEmbed, simEmbed, type Embed } from './discord-embeds';
 import { MAX_SHARE_JSON, MAX_UPLOAD, storeShare } from './shares';
 import { sign } from './signed';
@@ -113,6 +114,8 @@ interface Pending {
   /** share:true: a finished result goes to the channel as a new message, not into the ephemeral reply. Holds the invoker's Discord
    *  id, shown there as a mention (allowed_mentions is empty, so it never pings). */
   share?: string;
+  /** takeaway:true: the invoker asked for a model-written takeaway field, which sends the result to OpenRouter (ai.ts, CLAUDE.md D17). */
+  takeaway?: boolean;
   message?: Message; after?: number;
   /** The progress last shown ("q<position>" or a percentage) and when. */
   shown?: string; shownAt?: number;
@@ -400,6 +403,7 @@ async function startRun(app: AppCtx, i: Interaction, discordId: string, received
   const pool = refusal ? ` ${refusal} It runs on your own plan.` : fellBack ? " This server's pool is used up, so it runs on your own plan." : '';
   // Before the token is stored: from then on the task may post the result, and a late "Queued" would overwrite it.
   const share = i.data?.options?.find((o) => o.name === 'share')?.value === true;
+  const wantsTakeaway = i.data?.options?.find((o) => o.name === 'takeaway')?.value === true;
   // One character's look is pre-rendered; a /compare's characters fight together in a GIF rendered for them (partyGif).
   const looks = picked.map((p) => fightGif(p.character.className, p.character.spec)).filter((l): l is string => !!l);
   const gif = !looks.length ? undefined
@@ -409,6 +413,7 @@ async function startRun(app: AppCtx, i: Interaction, discordId: string, received
     token, label, presetId: fight.presetId, fight: fight.fight, exp: receivedMs + TOKEN_TTL_S * 1000, kind: compare ? 'compare' : 'sim', owner: discordId,
     ...(gif ? { gif } : {}), accuracy,
     ...(ids.length > 1 ? { jobs: ids } : {}), ...(groups ? { note: roleNote(groups) } : {}), ...(share ? { share: discordId } : {}),
+    ...(wantsTakeaway ? { takeaway: true } : {}),
   };
   const saved = await tryRedis(app.redis, app.log,
     async (r) => (await r.set(replyKey(ids[0]), JSON.stringify(pending), 'EX', TOKEN_TTL_S)) === 'OK', false);
@@ -609,7 +614,12 @@ async function resultMessage(app: AppCtx, views: JobView[], p: Pending, forChann
   const embed = p.kind === 'compare'
     ? compareEmbed({ fight: fightOf(p), report, note: p.note, invoker, now })
     : simEmbed({ label: p.label, fight: fightOf(p), report, raw, invoker, now });
-  const link = await inTime(app, hostedLink(app, views[0], `${p.label} · ${fightOf(p)}`, text!), `hosted share for job ${views[0].id}`);
+  // Side by side, so the takeaway adds no worst-case wait to a task that posts replies one after another.
+  const [link, note] = await Promise.all([
+    inTime(app, hostedLink(app, views[0], `${p.label} · ${fightOf(p)}`, text!), `hosted share for job ${views[0].id}`),
+    p.takeaway ? inTime(app, takeaway(app, { report: raw, userId: views[0].userId, guildId: views[0].guildId }), `AI takeaway for job ${views[0].id}`) : null,
+  ]);
+  if (note) embed.fields = [...(embed.fields ?? []), { name: 'Takeaway', value: plain(note).slice(0, 1024) }];
   const buttons: unknown[] = [];
   if (link) buttons.push({ type: 2, style: 5, label: 'Full report', url: link });
   if (!forChannel && p.owner) buttons.push({ type: 2, style: 1, label: 'Post in channel', custom_id: `post:${views[0].id}` });
