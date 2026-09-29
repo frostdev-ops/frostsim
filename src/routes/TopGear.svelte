@@ -1007,6 +1007,7 @@
         return {
           id: state.candidate.id,
           label: state.candidate.id === 'baseline' ? 'Current gear' : changesOf(state),
+          changes: changeList(state),
           mean: usable ? m.mean : undefined,
           margin: usable ? (m.margin ?? undefined) : undefined,
           iterations: usable ? m.iterations : undefined,
@@ -1034,17 +1035,18 @@
   )
 
   function changesOf(state: (typeof measured)[number]): string {
+    return changeList(state).map((c) => `${c.slot}: ${c.name}`).join(', ') || state.candidate.provenance.label
+  }
+
+  function changeList(state: (typeof measured)[number]): { slot: string; name: string }[] {
     const gear = state.candidate.delta.gear
     const changes = [...(gear?.entries() ?? [])]
-      .map(([slot, item]) => {
-        const to = item ? display(item as ItemInstance, app.resolved).name : 'empty'
-        return `${SLOT_LABELS[slot]}: ${to}`
-      })
+      .map(([slot, item]) => ({ slot: SLOT_LABELS[slot], name: item ? display(item as ItemInstance, app.resolved).name : 'empty' }))
     for (const [kind, option] of Object.entries(state.candidate.delta.consumables ?? {})) {
-      changes.push(`${titleCase(kind)}: ${titleCase(option)}`)
+      changes.push({ slot: titleCase(kind), name: titleCase(option) })
     }
-    if (state.candidate.delta.talents) changes.push(`Talents: ${lastSearch?.loadouts.find((l) => l.talents === state.candidate.delta.talents)?.name ?? 'Custom build'}`)
-    return changes.join(', ') || state.candidate.provenance.label
+    if (state.candidate.delta.talents) changes.push({ slot: 'Talents', name: lastSearch?.loadouts.find((l) => l.talents === state.candidate.delta.talents)?.name ?? 'Custom build' })
+    return changes
   }
 </script>
 

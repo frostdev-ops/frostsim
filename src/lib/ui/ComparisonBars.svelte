@@ -24,6 +24,8 @@
     indistinguishable?: boolean
     /** Why this row has no number: 'missing' | 'blocked' | a status string. */
     status?: string
+    /** One line per change, stacked in place of the label. `label` stays the text form for the table. */
+    changes?: { slot: string; name: string }[]
     /** Rendered under the label, e.g. which slots changed. */
     detail?: string
     /** Marks a candidate that uses an item the character does not own. */
@@ -82,6 +84,8 @@
     for (const r of rows) (seen.has(r.id) ? dupes : seen).add(r.id)
     return [...dupes]
   })
+  /** Widest icon strip on screen; every row reserves that much so the names start in one column. */
+  const iconSlots = $derived(Math.max(baselineShown.length, ...shown.map((r) => r.icons?.length ?? 0)))
   const leader = $derived(ranked[0])
   /** Crown rule tested in ranking.ts. */
   const hasWinner = $derived(winnerOf(leader, baseline.mean))
@@ -89,11 +93,11 @@
 </script>
 
 <div class="compare">
-  <ol class="bars" style:--zero="{zeroPct}%">
+  <ol class="bars" style:--zero="{zeroPct}%" style:--icons={iconSlots}>
     <li class="row baseline-row">
       <div class="label">
-        {#if baselineShown.length}
-          <GearStrip items={baselineShown} size={36} still inline />
+        {#if iconSlots}
+          <div class="icons">{#if baselineShown.length}<GearStrip items={baselineShown} size={36} still inline />{/if}</div>
         {/if}
         <span class="truncate name">{baseline.label}</span>
         {#if baseline.equipped !== false}<span class="chip">equipped</span>{/if}
@@ -126,10 +130,20 @@
           {#if hasWinner && row.id === leader?.id}
             <span class="crown" aria-hidden="true">◆</span>
           {/if}
-          {#if row.icons?.length}
-            <GearStrip items={row.icons} resolvedItems={row.resolvedItems ? new Map(row.resolvedItems.map(item => [item.instanceId, item])) : undefined} size={36} changed={row.changedSlots ?? []} still inline />
+          {#if iconSlots}
+            <div class="icons">
+              {#if row.icons?.length}
+                <GearStrip items={row.icons} resolvedItems={row.resolvedItems ? new Map(row.resolvedItems.map(item => [item.instanceId, item])) : undefined} size={36} changed={row.changedSlots ?? []} still inline />
+              {/if}
+            </div>
           {/if}
-          {#if onselect}
+          {#if row.changes?.length && !onselect}
+            <span class="name changes" title={row.label}>
+              {#each row.changes as change, j (j)}
+                <span class="truncate"><span class="slot">{change.slot}</span>{change.name}</span>
+              {/each}
+            </span>
+          {:else if onselect}
             <button class="pick truncate name" onclick={() => onselect(row)}>{row.label}</button>
           {:else if row.item}
             <ItemLink itemId={row.item.itemId} name={row.label} resolved={row.item} />
@@ -282,7 +296,7 @@
   /* Dense rows: height of gear thumbnails they carry, nothing more. */
   .row {
     display: grid;
-    grid-template-columns: minmax(14rem, 38ch) minmax(7rem, 1fr) minmax(8.5rem, auto);
+    grid-template-columns: minmax(16rem, 46ch) minmax(7rem, 1fr) minmax(8.5rem, auto);
     align-items: center;
     gap: var(--s3);
     padding: 0.2rem var(--s2);
@@ -328,6 +342,11 @@
 
   .label { display: flex; align-items: center; gap: 0.4rem; min-width: 0; font-size: var(--fs-sm); }
   .label .name { flex: 0 1 auto; }
+  /* Room for the widest strip plus the changed-slot ring, so names line up. */
+  .icons { flex: none; width: calc(var(--icons) * 36px + (var(--icons) - 1) * 0.28rem + 6px); }
+  .changes { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+  .slot { display: inline-block; min-width: 4.6rem; color: var(--text-muted); font-size: var(--fs-xs); margin-right: 0.4em; }
+  .label .chip { flex: none; }
   .crown { color: var(--good); font-size: 0.8em; filter: drop-shadow(0 0 6px var(--good)); animation: crown 2.4s ease-in-out infinite; }
   @keyframes crown { 50% { filter: drop-shadow(0 0 2px var(--good)); } }
   .pick {
@@ -418,8 +437,10 @@
   .baseline-cells { background: var(--surface-2); }
 
   @media (max-width: 44rem) {
+    /* Phone: the names get the full width, the bar and figures share the line below. */
     .row { grid-template-columns: minmax(0, 1fr) auto; }
-    .track { grid-column: 1 / -1; order: 3; }
+    .label { grid-column: 1 / -1; }
+    .track { grid-column: auto; order: 0; }
     .figures { justify-content: flex-end; }
   }
 </style>
