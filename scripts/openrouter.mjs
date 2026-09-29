@@ -37,11 +37,12 @@ async function post(url, key, body, { fetchFn = fetch, signal, referer, what }) 
  * One chat completion. `data_collection: deny` keeps user reports off providers that train on them. `maxPrice` ({prompt, completion} in USD per
  * million tokens) makes the router pick only a model under it, which bounds one turn's cost whichever model it chooses (probed 2026-09-29).
  * `maxTokens` includes a reasoning model's hidden reasoning: 800 cut a real answer off mid-sentence. `finish` is `length` when that happens.
+ * `reasoning` is an effort level (`none` to `xhigh`) for models that take one.
  * `cost` is USD as OpenRouter billed it, or null when the response carried none (callers then keep their reserve).
  */
-export async function chat({ key, model = AGENT_MODEL, messages, tools, toolChoice, maxTokens = 800, maxPrice, ...opts }) {
+export async function chat({ key, model = AGENT_MODEL, messages, tools, toolChoice, maxTokens = 800, maxPrice, reasoning, ...opts }) {
   const j = await post(CHAT_URL, key, { model, messages, max_tokens: maxTokens, provider: { data_collection: 'deny', ...(maxPrice ? { max_price: maxPrice } : {}) },
-    ...(tools ? { tools, tool_choice: toolChoice ?? 'auto' } : {}) }, { ...opts, what: 'chat' });
+    ...(reasoning ? { reasoning: { effort: reasoning } } : {}), ...(tools ? { tools, tool_choice: toolChoice ?? 'auto' } : {}) }, { ...opts, what: 'chat' });
   const message = j?.choices?.[0]?.message;
   if (!message) throw new Error('OpenRouter chat: no message in the response');
   return { message, model: j.model, finish: j.choices[0].finish_reason, cost: cost(j.usage), tokens: { input: j.usage?.prompt_tokens ?? 0, output: j.usage?.completion_tokens ?? 0 } };

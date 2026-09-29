@@ -113,7 +113,7 @@ describe('explain: what is sent and what is kept', () => {
     const run = setup({}, [{ content: 'ok' }]);
     await run.send(report());
     const system: string = run.chats()[0].messages[0].content;
-    for (const rule of [/is a simulator/, /not the player's choices, so never give rotation/, /only when scale factors are in the data/, /never say a slot is missing one/, /ignore mana overflow/]) expect(system).toMatch(rule);
+    for (const rule of [/is a simulator/, /not the player's choices, so never give rotation/, /only when scale factors are in the data/, /say nothing about slots being enchanted or gemmed, complete or missing/, /not double it/, /trust it rather than re-deriving/, /needs no confirmation: those were measured/, /NOT one of the options in the data/, /ignore mana overflow/, /Confirm before you advise/, /never suggest a higher rank unless a lookup shows it exists/, /ItemSparse/]) expect(system).toMatch(rule);
   });
 
   it('refuses a body that is not gzip JSON of a known kind, without an upstream call or a ledger row', async () => {
@@ -168,6 +168,27 @@ describe('explain: a hostile report', () => {
     const small = setup({}, [{ content: 'ok' }]);
     await small.send(report());
     expect(JSON.parse(small.chats()[0].messages[1].content).report).not.toHaveProperty('omittedCharacters');
+  });
+});
+
+describe('explain: operator settings', () => {
+  it('uses a fixed model, its reasoning effort, the per-call cap and answer size, and drops the router price ceiling', async () => {
+    const tuned = loadConfig({ ...env, AI_MODEL: 'anthropic/claude-sonnet-5.5', AI_REASONING_EFFORT: 'high', AI_CALL_USD_CAP: '0.2', AI_MAX_TOKENS: '6000' });
+    const run = setup({}, [{ content: 'ok' }], tuned);
+    expect((await run.send(report())).status).toBe(200);
+    const [sent] = run.chats();
+    expect(sent).toMatchObject({ model: 'anthropic/claude-sonnet-5.5', reasoning: { effort: 'high' }, max_tokens: 6000 });
+    expect(sent.provider).toEqual({ data_collection: 'deny' });
+    expect(run.ledger('insert')[0].values[4]).toBe(0.2);
+  });
+  it('ignores a malformed model, an unknown effort and non-numeric limits, keeping the router and its defaults', async () => {
+    const odd = loadConfig({ ...env, AI_MODEL: 'not a model!', AI_REASONING_EFFORT: 'turbo', AI_CALL_USD_CAP: 'lots', AI_MAX_TOKENS: '-5' });
+    const run = setup({}, [{ content: 'ok' }], odd);
+    await run.send(report());
+    const [sent] = run.chats();
+    expect(sent).toMatchObject({ model: 'typesafe/jev-router', max_tokens: 2000, provider: { max_price: { prompt: 3, completion: 15 } } });
+    expect(sent).not.toHaveProperty('reasoning');
+    expect(run.ledger('insert')[0].values[4]).toBe(0.05);
   });
 });
 

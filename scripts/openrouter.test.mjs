@@ -45,6 +45,12 @@ describe('chat', () => {
     expect(reply.last.body).toMatchObject({ tools, tool_choice: 'none' });
     expect(out.cost).toBeNull();
   });
+  it('sends a reasoning effort as reasoning.effort, and only when one is given', async () => {
+    await chat({ key: KEY, messages: [], reasoning: 'high', fetchFn: reply(ok) });
+    expect(reply.last.body.reasoning).toEqual({ effort: 'high' });
+    await chat({ key: KEY, messages: [], fetchFn: reply(ok) });
+    expect(reply.last.body).not.toHaveProperty('reasoning');
+  });
   it('throws without echoing the response body, and on a response with no message', async () => {
     await expect(chat({ key: KEY, messages: [], fetchFn: reply({ error: { message: `bad ${KEY}` } }, 402) })).rejects.toThrow(/^OpenRouter chat: HTTP 402$/);
     await expect(chat({ key: KEY, messages: [], fetchFn: reply({ choices: [] }) })).rejects.toThrow(/no message/);
