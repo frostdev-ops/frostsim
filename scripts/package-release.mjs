@@ -78,8 +78,8 @@ const hashTree = (dir) => {
 };
 
 // Pages: 25 MiB limit; engine ~60 MB packaged under engine/ from asset host (P14.1,P14.2); worker shim+manifest in app (emscripten derives paths, D10).
-// Published engine packs (engine/versions/, engine-versions.json) belong to the updater's output, never an app release.
-const ENGINE_BINARY = /^engine\/(fallback\/)?simc\.(js|wasm)$|^engine\/versions(\/|$)|^engine-versions\.json$/;
+// Published engine packs and both registries belong to the updater's output, never an app release.
+const ENGINE_BINARY = /^engine\/(ptr\/)?(fallback\/)?simc\.(js|wasm)(\.(gz|br))?$|^engine\/versions(\/|$)|^engine-(versions|channels)\.json(\.(gz|br))?$/;
 const PAGES_ASSET_LIMIT = 25 * 1024 * 1024;
 
 const dist = join(root, 'dist');
@@ -107,13 +107,19 @@ if (existsSync(dist)) {
 }
 
 const engines = {};
-for (const [variant, dir] of [['threaded', 'public/engine'], ['fallback', 'public/engine/fallback']]) {
+for (const [variant, dir, engineChannel] of [
+  ['threaded', 'public/engine', 'live'],
+  ['fallback', 'public/engine/fallback', 'live'],
+  ['ptr-threaded', 'public/engine/ptr', 'ptr'],
+  ['ptr-fallback', 'public/engine/ptr/fallback', 'ptr'],
+]) {
   const manifestPath = join(root, dir, 'manifest.json');
   if (!existsSync(manifestPath)) {
-    engines[variant] = { status: 'missing', note: `no manifest at ${dir}` };
+    engines[variant] = { status: 'missing', engineChannel, note: `no manifest at ${dir}` };
     continue;
   }
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  if ((manifest.engineChannel ?? 'live') !== engineChannel) throw new Error(`release: ${variant} manifest has the wrong engine channel`);
   const missing = Object.keys(manifest.files).filter((f) => !existsSync(join(root, dir, f)));
   // Binaries gitignored; release assembles on machines with manifest but no artifact; record identity, copy what exists.
   if (missing.length === 0) {
@@ -127,9 +133,9 @@ for (const [variant, dir] of [['threaded', 'public/engine'], ['fallback', 'publi
       const actual = sha256(join(out, 'engine', variant, f));
       return [f, { ...manifest.files[f], verifiedSha256: actual, matches: actual === manifest.files[f].sha256 }];
     }));
-    engines[variant] = { status: 'packaged', manifest, files: verified };
+    engines[variant] = { status: 'packaged', engineChannel, manifest, files: verified };
   } else {
-    engines[variant] = { status: 'manifest only', manifest, missingFiles: missing };
+    engines[variant] = { status: 'manifest only', engineChannel, manifest, missingFiles: missing };
   }
   console.log(`release: engine ${variant}: ${engines[variant].status}`);
 }
@@ -311,7 +317,7 @@ const SOURCE_TREES = ['patches', 'scripts', 'functions'];
 // Never copy secrets file or local build artefact into source tree.
 const excludeFromSource = (src) => {
   const name = src.split('/').pop() ?? '';
-  return /^(\.dev\.vars(\..*)?|\.env(\..*)?|node_modules|\.DS_Store)$/.test(name) && name !== '.env.example';
+  return /^(\.dev\.vars(\..*)?|\.env(\..*)?|node_modules|\.DS_Store|deploy-vps\.sh|install-engine-updater\.sh|run-engine-update\.sh)$/.test(name) && name !== '.env.example';
 };
 for (const dir of SOURCE_TREES) {
   if (!existsSync(join(root, dir))) continue;
