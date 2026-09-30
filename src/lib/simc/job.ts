@@ -651,7 +651,7 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
       engineWorker = starts
         ? new SequenceWorker(starts, (i) => engineFor(groups![i].request)(capability.artifact, capability.engineDir)) as unknown as Worker
         : (deps.createEngineWorker ?? remote ?? defaultDeps.createEngineWorker)(capability.artifact, capability.engineDir)
-      wireEngineWorker(req, requestedIds, capability)
+      wireEngineWorker(req, requestedIds, capability, rules)
       armTimers(limits)
 
       // Stay in acquiring until worker says bytes in hand; download dominates cold start.
@@ -740,6 +740,7 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
     req: SimRequest,
     requestedIds: string[],
     capability: Extract<EngineCapability, { ok: true }>,
+    rules: SeasonRules | null | undefined,
   ): void {
     const worker = engineWorker!
 
@@ -856,6 +857,10 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
 
         case 'error': {
           const code = typeof msg.code === 'string' ? msg.code : 'engine'
+          if (code === 'profilesets-unsupported' && managedFallback(req, capability)) {
+            void startComparison(req, capability, rules).catch(err => fail(err, err instanceof Error && err.name === 'AbortError' ? 'cancelled' : 'error'))
+            return
+          }
           if (code === 'report-missing' && sawNothingToSim) {
             fail(
               new SimEngineError(

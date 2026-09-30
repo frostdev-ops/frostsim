@@ -462,12 +462,27 @@ describe('remote engine fallback', () => {
     expect(engineBusy()).toBe(false)
   })
 
-  it('refuses profilesets instead of replaying them on the fallback build', async () => {
+  it('replays managed candidates sequentially on the fallback build', async () => {
     const s = server()
     s.submit = 402
     const run = cloudRun(s, request({ profilesets: [{ id: 'c-1', lines: ['talents=abc'] }] }), fallbackCapability)
-    await expect(run.handle.result).rejects.toMatchObject({ code: 'profilesets-unsupported' })
-    expect(spawned).toHaveLength(0)
+    for (let i = 0; i < 2; i++) {
+      await vi.advanceTimersByTimeAsync(0)
+      await vi.waitFor(() => expect(spawned).toHaveLength(i + 1))
+      expect(spawned[i].sent[0].profile).not.toContain('profileset.')
+      spawned[i].finish()
+    }
+    const outcome = await run.handle.result
+    expect(outcome.report.comparisonStrategy).toBe('sequential')
+    expect(outcome.report.profilesets).toMatchObject([{ name: 'c-1', mean: report.sim.players[0].collected_data.dps.mean }])
+    expect(spawned[1].sent[0].profile).toContain('talents=abc')
+    expect(s.calls.filter(call => call.method === 'POST')).toHaveLength(1)
+    const raw = JSON.parse(await outcome.getRawJson().text())
+    expect(raw.sim).toEqual(report.sim)
+    expect(raw.frostsim_comparison.strategy).toBe('sequential')
+    expect(parseReport(raw).profilesets).toEqual(outcome.report.profilesets)
+    expect(outcome.report.logs.some(note => note.kind === 'note' && note.message.includes('baseline run'))).toBe(true)
+    expect(run.events.filter(event => event.state === 'complete')).toHaveLength(1)
     expect(engineAvailability().available).toBe(true)
   })
 })
@@ -722,13 +737,39 @@ describe('remote engine eligibility', () => {
     expect(run.warnings()).toEqual([])
   })
 
-  it('refuses profilesets on an unpublished fallback build before taking the engine', async () => {
+  it('runs managed candidates on an unpublished fallback without a cloud submission', async () => {
     const s = server()
     const run = cloudRun(s, request({ profilesets: [{ id: 'c-1', lines: ['talents=abc'] }] }), { ...fallbackCapability, engineDir: '/engine/fallback/' })
-    await expect(run.handle.result).rejects.toMatchObject({ code: 'profilesets-unsupported' })
-    expect(run.events.map((e) => e.state)).not.toContain('acquiring')
-    expect(run.warnings()).toEqual([])
+    for (let i = 0; i < 2; i++) {
+      await vi.advanceTimersByTimeAsync(0)
+      expect(spawned).toHaveLength(i + 1)
+      spawned[i].finish()
+    }
+    await expect(run.handle.result).resolves.toMatchObject({ report: { comparisonStrategy: 'sequential' }, profilesetStatus: { completed: ['c-1'], missing: [] } })
+    expect(run.events.map((e) => e.state)).toContain('acquiring')
+    expect(run.warnings().some(warning => warning.includes('one at a time'))).toBe(true)
     expect(s.calls).toHaveLength(0)
+
+    // One deadline covers baseline and all candidates; cancellation belongs to the outer job handle.
+    const bounded = cloudRun(s, request({ profilesets: [{ id: 'c-1', lines: ['talents=abc'] }], limits: { deadlineMs: 100 } }), { ...fallbackCapability, engineDir: '/engine/fallback/' })
+    const expired = expect(bounded.handle.result).rejects.toMatchObject({ phase: 'deadline' })
+    await vi.advanceTimersByTimeAsync(0)
+    spawned[2].finish()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(spawned).toHaveLength(4)
+    await vi.advanceTimersByTimeAsync(100)
+    await expired
+    expect(spawned[3].terminated).toBeGreaterThan(0)
+    expect(bounded.events.filter(event => event.state === 'error')).toHaveLength(1)
+    expect(engineBusy()).toBe(false)
+
+    const cancelled = cloudRun(s, request({ profilesets: [{ id: 'c-1', lines: ['talents=abc'] }] }), { ...fallbackCapability, engineDir: '/engine/fallback/' })
+    const aborted = expect(cancelled.handle.result).rejects.toMatchObject({ name: 'AbortError' })
+    await vi.advanceTimersByTimeAsync(0)
+    cancelled.handle.cancel()
+    await aborted
+    expect(cancelled.events.filter(event => event.state === 'cancelled')).toHaveLength(1)
+    expect(spawned.at(-1)?.terminated).toBeGreaterThan(0)
   })
 
   it('terminate is idempotent, stops polling, and deletes only an unfinished job', async () => {
