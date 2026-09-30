@@ -9,6 +9,7 @@ import {
 } from './candidates';
 import { DEFAULT_STAGE_PLAN, runStagedSearch, type RunBatch, type ResultCache, type SearchLedger } from './runner';
 import type { Accuracy, Candidate, OptimizationProgress, OptimizationResult, StagePlan } from './types';
+import { VAULT_SOCKET_REWARD_ID, vaultSocketVariant } from '../catalog/vaultRewards';
 
 /** User-picked options, as UI collects them. */
 export interface Selection {
@@ -26,6 +27,8 @@ export interface Selection {
   embellishments?: Partial<Record<GearSlot, number[]>>;
   /** Set bonuses the result must keep. A combination that breaks one is rejected. */
   requiredSets?: SetBonusRequirement[];
+  /** One token-bought socket, mutually exclusive with claiming a Vault item. */
+  vaultSocketGemId?: number;
 }
 
 export interface WorkEstimate {
@@ -167,6 +170,15 @@ export function selectionToDimensions(selection: Selection, opts: TopGearOptions
     dimensions.push({ key: `slot:${slot}`, kind: 'gear', slot, options });
   }
 
+  if (selection.vaultSocketGemId) {
+    for (const slot of ['head', 'wrist', 'waist'] as const) {
+      for (const item of slots[slot] ?? [opts.baselineGear.get(slot)].filter((item): item is ItemInstance => !!item)) {
+        const socketed = vaultSocketVariant(opts.catalog, item, selection.vaultSocketGemId, opts.playerLevel);
+        if (socketed) vaultOptions.set(socketed.instanceId, { key: socketed.instanceId,
+          label: `Tokens: socket on ${item.addonName ?? slot}`, item: socketed, cost: { unknownCosts: ['6 Thalassian Tokens of Merit'] } });
+      }
+    }
+  }
   if (vaultOptions.size) {
     dimensions.push({ key: 'vault', kind: 'gear', options: [{ key: 'none', label: '' }, ...vaultOptions.values()] });
   }
@@ -244,6 +256,7 @@ export function estimateWork(selection: Selection, opts: TopGearOptions): WorkEs
   const vaultChoices = new Set(Object.values(selection.slots).flatMap((items) => items ?? [])
     .filter((item) => item.vaultRewardId || item.source === 'vault')
     .map((item) => item.vaultRewardId ?? item.originalInstanceId ?? item.instanceId));
+  if (dimensions.some(dimension => dimension.options.some(option => option.item?.vaultRewardId === VAULT_SOCKET_REWARD_ID))) vaultChoices.add(VAULT_SOCKET_REWARD_ID);
   const minimumSurvivors = vaultChoices.size ? vaultChoices.size + 1 : 1;
 
   // Only empty selection is exact; variants can be illegal or identical to baseline.

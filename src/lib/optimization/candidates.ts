@@ -6,6 +6,7 @@ import { INVTYPE } from '../catalog/enums';
 import type { Catalog } from '../catalog/catalog';
 import { GEAR_SLOTS, type GearSlot, type ItemInstance, type ResolvedItem } from '../catalog/types';
 import type { Candidate, CandidateCost, CandidateDelta } from './types';
+import { VAULT_SOCKET_REWARD_ID } from '../catalog/vaultRewards';
 
 /** One axis of the search: the alternatives selected for a single decision. */
 export interface Dimension {
@@ -311,7 +312,8 @@ function buildCandidate(
     }
     gear.set(slot, {
       ...target,
-      gemIds: attach.gemIds ?? target.gemIds,
+      // The currency alternative buys the chosen gem; other gem loadouts describe owned/gear choices.
+      gemIds: target.vaultRewardId === VAULT_SOCKET_REWARD_ID ? target.gemIds : attach.gemIds ?? target.gemIds,
       enchantId: attach.enchantId ?? target.enchantId,
       bonusIds,
       extra,
