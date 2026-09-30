@@ -302,6 +302,28 @@ describe('profilesets', () => {
     // mean_error is already a confidence margin: mean_stddev * confidence_estimator.
     expect(first.meanError).toBeCloseTo(955.4810743136816 * 1.9599639854088815, 6)
     expect(first.iterations).toBe(30)
+    const { median: _median, firstQuartile: _firstQuartile, thirdQuartile: _thirdQuartile, ...measured } = first
+    const envelope = {
+      schemaVersion: 1, strategy: 'sequential',
+      results: [{ name: measured.name, mean: measured.mean, min: measured.min, max: measured.max, iterations: measured.iterations,
+        stddev: measured.stdDev, mean_stddev: measured.meanStdDev, mean_error: measured.meanError }],
+      warnings: [], problems: [], targetReached: true,
+    }
+    const sequential = parseReport({ ...realReport, frostsim_comparison: envelope })
+    expect(sequential.profilesets[0]).toMatchObject(measured)
+    expect(sequential.comparisonStrategy).toBe('sequential')
+    expect(sequential.options).toEqual(parseReport(realReport).options)
+    expect(sequential.warnings.some(warning => warning.includes('baseline run'))).toBe(true)
+    expect(sequential.logs).toContainEqual({ level: 'frostsim', kind: 'note', message: sequential.warnings.find(warning => warning.includes('baseline run')) })
+    for (const malformed of [
+      { ...envelope, schemaVersion: 2 }, { ...envelope, strategy: 'profilesets' },
+      { ...envelope, results: null }, { ...envelope, results: [null] },
+      { ...envelope, results: [...envelope.results, ...envelope.results] },
+      { ...envelope, results: [{ ...envelope.results[0], mean: NaN }] },
+      { ...envelope, results: [{ ...envelope.results[0], players: [] }] },
+      { ...envelope, warnings: false }, { ...envelope, targetReached: 'true' },
+    ]) expect(() => parseReport({ ...realReport, frostsim_comparison: malformed })).toThrow(ReportFormatError)
+    expect(() => parseReport({ ...withProfilesets(), frostsim_comparison: envelope })).toThrow(/conflicting/)
   })
 
   it('round-trips ids verbatim, including ones with spaces and slashes', () => {

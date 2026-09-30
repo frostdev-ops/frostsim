@@ -194,6 +194,8 @@ export interface JobDeps {
   now?: () => number
   /** Milliseconds engine worker gets to reap pthreads before blind terminate; 0 orphans threads (tests only). */
   threadReapGraceMs?: number
+  /** Frozen selected pack rules for a managed sequence's individual runs. */
+  seasonRules?: SeasonRules | null
 }
 
 const defaultDeps: Required<Pick<JobDeps, 'createEngineWorker' | 'createReportWorker' | 'now'>> = {
@@ -367,6 +369,7 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
   let effectiveProfile = ''
   let effectiveArgs: readonly string[] = []
   let finishing = false
+  let comparison: RunHandle | null = null
   let resolveResult!: (outcome: SimOutcome) => void
   let rejectResult!: (err: unknown) => void
   let inputWarnings: string[] = []
@@ -419,6 +422,8 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
   function armStall(): void {
     clearTimeout(stallTimer)
     stallTimer = undefined
+    // The sequential runner's individual jobs own their stall/init timers; this handle keeps the whole deadline.
+    if (comparison) return
     const window = stallWindow()
     if (window === null) return
     const elapsed = now() - lastMessageAt
@@ -527,6 +532,7 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
   function fail(err: unknown, terminal: 'error' | 'cancelled' = 'error'): void {
     if (settled) return
     settled = true
+    comparison?.cancel()
     cleanup()
     emit(terminal)
     rejectResult(err)
@@ -592,12 +598,13 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
 
       const issues = validateRequest(req, capability.maxThreads)
       if (issues.length) throw new SimValidationError(issues)
-      const rules = deps.capability ? undefined : await loadRules(capability)
+      const rules = deps.seasonRules !== undefined ? deps.seasonRules : deps.capability ? undefined : await loadRules(capability)
       if (settled) return
 
       const requestedIds = (req.profilesets ?? []).map((p) => p.id)
       // A cloud run has profilesets; remote.ts refuses them itself if it has to replay on this build.
       if (requestedIds.length && !capability.profilesets && !remote) {
+        if (managedFallback(req, capability)) return await startComparison(req, capability, rules)
         throw new SimEngineError(
           'profilesets-unsupported',
           'This engine build has no profileset support, so multi-candidate runs cannot run on it.',
@@ -655,8 +662,35 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
             : undefined,
       })
     } catch (err) {
-      fail(err)
+      fail(err, err instanceof Error && err.name === 'AbortError' ? 'cancelled' : 'error')
     }
+  }
+
+  function managedFallback(req: SimRequest, capability: Extract<EngineCapability, { ok: true }>): boolean {
+    return capability.artifact === 'fallback' && (req.mode ?? 'guided') === 'guided' && !!req.profilesets?.length &&
+      !Object.values(req.slots ?? {}).some(value => typeof value === 'string' && value.trim()) && !req.htmlReport
+  }
+
+  async function startComparison(req: SimRequest, capability: Extract<EngineCapability, { ok: true }>, rules: SeasonRules | null | undefined): Promise<void> {
+    // Each real job owns/relinquishes the engine slot. The outer handle owns the whole comparison's cancellation/deadline.
+    clearTimeout(initTimer)
+    clearTimeout(stallTimer)
+    clearTimeout(deadlineTimer)
+    const limits = { ...DEFAULT_LIMITS, ...req.limits }
+    deadlineTimer = setTimeout(() => fail(new SimTimeoutError('deadline', limits.deadlineMs)), limits.deadlineMs)
+    const { runSequentialComparison } = await import('./compare')
+    if (settled) return
+    engineWorker?.terminate()
+    engineWorker = null
+    releaseBudget()
+    comparison = runSequentialComparison(req, event => {
+      if (settled) return
+      const { jobId: _jobId, state: next, ...extra } = event
+      if (next === 'complete') emit('analyzing', extra)
+      else if (!TERMINAL.has(next)) emit(next, extra)
+    }, { ...deps, capability, seasonRules: rules, createEngineWorker: deps.createEngineWorker ?? defaultDeps.createEngineWorker })
+    const outcome = await comparison.result
+    if (!settled) succeed(outcome)
   }
 
   /** Load time and whole-run deadline for the engine starting now; a cloud replay starts this browser's engine afresh. */

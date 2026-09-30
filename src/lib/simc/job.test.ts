@@ -679,6 +679,13 @@ describe('failure paths', () => {
       capability: { ...capability, profilesets: false } as EngineCapability,
     })
     await expect(handle.result).rejects.toMatchObject({ code: 'profilesets-unsupported' })
+    const raw = runJob(request({ mode: 'raw', profilesets: [{ id: 'c-1', lines: ['x=1'] }] }), undefined, {
+      createEngineWorker: () => new FakeEngineWorker() as unknown as Worker,
+      createReportWorker: () => new FakeReportWorker() as unknown as Worker,
+      threadReapGraceMs: 0,
+      capability: { ...capability, artifact: 'fallback', maxThreads: 1, profilesets: false },
+    })
+    await expect(raw.result).rejects.toMatchObject({ code: 'profilesets-unsupported' })
   })
 
   it('surfaces an engine failure with its code', async () => {

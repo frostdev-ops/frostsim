@@ -520,8 +520,14 @@ export function maxThreads(): number {
 }
 
 export function profilesetsSupported(): boolean {
-  // No manifest = unknown; false prevents UI building run fallback can't execute (D4).
+  // Native binary support; the fallback compiles profilesets out (D4).
   return app.capability?.ok ? app.capability.profilesets : false
+}
+
+/** Managed candidate tools can also run independent jobs sequentially on the fallback. */
+export function candidateComparisonsSupported(): boolean {
+  const capability = app.capability
+  return !!capability?.ok && (capability.profilesets || capability.artifact === 'fallback')
 }
 
 // --- characters --------------------------------------------------------------

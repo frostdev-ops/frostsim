@@ -1,7 +1,12 @@
 // Real worker runs production parser; boundary tests exercise actual transfer path, not inline call.
 
 import { parentPort } from 'node:worker_threads'
-import { parseReport } from '../report.ts'
+import { fileURLToPath } from 'node:url'
+import { build } from 'esbuild'
+
+// Match the production report worker's bundled imports; Node's TS loader does not resolve extensionless dependencies.
+const bundled = await build({ entryPoints: [fileURLToPath(new URL('../report.ts', import.meta.url))], bundle: true, write: false, platform: 'node', format: 'esm' })
+const { parseReport } = await import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString('base64')}`)
 
 parentPort.on('message', ({ jobId, kind = 'summary', bytes }) => {
   let response
