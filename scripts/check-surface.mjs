@@ -21,7 +21,7 @@ export const BASELINE = {
   'functions/api/_lib/security.ts': '9c8960a2b4284a09c577decf7fad6607a2ec5907ef95e3f50e6ce84e6da17f18',
   'functions/api/_lib/upstream.ts': 'aabe952a193f843a4d2773dea425393ad6c793a64d4daed34ef76465c6fe32ac',
   'deploy/systemd/frostsim-api.service': 'cc8e21197aefe829be407090611f0916e64c9edafaa7ff0f4f8b8ed53802eb01',
-  'public/sw.js': '20fadef624d62aa32da557066a35d83ec7ffa35416274d5cd4433d00363fba5c',
+  'public/sw.js': 'b4a4a95caf6c9dfb6b4035fc09cc3e0f29d79e7d6d04b39dda1ed1dc5fcc6040',
   // Hashed with the account-server block stripped: that block is the only change the vhost may gain.
   'deploy/nginx/sim.frostdev.io.conf': 'e71dd1f842602bf5bf22475d2ddf948bb588dea5d6fe2a8af491a20edfb6d1ab',
 };

@@ -165,7 +165,13 @@ export default defineConfig({
     // The app runs only engine packs built from the same contract (scripts/update-engines.mjs).
     __ENGINE_COMPAT__: JSON.stringify(engineCompat(fileURLToPath(new URL('.', import.meta.url)))),
   },
-  plugins: [svelte(), stampServiceWorker(), accountApiDev(), gameDataProxyDev(), adsense()],
+  plugins: [
+    svelte(), stampServiceWorker(), accountApiDev(), gameDataProxyDev(), adsense(),
+    {
+      name: 'frostsim-home-intro',
+      transformIndexHtml: (html) => html.replace('<!-- home-intro -->', readFileSync(new URL('./src/lib/ui/HomeIntro.svelte', import.meta.url), 'utf8')),
+    },
+  ],
   server: { headers: crossOriginIsolation },
   preview: {
     headers: csp ? { ...crossOriginIsolation, 'Content-Security-Policy': csp } : crossOriginIsolation,

@@ -9,12 +9,25 @@
     <meta name="theme-color" content="#1b1d22" />
     <meta
       name="description"
-      content="SimulationCraft for World of Warcraft, running entirely in your browser."
+      content="Sim your World of Warcraft character with Frostsim, a browser-based WoW DPS simulator powered by SimulationCraft. Import your character and compare gear and talents."
     />
-    <title>Frostsim</title>
+    <link rel="canonical" href="https://sim.frostdev.io/" />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Frostsim" />
+    <meta property="og:title" content="Frostsim | WoW DPS Simulator Powered by SimulationCraft" />
+    <meta property="og:description" content="Sim your WoW character in your browser. Import from SimulationCraft or the Armory, then compare gear and talents." />
+    <meta property="og:url" content="https://sim.frostdev.io/" />
+    <meta property="og:image" content="https://sim.frostdev.io/brand/frostsim-logo-web.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <title>Frostsim | WoW DPS Simulator Powered by SimulationCraft</title>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <main class="loading-intro">
+        <!-- home-intro -->
+        <noscript><p>Simulations need JavaScript. You can still read all of the guides linked above.</p></noscript>
+      </main>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

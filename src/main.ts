@@ -6,4 +6,7 @@ import './app.css'
 import './redesign.css'
 import App from './App.svelte'
 
-export default mount(App, { target: document.getElementById('app')! })
+const target = document.getElementById('app')!
+// The initial HTML and the Character screen use the same authored introduction.
+target.replaceChildren()
+export default mount(App, { target })

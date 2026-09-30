@@ -23,7 +23,7 @@ const TYPES = {
   '.json': 'application/json; charset=utf-8', '.wasm': 'application/wasm',
   '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
   '.webmanifest': 'application/manifest+json', '.map': 'application/json',
-  '.txt': 'text/plain; charset=utf-8', '.ico': 'image/x-icon', '.woff2': 'font/woff2',
+  '.txt': 'text/plain; charset=utf-8', '.xml': 'application/xml; charset=utf-8', '.ico': 'image/x-icon', '.woff2': 'font/woff2',
 };
 
 // _headers format: path rules then indented headers; later rules override.

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>How to Sim Your WoW Character | Frostsim</title>
+  <meta name="description" content="A step-by-step guide to importing your WoW character with the SimulationCraft addon or Armory, running Frostsim Quick Sim, and interpreting your DPS result." />
+  <link rel="canonical" href="https://sim.frostdev.io/guides/how-to-sim-your-wow-character.html" />
+  <link rel="icon" href="/brand/favicon-64.png" />
+  <link rel="stylesheet" href="/guides/site.css" />
+</head>
+<body>
+  <div class="page">
+    <header class="site-nav"><a class="brand" href="/"><img src="/brand/favicon-64.png" alt="" />Frostsim</a><a href="/guides/">All guides</a><a href="/#/character">Open simulator</a></header>
+    <main>
+      <article>
+        <p class="eyebrow">Getting started</p>
+        <h1>How to sim your WoW character</h1>
+        <p class="lede">Frostsim runs SimulationCraft in your browser. Use a fresh character import to estimate DPS for a particular fight, then compare changes using the same settings.</p>
+        <h2>1. Export your current character</h2>
+        <p>Install the <a href="https://github.com/simulationcraft/simc-addon">SimulationCraft addon</a> for retail WoW. Log in to the character you want to sim, equip the gear and select the talents you want to test, then type <code>/simc</code> in chat. Copy the full text from the export window.</p>
+        <p>An addon export captures your character as it is in game and can include bag items for gear comparisons. Export again after changing your equipment or talent loadout.</p>
+        <h2>2. Import into Frostsim</h2>
+        <p>Open <a href="/#/character">Character</a>, paste the text into the export field, and choose <strong>Import character</strong>. Review the imported gear, talents, and any warnings before continuing.</p>
+        <p>You can also look up a character by region, realm, and name on the Armory. That lookup uses the published equipment and active loadout; it cannot see your bags. Use the addon export when comparing items you already own.</p>
+        <h2>3. Run a baseline with Quick Sim</h2>
+        <p>Open <a href="/#/quick">Quick Sim</a>. Set the fight style, duration, target count, buffs, and simulation precision for the scenario you want to model. Choose <strong>Run Quick Sim</strong>. The browser downloads the engine when it needs it, so the first run can take longer to start.</p>
+        <p>Live is the default engine channel. Check <a href="/#/help">Help</a> for the loaded game version and engine revision. Use PTR only when you intend to test the test-realm rules and a compatible engine is available.</p>
+        <h2>4. Read the result before changing gear</h2>
+        <p>The DPS result describes the simulated fight and action list. It is not a promised number for your next raid pull. Check the fight settings and the reported uncertainty alongside the headline DPS.</p>
+        <p>If two results are very close, increase precision before deciding that one is better. Keep the engine channel, revision, and fight settings the same when comparing setups.</p>
+        <h2>5. Answer the next question</h2>
+        <p>Use <a href="/#/gear">Top Gear</a> for combinations of owned items, <a href="/#/compare">Compare</a> for named gear or talent variants, or <a href="/#/droptimizer">Droptimizer</a> for potential drops. Read <a href="/guides/wow-dps-simulator.html">which simulation tool to use</a> for more detail.</p>
+        <p>New to the browser engine? See <a href="/guides/simulationcraft-in-browser.html">SimulationCraft in your browser</a>.</p>
+        <p><a class="cta" href="/#/character">Import your character</a></p>
+      </article>
+    </main>
+    <footer>Further reading: <a href="https://github.com/simulationcraft/simc/wiki/StartersGuide">SimulationCraft's starter guide</a>. <a href="/guides/">All Frostsim guides</a>.</footer>
+  </div>
+</body>
+</html>
