@@ -590,6 +590,7 @@
       id: row.scenario.candidate.id,
       label: row.scenario.item.name,
       item: row.scenario.item,
+      resolvedItems: row.scenario.candidate.provenance.items,
       mean: row.mean ?? undefined,
       margin: row.gain?.margin ?? undefined,
       indistinguishable: indistinguishable(row.gain?.significant),
@@ -610,6 +611,8 @@
           slot: SLOT_LABELS[slot],
           name: item ? slot === row.scenario.slot ? row.scenario.item.name : display(item as ItemInstance, app.resolved).name : 'empty',
           replaces: slot === row.scenario.slot && row.scenario.replaces ? row.scenario.replaces.name : worn ? display(worn, app.resolved).name : 'nothing',
+          from: worn ?? null,
+          to: item as ItemInstance | null,
         }
       }),
     })),

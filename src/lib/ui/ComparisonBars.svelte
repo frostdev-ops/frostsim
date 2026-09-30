@@ -25,7 +25,7 @@
     /** Why this row has no number: 'missing' | 'blocked' | a status string. */
     status?: string
     /** One line per change, stacked in place of the label. `label` stays the text form for the table. */
-    changes?: { slot: string; name: string; /** What it takes the place of; 'nothing' for an empty slot. */ replaces?: string }[]
+    changes?: { slot: string; name: string; /** What it takes the place of; 'nothing' for an empty slot. */ replaces?: string; from?: ItemInstance | null; to?: ItemInstance | null }[]
     /** Rendered under the label, e.g. which slots changed. */
     detail?: string
     /** Marks a candidate that uses an item the character does not own. */
@@ -41,13 +41,14 @@
     baseline: { label: string; mean: number; margin?: number; equipped?: boolean }
     /** The reference set, shown as thumbnails on the baseline row. */
     baselineGear?: ItemInstance[]
+    baselineResolvedItems?: ResolvedItem[]
     /** Rows past this are collapsed behind a disclosure. */
     visible?: number
     caption: string
     onselect?: (row: ComparisonRow) => void
   }
   let {
-    rows, baseline, baselineGear = [], visible = 20, caption, onselect,
+    rows, baseline, baselineGear = [], baselineResolvedItems = [], visible = 20, caption, onselect,
   }: Props = $props()
 
   let showAll = $state(false)
@@ -71,7 +72,9 @@
 
   /** Text form of a row, with what each change replaces, for the table and the row's tooltip. */
   const textOf = (r: ComparisonRow) =>
-    r.changes?.length ? r.changes.map((c) => `${c.slot}: ${c.name}${c.replaces ? ` (replaces ${c.replaces})` : ''}`).join(', ') : r.label
+    r.changes?.length ? r.changes.map((c) => `${c.slot}: ${c.replaces ? `${c.replaces} → ` : ''}${c.name}`).join(', ') : r.label
+
+  const baselineResolved = $derived(new Map(baselineResolvedItems.map(item => [item.instanceId, item])))
 
   const shown = $derived(showAll ? ranked : ranked.slice(0, visible))
 
@@ -101,7 +104,7 @@
     <li class="row baseline-row">
       <div class="label">
         {#if iconSlots}
-          <div class="icons">{#if baselineShown.length}<GearStrip items={baselineShown} size={36} still />{/if}</div>
+          <div class="icons">{#if baselineShown.length}<GearStrip items={baselineShown} resolvedItems={baselineResolved} size={36} still />{/if}</div>
         {/if}
         <span class="truncate name">{baseline.label}</span>
         {#if baseline.equipped !== false}<span class="chip">equipped</span>{/if}
@@ -134,7 +137,7 @@
           {#if hasWinner && row.id === leader?.id}
             <span class="crown" aria-hidden="true">◆</span>
           {/if}
-          {#if iconSlots}
+          {#if iconSlots && !row.changes?.length}
             <div class="icons">
               {#if row.icons?.length}
                 <GearStrip items={row.icons} resolvedItems={row.resolvedItems ? new Map(row.resolvedItems.map(item => [item.instanceId, item])) : undefined} size={36} changed={row.changedSlots ?? []} still />
@@ -142,12 +145,27 @@
             </div>
           {/if}
           {#if row.changes?.length}
-            <span class="name changes" title={textOf(row)}>
+            <div class="name changes" title={textOf(row)}>
               {#if onselect}<button class="pick" onclick={() => onselect(row)}>{row.label}</button>{/if}
               {#each row.changes as change, j (j)}
-                <span class="change"><span class="slot">{change.slot}</span><span class="change-items">{change.name}{#if change.replaces}<span class="from">Replaces {change.replaces}</span>{/if}</span></span>
+                <div class="change">
+                  <span class="slot">{change.slot}</span>
+                  {#if change.replaces}
+                    <div class="change-items">
+                      <div class="swap-item from">
+                        {#if change.from}<GearStrip items={[change.from]} resolvedItems={baselineResolved} size={36} still />{/if}
+                        <span>{change.replaces}</span>
+                      </div>
+                      <span class="swap-arrow" aria-hidden="true">→</span>
+                      <div class="swap-item">
+                        {#if change.to}<GearStrip items={[change.to]} resolvedItems={row.resolvedItems ? new Map(row.resolvedItems.map(item => [item.instanceId, item])) : undefined} size={36} still />{/if}
+                        <span>{change.name}</span>
+                      </div>
+                    </div>
+                  {:else}<span>{change.name}</span>{/if}
+                </div>
               {/each}
-            </span>
+            </div>
           {:else if onselect}
             <button class="pick truncate name" onclick={() => onselect(row)}>{row.label}</button>
           {:else if row.item}
@@ -301,7 +319,7 @@
   /* Dense rows: height of gear thumbnails they carry, nothing more. */
   .row {
     display: grid;
-    grid-template-columns: minmax(16rem, 46ch) minmax(7rem, 1fr) minmax(8.5rem, auto);
+    grid-template-columns: minmax(16rem, 54ch) minmax(7rem, 1fr) minmax(8.5rem, auto);
     align-items: center;
     gap: var(--s3);
     padding: 0.2rem var(--s2);
@@ -352,10 +370,13 @@
   /* Room for the widest strip plus the changed-slot ring, so names line up. */
   .icons { flex: none; width: calc(min(var(--icons), 3) * 36px + (min(var(--icons), 3) - 1) * 0.28rem + 6px); }
   .changes { display: flex; flex-direction: column; gap: 0.35rem; line-height: 1.25; }
-  .change { display: grid; grid-template-columns: 4.6rem minmax(0, 1fr); gap: 0.4em; }
-  .change-items { display: flex; flex-direction: column; overflow-wrap: anywhere; }
-  .slot { display: inline-block; min-width: 4.6rem; color: var(--text-muted); font-size: var(--fs-xs); margin-right: 0.4em; }
-  .from { color: var(--text-muted); font-size: var(--fs-xs); }
+  .change { display: flex; flex-direction: column; gap: 0.3rem; }
+  .change-items { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 0.5rem; overflow-wrap: anywhere; }
+  .swap-item { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+  .swap-item > span { min-width: 0; }
+  .swap-arrow { color: var(--accent); font-size: 1.25rem; }
+  .slot { color: var(--text-muted); font-size: var(--fs-xs); }
+  .from { color: var(--text-muted); }
   .label .chip { flex: none; }
   .crown { color: var(--good); font-size: 0.8em; filter: drop-shadow(0 0 6px var(--good)); animation: crown 2.4s ease-in-out infinite; }
   @keyframes crown { 50% { filter: drop-shadow(0 0 2px var(--good)); } }
@@ -453,5 +474,6 @@
     .track { grid-column: auto; order: 0; }
     .figures { justify-content: flex-end; }
     .label .changes { flex-basis: 100%; }
+    .swap-item { flex-direction: column; align-items: flex-start; }
   }
 </style>
