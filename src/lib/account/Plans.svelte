@@ -124,6 +124,7 @@
             <li><Check size={16} />Patch re-sims of every slot</li>
             {#if p.id === 'compute_l'}<li><Check size={16} />Hybrid runs: your PC and the cloud on one Top Gear, Droptimizer, compare, multi-character sim or stat weights</li>{/if}
             <li><Check size={16} />Report links</li>
+            <li><Check size={16} />No ads</li>
             <li><Check size={16} />Browser sims stay unlimited</li>
           </ul>
           <button class:primary={p === BEST || current.has(p.id)} disabled={!!busy || current.has(p.id)} onclick={() => act(p)}>
@@ -143,6 +144,7 @@
     <div class="grow">
       <h2 id="guild-title">For your guild's Discord</h2>
       <p>Add the Frostsim bot and anyone in your server can type <code>/sim</code>. One shared pool of ≈ {sims(GUILD)} sims a month, for {money(GUILD.usd?.monthly)}/month.</p>
+      <p class="small">No ads on Frostsim for the subscribing account.</p>
     </div>
     <div class="how stack-sm">
       <a class="button discord" href="/api/v1/discord/install">Add Frostsim to Discord</a>
@@ -154,6 +156,7 @@
   <section class="faq" aria-labelledby="faq-title">
     <h2 id="faq-title">Questions</h2>
     <details><summary>Do I need a plan to use Frostsim?</summary><p>No. Every tool is free and runs in your browser. A plan adds cloud runs, more character slots and report links.</p></details>
+    <details><summary>Will I see ads with a paid plan?</summary><p>No. Every paid tier includes no ads while you are signed in, including Guild Cloud for the subscribing account. Free guide pages may show ads; simulation pages are ad-free for everyone.</p></details>
     <details><summary>What happens when I run out of cloud sims?</summary><p>Your sims run in your browser again, like on the free plan, until your allowance resets next month.</p></details>
     <details><summary>What are patch re-sims?</summary><p>When a new game build reaches Frostsim, we sim each of your slotted characters once on a Patchwerk dummy and add the result to its DPS history. Each re-sim uses a little of your cloud allowance.</p></details>
     <details><summary>What are hybrid runs?</summary><p>With Avalanche, a run made of independent sims splits between your PC and a cloud server at once, then comes back as one report: the candidates of Top Gear, Droptimizer, Crest and compares, the characters of a Quick Sim with several characters, and the stats of Stat Weights. While it runs, the run panel says what went where. A Quick Sim of one character is a single sim, so it runs whole in the cloud. Only the cloud share uses your allowance.</p></details>

@@ -139,6 +139,7 @@
       <div class="card stack-sm">
         <p class="small">Gives the Discord server <span class="mono">{guildId ?? 'unknown'}</span> its own pool for /sim, billed to you.</p>
         <p class="big">≈ {approxSims((GUILD.coreHoursPerMonth ?? 0) * 3600).toLocaleString()} <span class="small muted">sims a month, shared</span></p>
+        <p class="small">No ads on Frostsim for your subscribing account.</p>
         <div class="segmented" role="radiogroup" aria-label="Billing term">
           {#each termsOf(GUILD) as t (t)}
             <label><input type="radio" name="guild-term" value={t} checked={term === t} onchange={() => (term = t)} />

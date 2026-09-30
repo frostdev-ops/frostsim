@@ -9,7 +9,7 @@ export default function adsense() {
     closeBundle() {
       const guides = join(process.cwd(), 'dist/guides');
       if (!existsSync(guides)) return;
-      for (const name of readdirSync(guides).filter((file) => file.endsWith('.html'))) {
+      for (const name of readdirSync(guides).filter((file) => file.endsWith('.html') && file !== 'index.html')) {
         const file = join(guides, name);
         const html = readFileSync(file, 'utf8');
         if (html.includes('/ads/display.js')) continue;
