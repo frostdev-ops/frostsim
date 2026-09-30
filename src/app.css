@@ -265,6 +265,7 @@ h1, h2, h3, h4 { margin: 0; font-weight: 650; line-height: 1.25; letter-spacing:
 h1 { font-size: var(--fs-xl); }
 h2 { font-size: var(--fs-lg); }
 h3 { font-size: var(--fs-md); }
+.loading-intro { max-width: 54rem; margin: 3rem auto; padding: 0 1.5rem; }
 p { margin: 0; }
 
 a { color: var(--accent); text-underline-offset: 2px; }

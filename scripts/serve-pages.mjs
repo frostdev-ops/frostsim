@@ -22,7 +22,7 @@ const TYPES = {
   '.json': 'application/json; charset=utf-8', '.wasm': 'application/wasm',
   '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
   '.webmanifest': 'application/manifest+json', '.map': 'application/json',
-  '.txt': 'text/plain; charset=utf-8', '.ico': 'image/x-icon', '.woff2': 'font/woff2',
+  '.txt': 'text/plain; charset=utf-8', '.xml': 'application/xml; charset=utf-8', '.ico': 'image/x-icon', '.woff2': 'font/woff2',
 };
 
 // _headers format: path rules then indented headers; later rules override.
@@ -144,6 +144,7 @@ const server = createServer(async (req, res) => {
   let file = unsafe;
   if (!existsSync(file) || statSync(file).isDirectory()) {
     const index = join(file, 'index.html');
+    if (pathname.startsWith('/guides/') && !existsSync(index)) return send(404, 'not found');
     file = existsSync(index) ? index : join(distDir, 'index.html');
   }
   if (!existsSync(file)) return send(404, 'not found');
@@ -170,4 +171,3 @@ server.listen(port, '127.0.0.1', () => {
   console.log(`  env from .dev.vars: ${names.length ? names.join(', ') : '(none)'} — names only, values never printed`);
   console.log('  NOT workerd: Node fetch primitives, no bindings. wrangler pages dev remains the pre-release check.');
 });
-

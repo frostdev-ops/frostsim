@@ -603,6 +603,7 @@
   <p>
     Frostsim is free software under the <a href="https://www.gnu.org/licenses/gpl-3.0.html" rel="license">GPL-3.0</a>:
     <a href={SOURCE_URL} target="_blank" rel="noopener noreferrer">source code on GitHub</a>
+    · <a href="/guides/">Guides</a>
     {#if import.meta.env.VITE_FEATURE_ACCOUNTS === true}· <a href="#/plans">Frostsim Cloud</a>{/if}
     · <a href="https://github.com/simulationcraft/simc" target="_blank" rel="noopener noreferrer">SimulationCraft source</a>
   </p>

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SimulationCraft in Your Browser | Frostsim</title>
+  <meta name="description" content="Learn how Frostsim runs SimulationCraft through WebAssembly, how browser and cloud simulations differ, and how to check Live, PTR, and engine versions." />
+  <link rel="canonical" href="https://sim.frostdev.io/guides/simulationcraft-in-browser.html" />
+  <link rel="icon" href="/brand/favicon-64.png" />
+  <link rel="stylesheet" href="/guides/site.css" />
+</head>
+<body>
+  <div class="page">
+    <header class="site-nav"><a class="brand" href="/"><img src="/brand/favicon-64.png" alt="" />Frostsim</a><a href="/guides/">All guides</a><a href="/#/character">Open simulator</a></header>
+    <main>
+      <article>
+        <p class="eyebrow">The browser engine</p>
+        <h1>SimulationCraft in your browser</h1>
+        <p class="lede">Frostsim compiles SimulationCraft to WebAssembly so you can simulate a retail WoW character on your own device. You do not need to install the SimulationCraft desktop application to run a browser sim.</p>
+        <h2>What happens when you run a sim?</h2>
+        <p>Frostsim turns your imported character and settings into SimulationCraft input. A browser worker runs the engine, and Frostsim displays the resulting report. Browser mode uses your device's CPU and memory; a larger gear search usually takes more work than one Quick Sim.</p>
+        <p>The engine is downloaded separately from the app and cached for reuse. A first visit or a new engine revision can require a download before the run begins. Download size and speed depend on the published engine and your connection.</p>
+        <h2>Browser requirements</h2>
+        <p>Use a current browser with JavaScript and WebAssembly enabled. Where the browser supports shared memory and the site supplies the required isolation headers, the engine can use multiple threads. A single-thread fallback is available for environments without shared memory, with fewer comparison capabilities.</p>
+        <p>Open <a href="/#/help">Help</a> to see what this browser supports, the loaded engine, and offline cache status. Keep the tab open while a run is active. Available memory and device speed limit how much work you can do locally.</p>
+        <h2>Supported WoW versions: Live and PTR</h2>
+        <p>Frostsim targets retail World of Warcraft. Live is the default channel. PTR uses a separately published engine with test-realm data when a compatible pack is available; choosing PTR cannot turn a Live engine into a test-realm engine.</p>
+        <p>Check the game version and SimulationCraft revision in Help and in your reports. Support for a new patch depends on the published engine and matching game data. These guides do not promise Classic or every historical expansion.</p>
+        <h2>What stays on your device?</h2>
+        <p>Anonymous browser simulations run locally, and local characters and reports are stored in this browser. An Armory lookup sends the region, realm, and character name to retrieve public character data.</p>
+        <p>Frostsim Cloud is optional paid compute. With an eligible subscription, a run may use cloud workers; choose <strong>This browser</strong> when you want local execution. Cloud runs send simulation input to those workers. Cloud character saves, hosted report links, and requested AI explanations also use online services.</p>
+        <h2>Start with one character</h2>
+        <p>Follow <a href="/guides/how-to-sim-your-wow-character.html">the character simulation guide</a>, run a baseline in Quick Sim, then use <a href="/guides/wow-dps-simulator.html">the appropriate comparison tool</a> for your next decision.</p>
+        <p><a class="cta" href="/#/character">Open Frostsim</a></p>
+      </article>
+    </main>
+    <footer>Built on <a href="https://github.com/simulationcraft/simc">SimulationCraft</a>. <a href="https://github.com/frostdev-ops/frostsim/tree/cloud">Read Frostsim's source</a>. <a href="/guides/">All guides</a>.</footer>
+  </div>
+</body>
+</html>

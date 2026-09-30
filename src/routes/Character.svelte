@@ -26,6 +26,7 @@
   import { clearSetup, sendSetup } from '../lib/handoff.svelte'
   import { RefreshCw, Plus } from '@lucide/svelte'
   import { ALLOWED_REGIONS, type Region } from '../lib/battlenet/contract'
+  import HomeIntro from '../lib/ui/HomeIntro.svelte'
 
   const DRAFT_KEY = 'frostsim.draft'
 
@@ -248,8 +249,8 @@
   {#if !character}
     <!-- First visit (P12.1). -->
     <section class="panel stack">
-      <h1>Import a character</h1>
-      <p class="muted">Look up a character on the Armory, or paste your SimulationCraft addon export.</p>
+      <HomeIntro />
+      <h2>Import a character</h2>
       {@render exportField()}
 
       <div class="row">
