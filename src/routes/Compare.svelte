@@ -129,6 +129,8 @@
           slot: SLOT_LABELS[ch.slot],
           name: ch.to ? display(ch.to, app.resolved).name : 'empty',
           replaces: worn ? display(worn, app.resolved).name : 'nothing',
+          from: worn ?? null,
+          to: ch.to ?? null,
         }
       }),
     })),

@@ -967,6 +967,10 @@
   const baselineMean = $derived(result?.baseline?.mean ?? 0)
   const ownedBest = $derived(measured.find((state) => state.status === 'measured'
     && !state.candidate.provenance.vaultRewardId && !result?.droppedWhileAlive.includes(state.candidate.id)))
+  const ownedBestGear = $derived([...new Map([
+    ...(resultCharacter?.equipped ?? []).map(item => [item.slot, item] as const),
+    ...(ownedBest?.candidate.delta.gear ?? []),
+  ]).values()].filter((item): item is ItemInstance => !!item))
   const vaultComparisons = $derived.by<ComparisonRow[]>(() => {
     if (!result || !lastSearch) return []
     const rewards = new Map(Object.values(lastSearch.selection.slots).flatMap((items) => items ?? [])
@@ -981,12 +985,14 @@
       const verdict = m && ownedBest?.measurement && Math.min(m.iterations, ownedBest.measurement.iterations) >= lastSearch!.plan.minIterations
         ? compareCandidates(m, ownedBest.measurement, factor) : 'unknown'
       return {
-        id, label: display(item as ItemInstance, app.resolved).name,
+        id, label: best ? display(item as ItemInstance, new Map([...app.resolved, ...best.candidate.provenance.items.map(item => [item.instanceId, item] as const)])).name : display(item as ItemInstance, app.resolved).name,
+        changes: best && ownedBest ? changeList(best, ownedBest) : undefined,
         item: best?.candidate.provenance.items.find((resolved) => resolved.instanceId === item.instanceId && resolved.slot === item.slot) ?? resolveItem(item as ItemInstance, app.resolved) ?? undefined,
         resolvedItems: best?.candidate.provenance.items,
         mean: m?.mean, margin: m?.margin ?? undefined, iterations: m?.iterations,
         indistinguishable: verdict === 'unknown' ? undefined : verdict === 'indistinguishable',
-        icons: [item as ItemInstance], changedSlots: [item.slot],
+        icons: [item as ItemInstance], changedSlots: best && ownedBest
+          ? [...new Set([...(best.candidate.delta.gear?.keys() ?? []), ...(ownedBest.candidate.delta.gear?.keys() ?? [])])] : [item.slot],
         hypothetical: isHypothetical(item as ItemInstance),
         detail: result!.incomplete ? 'Partial search — best measured combination' : 'Best measured combination with this reward',
         status: m ? best!.status : 'No measured setup for this reward',
@@ -1038,17 +1044,24 @@
     return changeList(state).map((c) => `${c.slot}: ${c.name}`).join(', ') || state.candidate.provenance.label
   }
 
-  function changeList(state: (typeof measured)[number]): { slot: string; name: string; replaces?: string }[] {
+  function changeList(state: (typeof measured)[number], reference?: (typeof measured)[number]): NonNullable<ComparisonRow['changes']> {
     const gear = state.candidate.delta.gear
     const resolved = new Map([...app.resolved, ...state.candidate.provenance.items.map((item) => [item.instanceId, item] as const)])
-    const changes: { slot: string; name: string; replaces?: string }[] = [...(gear?.entries() ?? [])]
-      .map(([slot, item]) => {
-        const worn = resultCharacter?.equipped.find((item) => item.slot === slot)
-        return {
+    const referenceResolved = new Map([...app.resolved, ...(reference?.candidate.provenance.items ?? []).map(item => [item.instanceId, item] as const)])
+    const changes: NonNullable<ComparisonRow['changes']> = [...new Set([...(gear?.keys() ?? []), ...(reference?.candidate.delta.gear?.keys() ?? [])])]
+      .flatMap((slot) => {
+        const equipped = resultCharacter?.equipped.find(item => item.slot === slot) ?? null
+        const item = gear?.has(slot) ? gear.get(slot)! : equipped
+        const referenceGear = reference?.candidate.delta.gear
+        const worn = referenceGear?.has(slot) ? referenceGear.get(slot)! : equipped
+        if (reference && !item?.vaultRewardId && (item ? serializeItem(item as ItemInstance) : '') === (worn ? serializeItem(worn as ItemInstance) : '')) return []
+        return [{
           slot: SLOT_LABELS[slot],
           name: item ? display(item as ItemInstance, resolved).name : 'empty',
-          replaces: worn ? display(worn, app.resolved).name : 'nothing',
-        }
+          replaces: worn ? display(worn as ItemInstance, referenceResolved).name : 'nothing',
+          from: worn as ItemInstance | null,
+          to: item as ItemInstance | null,
+        }]
       })
     for (const [kind, option] of Object.entries(state.candidate.delta.consumables ?? {})) {
       changes.push({ slot: titleCase(kind), name: titleCase(option) })
@@ -1572,7 +1585,7 @@
           <h2>Great Vault choices</h2>
           <p class="small muted">Each row equips one reward with its best measured gear combination. The comparison is against your best setup without taking a Vault item.</p>
           {#if ownedBest?.measurement}
-            <ComparisonBars rows={vaultComparisons} baseline={{ label: 'Best setup without a Vault reward', mean: ownedBest.measurement.mean, margin: ownedBest.measurement.margin ?? undefined, equipped: false }} caption="Great Vault rewards compared one at a time" />
+            <ComparisonBars rows={vaultComparisons} baseline={{ label: 'Best setup without a Vault reward', mean: ownedBest.measurement.mean, margin: ownedBest.measurement.margin ?? undefined, equipped: false }} baselineGear={ownedBestGear} baselineResolvedItems={ownedBest.candidate.provenance.items} caption="Great Vault rewards compared one at a time" />
           {:else}
             <p class="small muted">No owned-only comparison is available yet. These are the reward measurements collected so far.</p>
             <table class="tbl"><thead><tr><th>Reward</th><th>DPS</th><th>Status</th></tr></thead><tbody>{#each vaultComparisons as row (row.id)}<tr><td>{#if row.icons?.[0]}<ItemLink itemId={row.icons[0].itemId} name={row.label} resolved={row.item} />{:else}{row.label}{/if}</td><td>{row.mean === undefined ? '—' : fmtInt(row.mean)}</td><td>{row.status}</td></tr>{/each}</tbody></table>
