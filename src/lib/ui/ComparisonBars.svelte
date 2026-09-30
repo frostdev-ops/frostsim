@@ -71,7 +71,7 @@
 
   /** Text form of a row, with what each change replaces, for the table and the row's tooltip. */
   const textOf = (r: ComparisonRow) =>
-    r.changes?.some((c) => c.replaces) ? r.changes.map((c) => `${c.slot}: ${c.name} (replaces ${c.replaces})`).join(', ') : r.label
+    r.changes?.length ? r.changes.map((c) => `${c.slot}: ${c.name}${c.replaces ? ` (replaces ${c.replaces})` : ''}`).join(', ') : r.label
 
   const shown = $derived(showAll ? ranked : ranked.slice(0, visible))
 
@@ -101,7 +101,7 @@
     <li class="row baseline-row">
       <div class="label">
         {#if iconSlots}
-          <div class="icons">{#if baselineShown.length}<GearStrip items={baselineShown} size={36} still inline />{/if}</div>
+          <div class="icons">{#if baselineShown.length}<GearStrip items={baselineShown} size={36} still />{/if}</div>
         {/if}
         <span class="truncate name">{baseline.label}</span>
         {#if baseline.equipped !== false}<span class="chip">equipped</span>{/if}
@@ -137,14 +137,15 @@
           {#if iconSlots}
             <div class="icons">
               {#if row.icons?.length}
-                <GearStrip items={row.icons} resolvedItems={row.resolvedItems ? new Map(row.resolvedItems.map(item => [item.instanceId, item])) : undefined} size={36} changed={row.changedSlots ?? []} still inline />
+                <GearStrip items={row.icons} resolvedItems={row.resolvedItems ? new Map(row.resolvedItems.map(item => [item.instanceId, item])) : undefined} size={36} changed={row.changedSlots ?? []} still />
               {/if}
             </div>
           {/if}
-          {#if row.changes?.length && !onselect}
+          {#if row.changes?.length}
             <span class="name changes" title={textOf(row)}>
+              {#if onselect}<button class="pick" onclick={() => onselect(row)}>{row.label}</button>{/if}
               {#each row.changes as change, j (j)}
-                <span class="truncate"><span class="slot">{change.slot}</span>{change.name}{#if change.replaces}<span class="from"> replaces {change.replaces}</span>{/if}</span>
+                <span class="change"><span class="slot">{change.slot}</span><span class="change-items">{change.name}{#if change.replaces}<span class="from">Replaces {change.replaces}</span>{/if}</span></span>
               {/each}
             </span>
           {:else if onselect}
@@ -345,10 +346,14 @@
   @keyframes sweep { to { translate: 110% 0; } }
 
   .label { display: flex; align-items: center; gap: 0.4rem; min-width: 0; font-size: var(--fs-sm); }
-  .label .name { flex: 0 1 auto; }
+  .label:has(.changes) { flex-wrap: wrap; }
+  .label .name { flex: 1; min-width: 0; }
+  .label .changes { flex-basis: 14rem; }
   /* Room for the widest strip plus the changed-slot ring, so names line up. */
-  .icons { flex: none; width: calc(var(--icons) * 36px + (var(--icons) - 1) * 0.28rem + 6px); }
-  .changes { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+  .icons { flex: none; width: calc(min(var(--icons), 3) * 36px + (min(var(--icons), 3) - 1) * 0.28rem + 6px); }
+  .changes { display: flex; flex-direction: column; gap: 0.35rem; line-height: 1.25; }
+  .change { display: grid; grid-template-columns: 4.6rem minmax(0, 1fr); gap: 0.4em; }
+  .change-items { display: flex; flex-direction: column; overflow-wrap: anywhere; }
   .slot { display: inline-block; min-width: 4.6rem; color: var(--text-muted); font-size: var(--fs-xs); margin-right: 0.4em; }
   .from { color: var(--text-muted); font-size: var(--fs-xs); }
   .label .chip { flex: none; }
@@ -447,5 +452,6 @@
     .label { grid-column: 1 / -1; }
     .track { grid-column: auto; order: 0; }
     .figures { justify-content: flex-end; }
+    .label .changes { flex-basis: 100%; }
   }
 </style>

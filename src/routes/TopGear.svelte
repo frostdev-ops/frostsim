@@ -1040,12 +1040,13 @@
 
   function changeList(state: (typeof measured)[number]): { slot: string; name: string; replaces?: string }[] {
     const gear = state.candidate.delta.gear
+    const resolved = new Map([...app.resolved, ...state.candidate.provenance.items.map((item) => [item.instanceId, item] as const)])
     const changes: { slot: string; name: string; replaces?: string }[] = [...(gear?.entries() ?? [])]
       .map(([slot, item]) => {
-        const worn = equippedBySlot.get(slot)
+        const worn = resultCharacter?.equipped.find((item) => item.slot === slot)
         return {
           slot: SLOT_LABELS[slot],
-          name: item ? display(item as ItemInstance, app.resolved).name : 'empty',
+          name: item ? display(item as ItemInstance, resolved).name : 'empty',
           replaces: worn ? display(worn, app.resolved).name : 'nothing',
         }
       })

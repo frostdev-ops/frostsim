@@ -53,6 +53,7 @@
 
   let allSlots = $state(true)
   let result = $state<OptimizationResult | null>(null)
+  let resultGear = $state<ItemInstance[]>([])
   let scenarios = $state<DropScenario[]>([])
   let sourcesFor = $state(new Map<string, string[]>())
   let planWarnings = $state<string[]>([])
@@ -416,10 +417,12 @@
 
     const controller = new AbortController()
     cancelRun = () => controller.abort()
+    const snapshot = $state.snapshot(character)
+    resultGear = snapshot.equipped
 
     try {
       const plan = await client.planDroptimizer(sources, {
-        ...planOptions(character, [...baselineGear.entries()]),
+        ...planOptions(snapshot, GEAR_SLOTS.map((slot) => [slot, snapshot.equipped.find((item) => item.slot === slot) ?? null])),
         plan: searchPlan,
         allEligibleSlots: allSlots,
       })
@@ -444,7 +447,7 @@
       })
       const finalStage = searchPlan.stages[searchPlan.stages.length - 1]
       const r = await runAdaptiveSearch(plan.scenarios.map((s) => s.candidate), {
-        profile: buildProfile(character),
+        profile: buildProfile(snapshot),
         catalogId: plan.catalogId,
         // Without this cache never warms and runner warns once per batch, producing identical strings.
         engineIdentity: engineIdentityString(),
@@ -599,14 +602,14 @@
       icons: [row.scenario.candidate.delta.gear?.get(row.scenario.slot)].filter(
         (i): i is ItemInstance => !!i,
       ),
-      changedSlots: [row.scenario.slot],
+      changedSlots: [...(row.scenario.candidate.delta.gear?.keys() ?? [])],
       // Every slot the candidate changes, so a two-hander shows the off hand it empties.
       changes: [...(row.scenario.candidate.delta.gear?.entries() ?? [])].map(([slot, item]) => {
-        const worn = equippedBySlot.get(slot)
+        const worn = resultGear.find((item) => item.slot === slot)
         return {
           slot: SLOT_LABELS[slot],
-          name: item ? display(item as ItemInstance, app.resolved).name : 'empty',
-          replaces: worn ? display(worn, app.resolved).name : 'nothing',
+          name: item ? slot === row.scenario.slot ? row.scenario.item.name : display(item as ItemInstance, app.resolved).name : 'empty',
+          replaces: slot === row.scenario.slot && row.scenario.replaces ? row.scenario.replaces.name : worn ? display(worn, app.resolved).name : 'nothing',
         }
       }),
     })),
@@ -923,7 +926,7 @@
                 mean: result.baseline.mean,
                 margin: result.baseline.margin ?? undefined,
               }}
-              baselineGear={character.equipped}
+              baselineGear={resultGear}
               caption="Each item's value against your current gear"
             />
           {/if}
