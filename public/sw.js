@@ -234,7 +234,7 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(request.url)
   if (url.origin !== self.location.origin) return
   // API requests use the browser network path without waiting for the shell cache.
-  if (url.pathname.startsWith('/api/')) return
+  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/guides/') || url.pathname.startsWith('/ads/') || url.pathname === '/ads.txt') return
 
   event.respondWith(
     (async () => {

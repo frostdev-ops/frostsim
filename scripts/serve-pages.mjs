@@ -2,6 +2,7 @@
 // Serves the built app the way a static host does; exercises engine, CSP and cross-origin isolation together.
 
 import { createServer } from 'node:http';
+import { randomBytes } from 'node:crypto';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { extname, join, resolve, normalize, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -144,11 +145,26 @@ const server = createServer(async (req, res) => {
   let file = unsafe;
   if (!existsSync(file) || statSync(file).isDirectory()) {
     const index = join(file, 'index.html');
+    if (pathname.startsWith('/guides/') && !existsSync(index)) return send(404, 'not found');
     file = existsSync(index) ? index : join(distDir, 'index.html');
   }
   if (!existsSync(file)) return send(404, 'not found');
 
-  const body = readFileSync(file);
+  let body = readFileSync(file);
+  if (pathname.startsWith('/guides/')) {
+    const nonce = randomBytes(16).toString('hex');
+    const policy = readFileSync(join(root, 'deploy/nginx/sim.frostdev.io.conf'), 'utf8')
+      .match(/# BEGIN guide-ads[\s\S]*?add_header Content-Security-Policy "([^"]+)"/)?.[1];
+    if (!policy) return send(500, 'Missing guide ad header policy');
+    // send() merges _headers first, so explicit overrides reproduce this document-only nginx location.
+    if (extname(file) === '.html') body = Buffer.from(body.toString('utf8').replaceAll('__FROSTSIM_AD_NONCE__', nonce));
+    return send(200, body, {
+      'Content-Type': TYPES[extname(file)] ?? 'application/octet-stream',
+      'Cross-Origin-Opener-Policy': 'unsafe-none', 'Cross-Origin-Embedder-Policy': 'unsafe-none',
+      'Referrer-Policy': 'strict-origin-when-cross-origin', 'Cache-Control': 'no-store, no-transform',
+      'Content-Security-Policy': policy.replaceAll('$request_id', nonce),
+    });
+  }
   const type = TYPES[extname(file)] ?? 'application/octet-stream';
   const range = req.headers.range?.match(/bytes=(\d+)-(\d*)/);
   if (range) {
@@ -170,4 +186,3 @@ server.listen(port, '127.0.0.1', () => {
   console.log(`  env from .dev.vars: ${names.length ? names.join(', ') : '(none)'} — names only, values never printed`);
   console.log('  NOT workerd: Node fetch primitives, no bindings. wrangler pages dev remains the pre-release check.');
 });
-

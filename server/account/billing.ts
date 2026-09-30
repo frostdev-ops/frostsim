@@ -7,11 +7,12 @@ import type { AppCtx, RequestCtx, Route, Task } from './app';
 import { product } from './catalog';
 import type { Db } from './db';
 import { loadEntitlements, type SubscriptionItem } from './entitlements';
-import { HttpError, errorSummary, json } from './http';
+import { HttpError, errorSummary, json, readCookie } from './http';
 import { rateLimit } from './ratelimit';
 import { safeEqual, verify } from './signed';
 import { StripeError, stripe } from './stripe';
 import { usedCoreSeconds } from './usage';
+import { getSession, SESSION_COOKIE } from './session';
 
 /** signed.ts purpose for guild checkout links (DESIGN.md P5); discord.ts signs with it and payload { kind: 'guild-checkout', guildId, discordUserId }. */
 export const GUILD_CHECKOUT_PURPOSE = 'guild-checkout';
@@ -109,10 +110,25 @@ async function customerFor(ctx: RequestCtx, userId: string): Promise<string> {
   return row.stripe_customer_id;
 }
 
+/** Public content only. No localStorage marker or cached browser billing decides ad eligibility. */
+export async function adConfig(ctx: RequestCtx): Promise<Response> {
+  const { ADSENSE_ENABLED: enabled, ADSENSE_PUBLISHER_ID: publisher, ADSENSE_GUIDE_SLOT: slot } = ctx.config.env;
+  if (enabled !== '1' || !/^ca-pub-\d{16}$/.test(publisher ?? '') || !/^\d{10}$/.test(slot ?? '') || ctx.config.adminOnly) {
+    return json({ enabled: false });
+  }
+  const session = await getSession(ctx, ctx.request);
+  if (!session && readCookie(ctx.request, SESSION_COOKIE)) return json({ enabled: false });
+  if (session) {
+    const ent = await loadEntitlements(ctx.sql, { userId: session.userId }, ctx.now());
+    if (ent.adFree) return json({ enabled: false });
+  }
+  return json({ enabled: true, publisher, slot });
+}
+
 async function summary(ctx: RequestCtx): Promise<Response> {
   const userId = ctx.session!.userId;
   // What a plan nets us is ours to know: the account dialog gets allowances, not revenue.
-  const { paidUsd: _paid, comped: _comped, ...ent } = await loadEntitlements(ctx.sql, { userId }, ctx.now());
+  const { paidUsd: _paid, comped: _comped, adFree: _adFree, ...ent } = await loadEntitlements(ctx.sql, { userId }, ctx.now());
   const entitlements = { ...ent, guilds: ent.guilds.map(({ paidUsd: _guildPaid, ...g }) => g) };
   const { periodStart, periodEnd } = entitlements;
   const used = await usedCoreSeconds(ctx.sql, { userId }, periodStart, periodEnd);
@@ -308,6 +324,12 @@ async function webhook(ctx: RequestCtx): Promise<Response> {
 }
 
 export const routes: Route[] = [
+  { method: 'GET', path: /^\/api\/v1\/ads$/, feature: 'billing', auth: 'public', handler: adConfig },
+  { method: 'GET', path: /^\/api\/v1\/ads\.txt$/, feature: 'billing', auth: 'public', handler: async (ctx) => {
+    const publisher = ctx.config.env.ADSENSE_PUBLISHER_ID;
+    if (!/^ca-pub-\d{16}$/.test(publisher ?? '')) throw new HttpError(404, 'not-configured', 'AdSense is not configured.');
+    return new Response(`google.com, ${publisher!.slice(3)}, DIRECT, f08c47fec0942fa0\n`, { headers: { 'content-type': 'text/plain; charset=utf-8' } });
+  } },
   { method: 'GET', path: /^\/api\/v1\/billing$/, feature: 'billing', auth: 'session', handler: summary },
   { method: 'POST', path: /^\/api\/v1\/billing\/checkout$/, feature: 'billing', auth: 'session', handler: checkout },
   { method: 'POST', path: /^\/api\/v1\/billing\/portal$/, feature: 'billing', auth: 'session', handler: portal },

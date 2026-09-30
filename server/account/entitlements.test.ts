@@ -61,7 +61,7 @@ describe('plan hours and long terms', () => {
 describe('entitlementsFor', () => {
   it('free tier: one character slot and nothing else, metered over the UTC calendar month', () => {
     expect(entitlementsFor([], NONE, NOW)).toEqual({
-      coreSeconds: 0, maxThreads: 0, slots: 1, hostedShares: false, guilds: [], paidUsd: 0, comped: false,
+      adFree: false, coreSeconds: 0, maxThreads: 0, slots: 1, hostedShares: false, guilds: [], paidUsd: 0, comped: false,
       periodStart: new Date('2026-09-01T00:00:00Z'), periodEnd: new Date('2026-10-01T00:00:00Z'),
     });
   });
@@ -165,7 +165,7 @@ describe('a missed renewal webhook (stored current_period_end has passed)', () =
   it('lapses at period end + 3 days to the free tier: no hours, threads, extra slots, hosted shares or guild pool; calendar month', () => {
     const now = at(RENEWAL_GRACE_MS);
     expect(entitlementsFor([paid, guild], NONE, now)).toEqual({
-      coreSeconds: 0, maxThreads: 0, slots: 1, hostedShares: false, guilds: [], paidUsd: 0, comped: false, ...calendarMonth(now),
+      adFree: true, coreSeconds: 0, maxThreads: 0, slots: 1, hostedShares: false, guilds: [], paidUsd: 0, comped: false, ...calendarMonth(now),
     });
     expect(entitlementsFor([shares], NONE, now)).toMatchObject({ slots: 1, hostedShares: false });
     // Comped hours are not a subscription and do not lapse.

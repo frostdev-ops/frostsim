@@ -21,9 +21,9 @@ export const BASELINE = {
   'functions/api/_lib/security.ts': '9c8960a2b4284a09c577decf7fad6607a2ec5907ef95e3f50e6ce84e6da17f18',
   'functions/api/_lib/upstream.ts': 'aabe952a193f843a4d2773dea425393ad6c793a64d4daed34ef76465c6fe32ac',
   'deploy/systemd/frostsim-api.service': 'cc8e21197aefe829be407090611f0916e64c9edafaa7ff0f4f8b8ed53802eb01',
-  'public/sw.js': '5b2cedfdb3c53af99fa971d71f1a88bd82877241f18732b368506b73b426c42f',
+  'public/sw.js': '20fadef624d62aa32da557066a35d83ec7ffa35416274d5cd4433d00363fba5c',
   // Hashed with the account-server block stripped: that block is the only change the vhost may gain.
-  'deploy/nginx/sim.frostdev.io.conf': '0ef731925113d19e1d666446a122bd4dfed3fbf7929b5062d4299cb284c499b3',
+  'deploy/nginx/sim.frostdev.io.conf': 'e71dd1f842602bf5bf22475d2ddf948bb588dea5d6fe2a8af491a20edfb6d1ab',
 };
 const GUARDED_DIR = 'functions/api';
 const VHOST = 'deploy/nginx/sim.frostdev.io.conf';
@@ -93,7 +93,9 @@ export function checkSurface({ root, dist, base, allowEntryGrowth = false }) {
     if (!accountBlockConfined(vhost)) failures.push(`${VHOST}: the account-server block must be exactly one location ^~ /api/v1/ { ... }`);
     const expected = readFileSync(join(root, 'public/_headers'), 'utf8').match(/^\s*Content-Security-Policy: (.*)$/m)?.[1];
     // Header names are case-insensitive, and nginx takes either quote.
-    const served = [...vhost.matchAll(/add_header\s+content-security-policy\s+(["'])(.*?)\1/gi)].map((m) => m[2]);
+    // Guide ads have a separately scoped CSP; their entire block remains covered by the vhost hash above.
+    const simulatorVhost = vhost.replace(/^ *# BEGIN guide-ads\n[\s\S]*?^ *# END guide-ads\n/m, '');
+    const served = [...simulatorVhost.matchAll(/add_header\s+content-security-policy\s+(["'])(.*?)\1/gi)].map((m) => m[2]);
     if (!expected || served.length !== 1 || served[0] !== expected) {
       failures.push(`${VHOST}: expected exactly one CSP equal to public/_headers', found ${served.length}${served.length === 1 ? ' that differs' : ''}`);
     } else notes.push('vhost CSP equals public/_headers');

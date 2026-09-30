@@ -1,0 +1,8 @@
+.fs-ad { margin: 2rem 0; padding: 1.5rem 0; border-top: 1px solid #343a46; min-height: 150px; }
+.fs-ad > p { margin: 0 0 .75rem; color: #b4bdcb; font: .75rem system-ui, sans-serif; }
+.fs-ad > .adsbygoogle { display: block; width: 100%; height: 90px; }
+.fs-ad > button { margin-top: 1rem; background: transparent; border: 0; padding: .5rem 0; color: inherit; text-decoration: underline; cursor: pointer; }
+.fs-ad:has(.adsbygoogle[data-ad-status="unfilled"]) { min-height: 0; padding: 0; border: 0; }
+.fs-ad:has(.adsbygoogle[data-ad-status="unfilled"]) > p,
+.fs-ad > .adsbygoogle[data-ad-status="unfilled"] { display: none; }
+@media (max-width: 480px) { .fs-ad > .adsbygoogle { height: 100px; } }

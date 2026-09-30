@@ -36,7 +36,7 @@
 
 <Dialog bind:open title="Browser storage" width="30rem" onclose={() => (open = false)}>
   <div class="stack">
-    <p>Browser storage keeps your saved characters and settings. No advertising or analytics cookies.</p>
+    <p>Browser storage keeps your saved characters and settings. Simulation pages load no advertising or analytics code. Free guide pages may show Google AdSense ads; their ad privacy settings are on those pages.</p>
     <p>Diagnostic storage is <strong>{choice === 'diagnostics' ? 'on' : 'off'}</strong> (off by default). Optional logs stay on this device and are never sent automatically.</p>
     <p><a href="/legal/privacy.html" target="_blank" rel="noopener">Read the privacy policy (opens a new tab)</a></p>
     {#if note}<p role="status">{note}</p>{/if}

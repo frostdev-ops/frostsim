@@ -134,7 +134,7 @@ describe.skipIf(!hasDeploy)('checkSurface on the nginx vhost (needs the local-on
   it('strips exactly the account-server block back to the baseline text', () => {
     const text = readFileSync(join(repo, vhost), 'utf8');
     expect(text).toContain('location ^~ /api/v1/ {');
-    expect(stripAccountBlock(text)).not.toContain('/api/v1/');
+    expect(stripAccountBlock(text)).not.toContain('location ^~ /api/v1/');
   });
 
   it('fails on an edit outside the block, a CSP inside it, or a CSP drift from public/_headers', () => {

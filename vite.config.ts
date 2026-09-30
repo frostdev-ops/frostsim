@@ -6,6 +6,7 @@ import type { Plugin } from 'vite'
 import { fileURLToPath } from 'node:url'
 import { engineCompat } from './scripts/engine-compat.mjs'
 import { isAccountApi, proxyAccountApi } from './scripts/account-proxy.mjs'
+import adsense from './scripts/adsense.mjs'
 
 // COOP/COEP required for SharedArrayBuffer; engine worker fails to start without them.
 const crossOriginIsolation = {
@@ -164,7 +165,7 @@ export default defineConfig({
     // The app runs only engine packs built from the same contract (scripts/update-engines.mjs).
     __ENGINE_COMPAT__: JSON.stringify(engineCompat(fileURLToPath(new URL('.', import.meta.url)))),
   },
-  plugins: [svelte(), stampServiceWorker(), accountApiDev(), gameDataProxyDev()],
+  plugins: [svelte(), stampServiceWorker(), accountApiDev(), gameDataProxyDev(), adsense()],
   server: { headers: crossOriginIsolation },
   preview: {
     headers: csp ? { ...crossOriginIsolation, 'Content-Security-Policy': csp } : crossOriginIsolation,

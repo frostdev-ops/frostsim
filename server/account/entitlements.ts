@@ -46,6 +46,8 @@ export interface GuildEntitlement extends Period {
 }
 
 export interface Entitlements extends Period {
+  /** Every paid tier, including a guild pool's payer, and complimentary compute suppress ads. */
+  adFree: boolean;
   coreSeconds: number;
   maxThreads: number;
   slots: number;
@@ -120,6 +122,9 @@ export function netMonthlyUsd(item: SubscriptionItem, p: Product): number {
 }
 
 export function entitlementsFor(subs: readonly Subscription[], comp: Comp, now: Date): Entitlements {
+  // Ad suppression remains conservative if a renewal webhook is late, even after compute's grace expires.
+  const adFree = comp.coreSeconds > 0 || (comp.maxThreads ?? 0) > 0
+    || subs.some((sub) => ACTIVE_STATUSES.has(sub.status) && sub.items.some((item) => units(item.quantity) > 0));
   let coreSeconds = comp.coreSeconds;
   let maxThreads = comp.maxThreads ?? 0;
   let extraSlots = 0;
@@ -160,7 +165,7 @@ export function entitlementsFor(subs: readonly Subscription[], comp: Comp, now: 
   if (coreSeconds > 0 && maxThreads < 1) maxThreads = SMALLEST_COMPUTE_THREADS;
   // Every account has FREE_SLOTS; the best plan adds its extra, up to the unlimited ceiling (plans do not stack).
   const slots = Math.min(UNLIMITED_SLOTS, FREE_SLOTS + extraSlots);
-  return { coreSeconds, maxThreads, slots, hostedShares, ...(computePeriod ?? calendarMonth(now)), guilds: [...guilds.values()], paidUsd,
+  return { adFree, coreSeconds, maxThreads, slots, hostedShares, ...(computePeriod ?? calendarMonth(now)), guilds: [...guilds.values()], paidUsd,
     comped: comp.coreSeconds > 0 };
 }
 
