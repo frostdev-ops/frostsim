@@ -2,11 +2,18 @@ import { describe, expect, it } from 'vitest'
 import { applyWeeklyDefaults, weeklyDefaultLines } from './weekly-defaults'
 import defaults from './generated/weekly-defaults.json'
 import engineLock from '../../../engine.lock.json'
+import { liveRules } from '../catalog/rules'
 
 describe('generated Weekly defaults', () => {
   const profile = 'warlock=Fixture\nspec=demonology\nlevel=90\n'
   it('only supplies the verified omitted default and preserves explicit input', () => {
-    expect(defaults.engine.commit).toBe(engineLock.upstream.commit)
+    const channel = 'engineChannel' in engineLock ? engineLock.engineChannel : 'live'
+    // A PTR build retains the legacy Live reference; selected PTR runs use pack rules.
+    expect(defaults.engine.commit).toBe(channel === 'ptr' ? liveRules.engineCommit : engineLock.upstream.commit)
+    expect(liveRules.engineChannel).toBe('live')
+    const ptrRules = { ...liveRules, engineChannel: 'ptr' as const, weekly: null }
+    expect(weeklyDefaultLines(profile, ptrRules)).toEqual([])
+    expect(applyWeeklyDefaults(profile, ptrRules)).toBe(profile)
     expect(weeklyDefaultLines(profile)).toEqual(['potion=potion_of_recklessness_2'])
     for (const value of ['', 'disabled', 'liquid_luster_2']) expect(weeklyDefaultLines(profile + `potion=${value}\n`)).toEqual([])
     expect(weeklyDefaultLines(profile + '# potion=disabled\n')).toHaveLength(1)
