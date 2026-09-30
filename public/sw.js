@@ -9,8 +9,8 @@ const BIG = {
 }
 
 function engineUrls(base = '/engine/') {
-  if (base !== '/engine/' && !/^\/engine\/versions\/[a-z0-9][a-z0-9.-]{0,100}\/$/.test(base)) throw new Error('Invalid engine path')
-  return ['/engine-versions.json', ...BIG.engine.map(url => url.replace('/engine/', base)),
+  if (base !== '/engine/' && base !== '/engine/ptr/' && !/^\/engine\/versions\/[a-z0-9][a-z0-9.-]{0,100}\/$/.test(base)) throw new Error('Invalid engine path')
+  return ['/engine-channels.json', '/engine-versions.json', ...BIG.engine.map(url => url.replace('/engine/', base)),
     ...['manifest.json', 'simc.js', 'simc.wasm'].map(file => `${base}fallback/${file}`),
     ...Array.from({ length: 13 }, (_, i) => `${base === '/engine/' ? '/' : base}talent-layout/class-${i + 1}.json`)]
 }
@@ -26,7 +26,9 @@ async function cacheFor(url) {
 async function evictOtherPacks(keep) {
   const cache = await caches.open(ENGINE_PACKS)
   for (const request of await cache.keys()) {
-    if (packId(new URL(request.url).pathname) !== keep) await cache.delete(request)
+    const id = packId(new URL(request.url).pathname)
+    // Keep the other channel available for its loaded tabs and offline selection.
+    if (id !== keep && (id?.startsWith('ptr-') ?? false) === keep.startsWith('ptr-')) await cache.delete(request)
   }
 }
 
@@ -253,7 +255,7 @@ self.addEventListener('fetch', (event) => {
       }
 
       // Version index moves; engine directories are immutable.
-      if (url.pathname === '/engine-versions.json') {
+      if (url.pathname === '/engine-versions.json' || url.pathname === '/engine-channels.json') {
         try {
           const res = await fetch(request, { cache: 'no-cache' })
           if (res.ok) await cache.put(request, res.clone())

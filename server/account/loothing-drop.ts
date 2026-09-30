@@ -7,6 +7,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 import { Catalog, type CatalogPayloads } from '../../src/lib/catalog/catalog';
+import { liveRules, rulesMatch } from '../../src/lib/catalog/rules';
 import { SUPPORTED_CATALOG_SCHEMA } from '../../src/lib/catalog/load';
 import { isMplusSource, mplusReward, MIN_KEY } from '../../src/lib/catalog/mplusRewards';
 import { atRaidDifficulty, hasRaidRewards, type RaidDifficulty } from '../../src/lib/catalog/raidRewards';
@@ -59,7 +60,9 @@ export function packCatalog(packId: string, env: Record<string, string | undefin
     const [items, bonus, scaling, enchants, gems, sets, embellishments, consumables] = await Promise.all(
       ['items', 'item-bonus', 'scaling', 'enchants', 'gems', 'sets', 'embellishments', 'consumables'].map((f) => read(`${f}.json`)));
     if (!items?.count || !Array.isArray(items.id)) throw new Error('items.json is missing its columns');
-    const catalog = new Catalog({ manifest, items, bonus, scaling, enchants, gems, sets, embellishments, consumables } as CatalogPayloads);
+    const rules = await read('rules.json').catch(() =>
+      manifest.engineChannel === undefined && manifest.engine.engineChannel === undefined && !manifest.engine.ptr && rulesMatch(liveRules, manifest) ? liveRules : null);
+    const catalog = new Catalog({ manifest, items, bonus, scaling, enchants, gems, sets, embellishments, consumables, rules } as CatalogPayloads);
     // A promised loot file that is missing leaves the catalog without loot, which lootSources reports, as in the browser.
     const loot = manifest.loot?.path ? await read(manifest.loot.path).catch(() => null) : null;
     if (loot) catalog.registerLoot(loot);
@@ -90,8 +93,8 @@ export function dropSources(catalog: Catalog, now = Date.now()) {
       name: bosses[0].instanceName ?? bosses[0].name,
       kind: bosses[0].kind,
       encounters: bosses.map((b) => ({ encounterId: encounterIdOf(b), name: b.name, itemCount: b.itemIds.length })),
-      rewards: bosses.every((b) => hasRaidRewards(b, build)) ? { difficulties: Object.keys(DIFFICULTIES) }
-        : bosses.every(isMplusSource) ? { keyLevels: { min: MIN_KEY } } : null,
+      rewards: bosses.every((b) => hasRaidRewards(b, build, catalog.rules)) ? { difficulties: Object.keys(DIFFICULTIES) }
+        : bosses.every((b) => isMplusSource(b, catalog.rules)) ? { keyLevels: { min: MIN_KEY } } : null,
     })),
   };
 }
@@ -154,18 +157,18 @@ export function droptimizerRequest(catalog: Catalog, character: ImportedCharacte
   const build = seasonBuildOf(catalog.manifest);
   let evaluate: (source: DropSource, loot: LootSource) => DropSource;
   if (selector.difficulty !== undefined) {
-    const bad = chosen.find((s) => !hasRaidRewards(s, build));
+    const bad = chosen.find((s) => !hasRaidRewards(s, build, catalog.rules));
     if (bad) throw new DropProblem('unavailable', `Verified raid reward levels are unavailable for ${bad.name}; difficulty applies to raids only.`);
-    evaluate = (source, l) => atRaidDifficulty(source, l, build, DIFFICULTIES[selector.difficulty!], selector.maxUpgrade, selector.bonusRoll);
+    evaluate = (source, l) => atRaidDifficulty(source, l, build, DIFFICULTIES[selector.difficulty!], selector.maxUpgrade, selector.bonusRoll, catalog.rules);
   } else {
-    const bad = chosen.find((s) => !isMplusSource(s));
+    const bad = chosen.find((s) => !isMplusSource(s, catalog.rules));
     if (bad) throw new DropProblem('unavailable', `Mythic+ reward levels are unavailable for ${bad.instanceName ?? bad.name}; keyLevel applies to this season's dungeons only.`);
-    const reward = mplusReward(selector.keyLevel!, selector.bonusRoll === true);
+    const reward = mplusReward(selector.keyLevel!, selector.bonusRoll === true, catalog.rules);
     if (!reward) throw new DropProblem('unavailable', 'No verified Mythic+ reward level for that key this season.');
     // As Droptimizer.svelte evaluatedSource: the key's track and rank, optionally fully upgraded.
     evaluate = (source) => ({ ...source, hypothetical: true, items: source.items.map((item) => {
-      const drop = withUpgradeRank(item, reward.track.id, reward.rank.rank);
-      return selector.maxUpgrade ? withMaxUpgrade(drop)! : drop;
+      const drop = withUpgradeRank(item, reward.track.id, reward.rank.rank, catalog.rules);
+      return selector.maxUpgrade ? withMaxUpgrade(drop, catalog.rules)! : drop;
     }) });
   }
 

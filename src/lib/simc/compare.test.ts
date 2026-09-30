@@ -44,6 +44,7 @@ function baseReport(dpsMean: number, profilesets?: { name: string; mean: number 
   return {
     version: '1210-01',
     report_version: '2.0.0',
+    git_revision: manifest.engine.upstreamCommit,
     sim: {
       options: {
         iterations: 53,
@@ -56,6 +57,7 @@ function baseReport(dpsMean: number, profilesets?: { name: string; mean: number 
         fixed_time: true,
         confidence: 0.95,
         confidence_estimator: 1.9599639854088815,
+        dbc: { version_used: 'Live', Live: { wow_version: manifest.wow.clientDataVersion, build_level: 69814 } },
       },
       players: [
         {

@@ -1,4 +1,5 @@
-/** Published engine packs (scripts/update-engines.mjs). The app always runs the newest pack built for its own compat. */
+/** Published engine packs. A tab runs the newest compatible pack in its frozen channel. */
+import { ENGINE_CHANNEL_KEY, engineChannelLabel, isEngineChannel, resolveEngineChannel, type EngineChannel } from './channel'
 /** What changed in a pack, written by the updater from the upstream commits (scripts/update-engines.mjs releaseNotes). Plain text. */
 export interface EngineNotes {
   /** One line, only when players would notice the change. */
@@ -8,6 +9,8 @@ export interface EngineNotes {
 
 export interface EnginePack {
   id: string
+  /** Absent only in the legacy Live-only registry. */
+  engineChannel?: EngineChannel
   baseUrl: string
   /** App <-> pack contract (scripts/engine-compat.mjs). */
   compat: string
@@ -33,21 +36,34 @@ export interface EngineStatus {
 }
 
 export interface EngineIndex {
-  schemaVersion: 2
+  schemaVersion: 2 | 3
   packs: EnginePack[]
   status: EngineStatus | null
+  statusByChannel?: Record<EngineChannel, EngineStatus | null>
 }
 
 export const ENGINE_COMPAT: string = __ENGINE_COMPAT__
 
 /** `npm run dev` without a published index: the engine built into public/engine/. */
-const LOCAL_ENGINE: EnginePack = { id: 'local', baseUrl: '/engine/', compat: ENGINE_COMPAT, upstreamCommit: '', commitDate: '', publishedAt: '' }
+const localEngine = (channel: EngineChannel): EnginePack => ({ id: channel === 'live' ? 'local' : 'local-ptr', engineChannel: channel, baseUrl: channel === 'live' ? '/engine/' : '/engine/ptr/', compat: ENGINE_COMPAT, upstreamCommit: '', commitDate: '', publishedAt: '' })
 
 // Manual version selection is gone; nobody stays pinned to an old engine.
 try { localStorage.removeItem('frostsim.engineVersion') } catch { /* no storage */ }
 
+// Read once: storage events in another tab cannot change this tab's data or running jobs.
+export const activeEngineChannel: EngineChannel = (() => {
+  let preference: string | null = null
+  try { preference = localStorage.getItem(ENGINE_CHANNEL_KEY) } catch { /* no storage */ }
+  const explicit = typeof location === 'undefined' ? null : new URLSearchParams(location.search).get('engine')
+  return resolveEngineChannel(explicit, preference)
+})()
+
+export function rememberEngineChannel(channel: EngineChannel): void {
+  try { localStorage.setItem(ENGINE_CHANNEL_KEY, channel) } catch { /* reload URL retains the choice */ }
+}
+
 export function validEngineBase(value: string): boolean {
-  return value === '/engine/' || /^\/engine\/versions\/[a-z0-9][a-z0-9.-]{0,100}\/$/.test(value)
+  return value === '/engine/' || value === '/engine/ptr/' || /^\/engine\/versions\/[a-z0-9][a-z0-9.-]{0,100}\/$/.test(value)
 }
 
 const STATES = ['current', 'building', 'blocked', 'failed']
@@ -62,12 +78,13 @@ function cleanNotes(v: unknown): EngineNotes | undefined {
 
 export function parseEngineIndex(value: unknown): EngineIndex {
   const data = value as EngineIndex
-  if (data?.schemaVersion !== 2 || !Array.isArray(data.packs)) throw new Error('Invalid engine index')
+  if (![2, 3].includes(data?.schemaVersion) || !Array.isArray(data.packs)) throw new Error('Invalid engine index')
   const ids = new Set<string>()
   for (const p of data.packs) {
     if (!p || !text(p.id, 101) || !/^[a-z0-9][a-z0-9.-]{0,100}$/.test(p.id) || ids.has(p.id)
       || !text(p.baseUrl) || !validEngineBase(p.baseUrl) || !text(p.compat, 64)
-      || !/^[a-f0-9]{40}$/.test(p.upstreamCommit) || !text(p.commitDate, 40) || !text(p.publishedAt, 40)) {
+      || !/^[a-f0-9]{40}$/.test(p.upstreamCommit) || !text(p.commitDate, 40) || !text(p.publishedAt, 40)
+      || (data.schemaVersion === 3 ? !isEngineChannel(p.engineChannel) : p.engineChannel != null && p.engineChannel !== 'live')) {
       throw new Error('Invalid engine pack entry')
     }
     ids.add(p.id)
@@ -75,6 +92,13 @@ export function parseEngineIndex(value: unknown): EngineIndex {
   }
   const s = data.status
   if (s != null && (!STATES.includes(s.state) || !text(s.checkedAt, 40))) throw new Error('Invalid engine status')
+  if (data.schemaVersion === 3) {
+    if (!data.statusByChannel || !['live', 'ptr'].every(c => Object.hasOwn(data.statusByChannel!, c))) throw new Error('Invalid channel status')
+    for (const channel of ['live', 'ptr'] as const) {
+      const status = data.statusByChannel[channel]
+      if (status !== null && (!status || !STATES.includes(status.state) || !text(status.checkedAt, 40))) throw new Error('Invalid channel status')
+    }
+  }
   return data
 }
 
@@ -82,13 +106,18 @@ const newestFirst = (a: EnginePack, b: EnginePack) =>
   b.commitDate.localeCompare(a.commitDate) || b.publishedAt.localeCompare(a.publishedAt)
 
 /** Newest pack this app can run. */
-export function pickEngine(index: EngineIndex, compat = ENGINE_COMPAT): EnginePack | undefined {
-  return [...index.packs].sort(newestFirst).find(p => p.compat === compat)
+export function pickEngine(index: EngineIndex, compat = ENGINE_COMPAT, channel: EngineChannel = activeEngineChannel): EnginePack | undefined {
+  return [...index.packs].sort(newestFirst).find(p => p.compat === compat && (p.engineChannel ?? 'live') === channel)
+}
+
+export function statusForChannel(index: EngineIndex, channel: EngineChannel = activeEngineChannel): EngineStatus | null {
+  return index.schemaVersion === 3 ? index.statusByChannel?.[channel] ?? null : channel === 'live' ? index.status : null
 }
 
 export async function fetchEngineIndex(): Promise<EngineIndex> {
-  const response = await fetch('/engine-versions.json', { cache: 'no-cache' })
-  if (response.status === 404 && import.meta.env.DEV) return { schemaVersion: 2, packs: [LOCAL_ENGINE], status: null }
+  let response = await fetch('/engine-channels.json', { cache: 'no-cache' })
+  if (response.status === 404) response = await fetch('/engine-versions.json', { cache: 'no-cache' })
+  if (response.status === 404 && import.meta.env.DEV) return { schemaVersion: 3, packs: [localEngine(activeEngineChannel)], status: null, statusByChannel: { live: null, ptr: null } }
   if (!response.ok) throw new Error(`Engine index unavailable (${response.status})`)
   return parseEngineIndex(await response.json())
 }
@@ -102,10 +131,10 @@ export function loadEngineIndex(): Promise<EngineIndex> {
 /** No published pack matches this app yet: normal for a few minutes after a deploy. */
 export class EngineUnavailable extends Error {}
 
-export async function selectedEngine(): Promise<EnginePack> {
-  const pack = pickEngine(await loadEngineIndex())
-  if (!pack) throw new EngineUnavailable('The SimulationCraft engine for this version of Frostsim is still being built. Reload in a few minutes.')
-  return pack
+export async function selectedEngine(channel: EngineChannel = activeEngineChannel): Promise<EnginePack> {
+  const pack = pickEngine(await loadEngineIndex(), ENGINE_COMPAT, channel)
+  if (!pack) throw new EngineUnavailable(`The ${engineChannelLabel(channel)} SimulationCraft engine for this version of Frostsim is unavailable or still being built. ${channel === 'ptr' ? 'Switch to Live to run a Live simulation.' : 'Reload in a few minutes.'}`)
+  return { ...pack, engineChannel: pack.engineChannel ?? 'live' }
 }
 
 export interface EngineHealth {

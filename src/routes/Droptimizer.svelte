@@ -23,9 +23,12 @@
   import { retentionMessage, retentionOf } from '../lib/retention'
   import { sendItems } from '../lib/handoff.svelte'
   import { dropSettings } from '../lib/settings.svelte'
-  import { MAX_ITEM_LEVEL, seasonBuildOf, upgradeSeason, upgradeTracks, withMaxUpgrade, withUpgradeRank } from '../lib/catalog/upgrades'
-  import { MIN_KEY, isMplusSource, mplusReward, mplusRewardReference } from '../lib/catalog/mplusRewards'
-  import { atRaidDifficulty, hasRaidRewards, raidDifficulties, raidRewardLabel, raidRewardReferences, type RaidDifficulty } from '../lib/catalog/raidRewards'
+  import { MAX_ITEM_LEVEL, seasonBuildOf, tracksFor } from '../lib/catalog/upgrades'
+  import * as upgradeRules from '../lib/catalog/upgrades'
+  import { MIN_KEY, mplusRewardReference } from '../lib/catalog/mplusRewards'
+  import * as mplusRules from '../lib/catalog/mplusRewards'
+  import { raidDifficulties, raidRewardReferences, type RaidDifficulty } from '../lib/catalog/raidRewards'
+  import * as raidRules from '../lib/catalog/raidRewards'
   import { serializeItem } from '../lib/catalog/serialize'
   import { display } from '../lib/items'
   import { fmtDelta, fmtDeltaPct, fmtInt, fmtSeconds } from '../lib/format'
@@ -50,6 +53,15 @@
   const stored = $derived(activeStored())
   const busy = $derived(isBusy())
   const level = $derived(character?.level ?? 0)
+  const upgradeTracks = $derived(tracksFor(app.catalogRules))
+  const upgradeSeason = $derived(app.catalogRules?.upgrades?.season ?? { id: 0, name: 'Upgrade data unavailable' })
+  const withMaxUpgrade = <T extends import('../lib/catalog/types').ItemInstance>(item: T) => upgradeRules.withMaxUpgrade(item, app.catalogRules)
+  const withUpgradeRank = <T extends import('../lib/catalog/types').ItemInstance>(item: T, track: number, rank: number) => upgradeRules.withUpgradeRank(item, track, rank, app.catalogRules)
+  const mplusReward = (key: number, bonus: boolean) => mplusRules.mplusReward(key, bonus, app.catalogRules)
+  const isMplusSource = (source: LootSource) => mplusRules.isMplusSource(source, app.catalogRules)
+  const hasRaidRewards = (source: LootSource, build: string | undefined) => raidRules.hasRaidRewards(source, build, app.catalogRules)
+  const atRaidDifficulty = (source: DropSource, loot: LootSource, build: string | undefined, difficulty: RaidDifficulty, max: boolean, bonus: boolean) => raidRules.atRaidDifficulty(source, loot, build, difficulty, max, bonus, app.catalogRules)
+  const raidRewardLabel = (source: LootSource, difficulty: RaidDifficulty, max: boolean, bonus: boolean) => raidRules.raidRewardLabel(source, difficulty, max, bonus, app.catalogRules)
 
   let allSlots = $state(true)
   let result = $state<OptimizationResult | null>(null)

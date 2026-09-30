@@ -1,6 +1,7 @@
 <script lang="ts">
   import { router } from '../lib/router.svelte'
-  import { decodeReport, sharedConfidence, sharedGear, sharedDetail, type SharedReport } from '../lib/store/report-share'
+  import { decodeReport, sharedConfidence, sharedEngineChannel, sharedGear, sharedDetail, type SharedReport } from '../lib/store/report-share'
+  import { engineChannelLabel } from '../lib/simc/channel'
   import Metric from '../lib/ui/Metric.svelte'
   import GearStrip from '../lib/ui/GearStrip.svelte'
   import PlayerDetail from '../lib/ui/PlayerDetail.svelte'
@@ -11,6 +12,7 @@
   let report = $state<SharedReport | null>(null), error = $state(''), copied = $state(false)
   let copyError = $state('')
   let rawUrl = $state('')
+  const channel = $derived(report ? sharedEngineChannel(report) : undefined)
   $effect(() => {
     const payload = router.raw.slice(2)
     let cancelled = false
@@ -35,7 +37,7 @@
     <div class="report-main">
       <section class="panel stack-sm" data-class={report.meta.className}>
         <div class="spread"><div><span class="xs muted">Shared report</span><h1>{report.meta.kind}</h1></div><Metric value={report.d} confidence={sharedConfidence(report)} /></div>
-        <div><h2>{report.n}</h2><span class="small muted">{titleCase(report.c)} · Level {report.l}</span></div>
+        <div><h2>{report.n}</h2><span class="small muted">{titleCase(report.c)} · Level {report.l} · {channel ? engineChannelLabel(channel) : 'Channel not recorded'}</span></div>
         <GearStrip items={sharedGear(report)} size={40} />
       </section>
       {#if report.meta.valid === false}<p class="error" role="alert">The engine does not support this fight style for this specialization.</p>{/if}

@@ -49,6 +49,7 @@ const capability: EngineCapability = {
 }
 
 const minimalReport = {
+  git_revision: manifest.engine.upstreamCommit,
   version: '1210-01',
   report_version: '2.0.0',
   sim: {
@@ -233,7 +234,7 @@ describe('runJob happy path', () => {
     expect(msg.protocol).toBe(WORKER_PROTOCOL)
     expect(msg.profilePath).toBe('/profile.simc')
     expect(msg.reportPath).toBe('/out.json')
-    expect((msg.args as string[])[0]).toBe('/profile.simc')
+    expect((msg.args as string[]).slice(0, 2)).toEqual(['ptr=0', '/profile.simc'])
     expect(msg.args).toContain('target_error=0')
   })
 
@@ -1153,16 +1154,18 @@ describe('Dungeon Route compare by role', () => {
     const engines: FakeEngineWorker[] = []
     const events: JobEvent[] = []
     const route = ['enemy=frostsim_route_target', 'raid_events+=/pull,pull=1,delay=0,enemies=Mob_A:2700000']
-    const handle = track(runJob(request({
+    const roleRequest = request({
       profile: 'mage="Bob"\nspec=frost\nlevel=80\npaladin="Cy"\nspec=protection\nlevel=80',
       settings: { ...DEFAULT_SETTINGS, threads: 4, fightStyle: 'DungeonRoute', maxTime: 2700 },
       extraProfileLines: route,
-    }), (e) => events.push(e), {
+    })
+    const deps = {
       createEngineWorker: () => { const e = new FakeEngineWorker(); engines.push(e); return e as unknown as Worker },
       createReportWorker: () => new FakeReportWorker() as unknown as Worker,
       capability,
       threadReapGraceMs: 0,
-    }))
+    }
+    const handle = track(runJob(roleRequest, (e) => events.push(e), deps))
     await tick()
     const [dps] = engines
     expect((dps.sent[0] as { profile: string }).profile).toContain('Mob_A:2700000')
@@ -1179,5 +1182,18 @@ describe('Dungeon Route compare by role', () => {
     expect(outcome.report.players.map((p) => p.name)).toEqual(['Bob', 'Cy'])
     expect(outcome.inputWarnings.at(-1)).toContain('Cy (tank) faced 52%')
     expect(outcome.effectiveProfile).toContain('# Frostsim role group 2 of 2')
+    for (const mismatch of ['revision', 'channel']) {
+      engines.length = 0
+      const invalid = track(runJob(roleRequest, undefined, deps))
+      const rejected = expect(invalid.result).rejects.toMatchObject({ code: 'engine-identity-mismatch' })
+      await tick()
+      engines[0].done()
+      engines[0].emit({ protocol: WORKER_PROTOCOL, jobId: engines[0].jobId(), type: 'shutdown', reason: 'complete', threads: 4 })
+      const wrong = mismatch === 'revision' ? { ...minimalReport, git_revision: 'b'.repeat(7) }
+        : { ...minimalReport, sim: { ...minimalReport.sim, options: { ...minimalReport.sim.options,
+          dbc: { ...minimalReport.sim.options.dbc, version_used: 'PTR' } } } }
+      engines[1].done(wrong)
+      await rejected
+    }
   })
 })

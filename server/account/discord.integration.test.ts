@@ -4,7 +4,7 @@
 // share). R2 and Discord are a fake fetch. Each run owns a fresh schema, a temp engine index and unique Redis keys, and removes them.
 
 import { generateKeyPairSync, randomBytes, randomUUID, sign as edSign } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
@@ -71,6 +71,7 @@ describe.skipIf(!PG)('discord postgres integration (needs FROSTSIM_TEST_PG; the 
 
   const app = (): AppCtx => {
     const config = loadConfig({
+      ENGINE_INDEX_PATH: join(dir, 'engine-versions.json'), ENGINE_COMPAT: 'discord-test',
       FEATURES: 'discord,compute,shares', PUBLIC_ORIGIN: ORIGIN, DATABASE_URL: 'postgres://unused', SESSION_SECRET: 's'.repeat(32),
       R2_ACCOUNT_ID: 'acct', R2_ACCESS_KEY_ID: 'id', R2_SECRET_ACCESS_KEY: 'secret',
       DISCORD_PUBLIC_KEY: publicKey.export({ format: 'der', type: 'spki' }).subarray(-32).toString('hex'), DISCORD_APPLICATION_ID: APP_ID,
@@ -101,7 +102,10 @@ describe.skipIf(!PG)('discord postgres integration (needs FROSTSIM_TEST_PG; the 
     sql = connectDb(PG!, { connection: { search_path: schema } });
     await migrate(sql, new URL('./migrations/', import.meta.url));
     await sql`insert into workers (server_type, token_hash, cores, status, last_seen_at) values ('ccx53', ${sha256Hex(randomUUID())}, 32, 'ready', now())`;
-    writeFileSync(join(dir, 'engine-versions.json'), JSON.stringify({ packs: [{ id: PACK, compat: 'discord-test', commitDate: '2026-09-20T00:00:00Z' }] }));
+    const identity = { engineChannel: 'live', upstreamCommit: 'c015720'.padEnd(40, '0'), clientDataVersion: '12.1.0.69814' };
+    writeFileSync(join(dir, 'engine-versions.json'), JSON.stringify({ schemaVersion: 2, packs: [{ id: PACK, compat: 'discord-test', commitDate: '2026-09-20T00:00:00Z', ...identity }] }));
+    mkdirSync(join(dir, 'engine/versions', PACK), { recursive: true });
+    writeFileSync(join(dir, 'engine/versions', PACK, 'manifest.json'), JSON.stringify({ engineChannel: 'live', engine: { upstreamCommit: identity.upstreamCommit }, wow: { clientDataVersion: identity.clientDataVersion } }));
     process.env.ENGINE_INDEX_PATH = join(dir, 'engine-versions.json');
     process.env.ENGINE_COMPAT = 'discord-test';
   });
@@ -264,7 +268,8 @@ describe.skipIf(!PG)('discord postgres integration (needs FROSTSIM_TEST_PG; the 
     const claimed = await claimJob(app(), worker.id, 32);
     expect(claimed).toMatchObject({ id: job.id });
     objects.set(`frostsim-data/results/${job.id}.json.gz`, RESULT);
-    expect(await completeJob(app(), worker.id, job.id, 10, { dps: 223973.7, dpsError: 2137.6, iterations: 53 })).toBe('ok');
+    expect(await completeJob(app(), worker.id, job.id, 10, { dps: 223973.7, dpsError: 2137.6, iterations: 53 }, [], undefined,
+      { engineChannel: 'live', upstreamCommit: REPORT.git_revision, clientDataVersion: '12.1.0.69814', buildLevel: 69814 })).toBe('ok');
 
     await run(app());
     expect(edits).toHaveLength(3);

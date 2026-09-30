@@ -22,6 +22,9 @@ import {
   type ValidationIssue,
 } from './options'
 import { profilesetCount, workPlan } from './profileset-workers'
+import { isEngineChannel, resolveEngineChannel, type EngineChannel } from './channel'
+import type { SeasonRules } from '../catalog/rules'
+import { characterBlocks } from './multi-actor'
 
 export interface JobLimits {
   /** Worker start through engine module instantiation, which includes wasm download. */
@@ -34,6 +37,8 @@ export interface JobLimits {
 
 export interface SimRequest {
   schemaVersion: 1
+  /** Omitted on legacy requests means Live. Frozen before browser or cloud execution. */
+  engineChannel?: EngineChannel
   /** Identity of this run for the whole of its life. */
   jobId?: string
   /** 'guided' lets UI state fight style/duration/targets/accuracy; 'raw' is Expert Mode where script owns settings. */
@@ -66,6 +71,8 @@ export function validateRequest(req: SimRequest, maxThreads: number): Validation
     ?? (req.mode === 'raw' && typeof req.profile === 'string' ? [...req.profile.matchAll(/^\s*fight_style\s*=\s*(\w+)/gm)].at(-1)?.[1] : undefined)
     ?? req.settings?.fightStyle
   return [
+    ...(req.engineChannel !== undefined && !isEngineChannel(req.engineChannel)
+      ? [{ field: 'engineChannel', message: 'engineChannel must be live or ptr' }] : []),
     ...(style === 'DungeonRoute' && !hasFirstPull([req.profile, ...appended, ...extras, ...Object.values(req.slots ?? {})].join('\n'))
       ? [{ field: 'fightStyle', message: 'Dungeon Route needs a route with pull=1. Configure it in Advanced, or choose Dungeon Slice.' }] : []),
     ...validateProfile(req.profile),
@@ -88,7 +95,7 @@ export interface AssembledRun {
 
 /** Profile text and args for a validated request. Pool ceiling comes from the caller, never the request (D11). `engine`: 'wasm'
  *  treats maxThreads as the browser build's fixed pthread pool; 'native' (cloud workers) has none. */
-export function assembleRun(req: SimRequest, maxThreads: number, engine: 'wasm' | 'native' = 'wasm'): AssembledRun {
+export function assembleRun(req: SimRequest, maxThreads: number, engine: 'wasm' | 'native' = 'wasm', rules?: SeasonRules | null): AssembledRun {
   const mode = req.mode ?? 'guided'
   // A saved 16-thread setting opened against the fallback is clamped, not refused.
   const threads = clampThreads(req.settings.threads, maxThreads)
@@ -103,12 +110,17 @@ export function assembleRun(req: SimRequest, maxThreads: number, engine: 'wasm' 
   // Engine read order IS the scope (P10.3); app lines go after sanitisation so they are never rewritten, profilesets last.
   const slots = req.slots ?? {}
   warnings.push(...slotProblems(slots))
+  const context = rules === undefined && resolveEngineChannel(req.engineChannel) === 'ptr' ? null : rules
+  const blocks = mode === 'guided' ? characterBlocks(sanitized.text) : []
+  const guidedProfile = mode !== 'guided' ? sanitized.text : blocks.length > 1
+    ? blocks.map((block) => applyWeeklyDefaults(block.text, context)).join('\n')
+    : applyWeeklyDefaults(sanitized.text, context)
 
   const profile =
     [
       slots.header,
       slots.preActor,
-      mode === 'guided' ? applyWeeklyDefaults(sanitized.text) : sanitized.text,
+      mode === 'guided' ? guidedProfile : sanitized.text,
       slots.postActor,
       ...(req.extraProfileLines ?? []),
       ...(req.profilesets?.length ? profilesetLines(req.profilesets) : []),
@@ -137,6 +149,8 @@ export function assembleRun(req: SimRequest, maxThreads: number, engine: 'wasm' 
     mode,
     htmlReport: req.htmlReport,
   })
+  // Must precede the profile: ptr changes DBC identity when each actor is created.
+  args.unshift(`ptr=${resolveEngineChannel(req.engineChannel) === 'ptr' ? 1 : 0}`)
   if (plan.workThreads) args.splice(args.findIndex((a) => a.startsWith('threads=')) + 1, 0, `profileset_work_threads=${plan.workThreads}`)
   return { profile, args, warnings, threads: plan.threads }
 }

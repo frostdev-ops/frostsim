@@ -15,6 +15,7 @@ const mage = 'mage="Ann"\nspec=frost\nlevel=90'
 const rogue = 'rogue="Bo"\nspec=outlaw'
 const tank = 'paladin="Cy"\nspec=protection'
 const healer = 'priest="Di"\nspec=discipline'
+const engineManifest = { engineChannel: 'live', engine: { upstreamCommit: 'a'.repeat(40) }, wow: { clientDataVersion: '12.1.0.12345' } }
 
 describe('role shares', () => {
   it('reads each role from the class line and spec', () => {
@@ -67,7 +68,8 @@ class FakeEngine {
     queueMicrotask(() => {
       out({ type: 'ready' })
       out({ type: 'log', stream: 'out', lines: [`${this.name} running`] })
-      const report = new TextEncoder().encode(JSON.stringify({ sim: { players: [{ name: this.name }] } })).buffer
+      const report = new TextEncoder().encode(JSON.stringify({ git_revision: 'a'.repeat(7), ptr_enabled: false,
+        sim: { players: [{ name: this.name }], options: { dbc: { version_used: 'Live', Live: { wow_version: '12.1.0.12345', build_level: 12345 } } } } })).buffer
       if (this.hybrid) out({ type: 'shutdown', reason: 'complete', threads: 2 })
       out({ type: 'done', report, ...(this.cloud ? { placement: 'cloud', effective: { profile: 'x', args: [] } } : {}) })
       if (!this.cloud && !this.hybrid) out({ type: 'shutdown', reason: 'complete', threads: 2 })
@@ -87,7 +89,7 @@ describe('SequenceWorker', () => {
         if (e.data.type === 'shutdown') resolve()
       }
     })
-    w.postMessage({ protocol: WORKER_PROTOCOL, jobId: 'j1', profile: 'whole', args: ['x'], htmlPath: '/out.html' })
+    w.postMessage({ protocol: WORKER_PROTOCOL, jobId: 'j1', engineManifest, profile: 'whole', args: ['x'], htmlPath: '/out.html' })
     await finished
     expect(engines.map((e) => e.sent[0].profile)).toEqual(['a', 'c', 'd'])
     expect(engines[0].sent[0].htmlPath).toBeUndefined()
@@ -108,7 +110,7 @@ describe('SequenceWorker', () => {
         if (e.data.type === 'shutdown') resolve(got)
       }
     })
-    w.postMessage({ protocol: WORKER_PROTOCOL, jobId: 'j1' })
+    w.postMessage({ protocol: WORKER_PROTOCOL, jobId: 'j1', engineManifest })
     const got = await finished
     expect(engines[1].sent[0].profile).toBe('c')
     expect(got.at(-1)).toMatchObject({ type: 'shutdown', threads: 4 })
@@ -119,7 +121,7 @@ describe('SequenceWorker', () => {
     const engines = [new FakeEngine('Ann'), new FakeEngine('Cy')]
     const w = new SequenceWorker([{ profile: 'a', args: [] }, { profile: 'c', args: [] }], (i) => engines[i] as unknown as Worker)
     w.onmessage = () => {}
-    w.postMessage({ protocol: WORKER_PROTOCOL, jobId: 'j1' })
+    w.postMessage({ protocol: WORKER_PROTOCOL, jobId: 'j1', engineManifest })
     w.postMessage({ type: 'cancel' })
     await new Promise((r) => setTimeout(r, 0))
     expect(engines[1].sent).toEqual([])

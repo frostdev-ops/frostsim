@@ -1,16 +1,18 @@
 import { compareCandidates, multiplicityFactor } from './statistics';
 import type { CandidateMeasurement, OptimizationResult, StagePlan } from './types';
 import { VAULT_SOCKET_REWARD_ID, vaultTokenCount } from '../catalog/vaultRewards';
+import { liveRules, type SeasonRules } from '../catalog/rules';
 
 /** Currency advice requires every offered item, a complete search and usable uncertainty. */
 export function vaultRecommendation(result: OptimizationResult & { generation?: { capped: boolean }; budgetExhausted?: boolean; comparisonLooks?: number; comparisonCandidates?: number }, plan: StagePlan,
-  rewardIds: string[], panes: number, socketRequested: boolean): { title: string; reason: string } {
+  rewardIds: string[], panes: number, socketRequested: boolean, rules: SeasonRules | null = liveRules): { title: string; reason: string } {
+  if (!rules?.vault) return { title: 'Vault currency data unavailable', reason: 'This engine pack has no verified Vault currency policy. Item comparisons are still available.' };
   const pending = { title: 'Finish comparing your Vault', reason: 'Compare every offered reward and your best owned setup before choosing gear, tokens or a Voidcore.' };
   const measured = result.candidates.filter(s => s.status === 'measured' && s.measurement && Number.isFinite(s.measurement.mean)
     && !result.droppedWhileAlive.includes(s.candidate.id));
   const owned = measured.find(s => !s.candidate.provenance.vaultRewardId)?.measurement;
   const rewards = rewardIds.map(id => measured.find(s => s.candidate.provenance.vaultRewardId === id)?.measurement);
-  if (!vaultTokenCount(panes) || !rewardIds.length || rewardIds.length < panes || result.incomplete || result.generation?.capped
+  if (!vaultTokenCount(panes, rules) || !rewardIds.length || rewardIds.length < panes || result.incomplete || result.generation?.capped
     || result.truncated || result.droppedWhileAlive.length || result.budgetExhausted
     || !owned || rewards.some(m => !m)) return pending;
   const factor = plan.retentionFactor * (plan.correctForMultipleComparisons === false ? 1

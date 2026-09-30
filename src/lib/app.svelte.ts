@@ -8,8 +8,10 @@ import { CatalogClient } from './catalog/client'
 import type { CompatWarning } from './catalog/load'
 import type { CharacterConstraints } from './catalog/legality'
 import type { CatalogManifest, ResolvedItem } from './catalog/types'
+import type { SeasonRules } from './catalog/rules'
 import { characterConstraints } from './import/constraints'
-import { fetchEngineIndex, loadEngineIndex, pickEngine, type EnginePack, type EngineStatus } from './simc/versions'
+import { activeEngineChannel, fetchEngineIndex, loadEngineIndex, pickEngine, rememberEngineChannel, statusForChannel, type EnginePack, type EngineStatus } from './simc/versions'
+import { engineChannelLabel, type EngineChannel } from './simc/channel'
 import { expert, persistDrafts } from './advanced.svelte'
 import { forgetCharacterSelections, hasGearDrafts } from './selection.svelte'
 import { uniqueLoadoutNames, type ImportedCharacter, type ItemInstance } from './import/character'
@@ -88,6 +90,7 @@ export const app = $state({
   catalogError: '' as string,
   catalogWarnings: [] as CompatWarning[],
   catalogManifest: null as CatalogManifest | null,
+  catalogRules: null as SeasonRules | null,
   /** Resolved gear for the focused character, keyed by instanceId (a per-character cache makes switching instant). */
   resolved: new Map<string, ResolvedItem>(),
   /** Instance ids the catalog could not resolve, so the UI can label them. */
@@ -195,6 +198,7 @@ export function engineIdentity(): EngineIdentity | undefined {
     upstreamCommit: cap.manifest.engine.upstreamCommit,
     wowVersion: cap.manifest.wow.clientDataVersion,
     artifact: cap.manifest.artifact,
+    engineChannel: cap.manifest.engineChannel ?? 'live',
   }
 }
 
@@ -280,7 +284,7 @@ export async function checkCapability(): Promise<void> {
   try {
     const index = await loadEngineIndex()
     app.engine = pickEngine(index) ?? null
-    app.engineStatus = index.status
+    app.engineStatus = statusForChannel(index)
   } catch (err) { app.engineError = String(err) }
   app.capability = await detectEngineCapability()
   app.capabilityChecked = true
@@ -291,10 +295,10 @@ export async function checkCapability(): Promise<void> {
  * (the tab just came back into view) the page reloads onto it when nothing would be lost.
  */
 export async function checkEngineUpdate(autoReload: boolean): Promise<void> {
-  if (!app.engine || app.engine.id === 'local') return
+  if (!app.engine || app.engine.id.startsWith('local')) return
   let index
   try { index = await fetchEngineIndex() } catch { return }
-  app.engineStatus = index.status
+  app.engineStatus = statusForChannel(index)
   const newest = pickEngine(index)
   if (!newest || newest.id === app.engine.id) return
   app.engineUpdate = newest
@@ -305,12 +309,30 @@ export async function checkEngineUpdate(autoReload: boolean): Promise<void> {
  * Reload onto the newest engine: every screen, catalog and optimizer then uses it. Returns why it
  * could not, or null. Automatic reloads also wait for in-memory gear choices, which a reload drops.
  */
-export async function applyEngineUpdate(automatic: boolean): Promise<string | null> {
+export async function applyEngineUpdate(automatic: boolean, acceptDraftReset = false): Promise<string | null> {
   if (isBusy()) return 'Finish or cancel the running simulation first.'
   const readiness = await prepareForReload()
   if (!readiness.ok) return `Keep your work first: ${readiness.losses.join('; ')}.`
-  if ((automatic && hasGearDrafts()) || isBusy()) return null
-  location.reload()
+  if (hasGearDrafts() && !acceptDraftReset) return automatic ? null : 'Accept resetting unsimulated gear drafts before reloading.'
+  if (isBusy()) return 'Finish or cancel the running simulation first.'
+  const url = new URL(location.href)
+  url.searchParams.set('engine', activeEngineChannel)
+  location.replace(url.href)
+  return null
+}
+
+/** Channel changes follow the same preservation gate as updates and always carry an explicit URL. */
+export async function switchEngineChannel(channel: EngineChannel, acceptDraftReset = false): Promise<string | null> {
+  if (channel === activeEngineChannel) return null
+  if (isBusy()) return 'Finish or cancel the running simulation first.'
+  const readiness = await prepareForReload()
+  if (!readiness.ok) return `Keep your work first: ${readiness.losses.join('; ')}.`
+  if (hasGearDrafts() && !acceptDraftReset) return `Accept resetting unsimulated gear drafts before switching to ${engineChannelLabel(channel)}.`
+  if (isBusy()) return 'Finish or cancel the running simulation first.'
+  rememberEngineChannel(channel)
+  const url = new URL(location.href)
+  url.searchParams.set('engine', channel)
+  location.assign(url.href)
   return null
 }
 
@@ -321,7 +343,7 @@ export function catalogBaseUrl(): string | null {
   if (cap.engineDir.startsWith('/engine/versions/')) return `${cap.engineDir.replace(/fallback\/$/, '')}catalog`
   const m = cap.manifest
   const hotfix = (m.wow.hotfixHash ?? '').slice(0, 12)
-  return `/catalogs/${m.wow.clientDataVersion}-${hotfix}-${m.engine.upstreamCommit.slice(0, 7)}`
+  return m.engineChannel === 'ptr' ? '/engine/ptr/catalog' : `/catalogs/${m.engineChannel ? 'live-' : ''}${m.wow.clientDataVersion}-${hotfix}-${m.engine.upstreamCommit.slice(0, 7)}`
 }
 
 // Load catalog once; Quick Sim skips it so first run doesn't block.
@@ -412,6 +434,7 @@ export async function ensureCatalog(): Promise<SafeCatalog | null> {
             clientDataVersion: app.capability.manifest.wow.clientDataVersion,
             hotfixHash: app.capability.manifest.wow.hotfixHash,
             ptr: app.capability.manifest.wow.ptr,
+            engineChannel: app.capability.manifest.engineChannel ?? 'live',
           }
         : null,
     )
@@ -424,6 +447,7 @@ export async function ensureCatalog(): Promise<SafeCatalog | null> {
     }
     client = c
     app.catalogManifest = result.manifest
+    app.catalogRules = c.rules
     app.catalogWarnings = result.warnings
     app.catalogState = 'ready'
     loading = null

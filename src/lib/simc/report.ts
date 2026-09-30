@@ -1,4 +1,5 @@
 // simc JSON report (json=<path>,version=2) -> a compact typed result (P01.11). Fields read from vendor/simc report_json.cpp and validated against node relink.
+import type { EngineChannel } from './channel'
 
 export class ReportFormatError extends Error {
   readonly path: string
@@ -89,6 +90,8 @@ export interface ProfilesetResult {
 }
 
 export interface EngineIdentity {
+  /** Active dataset recorded by dbc.version_used; absent on historical reports without it. */
+  engineChannel?: EngineChannel
   simcVersion: string
   reportVersion: string
   gitRevision?: string
@@ -440,6 +443,8 @@ export function parseReport(raw: unknown): SimReport {
   const players = parsePlayers(sim.players, options)
   const logs = parseLogs(root.logs)
   const statistics = obj(sim.statistics, 'sim.statistics')
+  const gameData = parseGameData(obj(sim.options, 'sim.options'))
+  const versionUsed = optStr(optObj(optObj(sim.options)?.dbc)?.version_used)
 
   const relativeErrors = players
     .map((p) => p.dpsConfidence?.relativePct)
@@ -448,6 +453,7 @@ export function parseReport(raw: unknown): SimReport {
 
   return {
     engine: {
+      engineChannel: versionUsed === 'Live' ? 'live' : versionUsed === 'PTR' ? 'ptr' : undefined,
       simcVersion: reqStr(root.version, 'version'),
       reportVersion,
       gitRevision: optStr(root.git_revision),
@@ -457,7 +463,7 @@ export function parseReport(raw: unknown): SimReport {
       betaEnabled: truthy(root.beta_enabled),
       networkingDisabled: truthy(root.no_networking),
     },
-    gameData: parseGameData(obj(sim.options, 'sim.options')),
+    gameData,
     options,
     scaling: parseScaling(obj(sim.options, 'sim.options')),
     players,
@@ -481,6 +487,38 @@ export function parseReport(raw: unknown): SimReport {
       (worstRelativeErrorPct !== undefined && worstRelativeErrorPct < options.targetError),
     worstRelativeErrorPct,
   }
+}
+
+/** Never infer historical active identity from ptrEnabled, which says only what was compiled in. */
+export function reportEngineChannel(report: SimReport): EngineChannel | undefined {
+  return report.gameData ? (report.gameData.channel === 'Live' ? 'live' : report.gameData.channel === 'PTR' ? 'ptr' : undefined) : report.engine.engineChannel
+}
+
+/** Run acceptance gate, before results enter caches, history or cloud uploads. */
+type ExpectedEngine = { engineChannel?: EngineChannel; engine: { upstreamCommit: string }; wow: { clientDataVersion: string } }
+
+export function verifyReportIdentity(report: { engine: Pick<EngineIdentity, 'ptrEnabled' | 'gitRevision'>; gameData?: GameDataIdentity }, manifest: ExpectedEngine): void {
+  const channel = manifest.engineChannel ?? 'live'
+  if (report.gameData?.channel !== (channel === 'ptr' ? 'PTR' : 'Live')) {
+    throw new ReportFormatError('sim.options.dbc.version_used', `the report did not run the selected ${channel} dataset`)
+  }
+  if (channel === 'ptr' && !report.engine.ptrEnabled) throw new ReportFormatError('ptr_enabled', 'the PTR run used a binary without PTR data')
+  const revision = report.engine.gitRevision
+  if (!revision || !/^[a-f0-9]{7,40}$/i.test(revision) || !manifest.engine.upstreamCommit.startsWith(revision)) {
+    throw new ReportFormatError('git_revision', 'the report revision does not match the selected engine')
+  }
+  if (report.gameData.wowVersion !== manifest.wow.clientDataVersion ||
+      report.gameData.buildLevel !== Number(manifest.wow.clientDataVersion.split('.').at(-1))) {
+    throw new ReportFormatError('sim.options.dbc', 'the report game build does not match the selected engine')
+  }
+}
+
+export function verifyRawReportIdentity(raw: unknown, manifest: ExpectedEngine): void {
+  const root = obj(raw, '')
+  verifyReportIdentity({
+    engine: { ptrEnabled: truthy(root.ptr_enabled), gitRevision: optStr(root.git_revision) },
+    gameData: parseGameData(obj(obj(root.sim, 'sim').options, 'sim.options')),
+  }, manifest)
 }
 
 /** Which candidates came back; simc omits zero-mean profilesets, so diff ids to find unresolved ones (P07.7/P08.12). */

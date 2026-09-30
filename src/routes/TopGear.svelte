@@ -7,7 +7,7 @@
   import { reducedMotion, ms } from '../lib/theme.svelte'
   import { savedTalentLoadouts } from '../lib/talents.svelte'
   import { withPlayerScopedLines } from '../lib/simc/options'
-  import { applyWeeklyDefaults } from '../lib/simc/weekly-defaults'
+  import { applyWeeklyDefaults as applyPackWeeklyDefaults } from '../lib/simc/weekly-defaults'
   import { cancelActiveJob, engineBusy, loadPlayerDetail } from '../lib/simc/client'
   import { trace } from '../lib/trace'
   import { GEAR_SLOTS, SLOT_LABELS, PARSER_VERSION, parseAddonExport, type GearSlot, type ItemInstance, type ImportedCharacter } from '../lib/import/character'
@@ -65,8 +65,13 @@
   import ComparisonBars, { type ComparisonRow } from '../lib/ui/ComparisonBars.svelte'
   import ItemSearch from '../lib/ui/ItemSearch.svelte'
   import ItemUpgradePicker from '../lib/ui/ItemUpgradePicker.svelte'
-  import { withMaxUpgrade, upgradeSeason } from '../lib/catalog/upgrades'
-  import { VAULT_SOCKET_REWARD_ID, vaultCurrencySeason, vaultRewardReference, vaultTokenCount } from '../lib/catalog/vaultRewards'
+  import { withMaxUpgrade as withPackMaxUpgrade } from '../lib/catalog/upgrades'
+  import { VAULT_SOCKET_REWARD_ID, vaultRewardReference, vaultTokenCount as packVaultTokenCount } from '../lib/catalog/vaultRewards'
+  const upgradeSeason = $derived(app.catalogRules?.upgrades?.season ?? { id: 0, name: 'Upgrade data unavailable' })
+  const vaultCurrencySeason = $derived(app.catalogRules?.vault?.seasonId ?? -1)
+  const withMaxUpgrade = (item: ItemInstance) => withPackMaxUpgrade(item, app.catalogRules)
+  const vaultTokenCount = (panes: number) => packVaultTokenCount(panes, app.catalogRules)
+  const applyWeeklyDefaults = (profile: string) => applyPackWeeklyDefaults(profile, app.catalogRules)
   import { vaultRecommendation } from '../lib/optimization/vault'
   import type { GemOption } from '../lib/catalog/catalog'
   import ChoiceSelect from '../lib/ui/ChoiceSelect.svelte'
@@ -1040,7 +1045,7 @@
     })
   })
   const vaultAdvice = $derived(result && lastSearch && upgradeSeason.id === vaultCurrencySeason
-    ? vaultRecommendation(result, lastSearch.plan, lastSearch.vaultRewardIds, lastSearch.vaultPanes, !!lastSearch.selection.vaultSocketGemId) : null)
+    ? vaultRecommendation(result, lastSearch.plan, lastSearch.vaultRewardIds, lastSearch.vaultPanes, !!lastSearch.selection.vaultSocketGemId, app.catalogRules) : null)
 
   function deltaOf(mean: number): number {
     return mean - baselineMean
@@ -1234,6 +1239,7 @@
           <p class="small">Open your Great Vault in game, then paste a fresh SimulationCraft addon export to import its reward choices. You can also add a hypothetical choice below.</p>
         {/if}
         <div class="row-tight wrap"><label class="small">Reward slot <select bind:value={vaultSlot}>{#each GEAR_SLOTS.filter(slot => !['shirt', 'tabard', 'finger2', 'trinket2'].includes(slot)) as slot}<option value={slot}>{SLOT_LABELS[slot]}</option>{/each}</select></label><button class="sm" disabled={app.catalogState !== 'ready'} onclick={() => { searchAsVault = true; searchSlot = vaultSlot }}>Add Vault choice</button></div>
+        {#if !app.catalogRules?.vault}<p class="xs muted">Verified Vault currency rewards are unavailable for this engine pack. You can still compare imported item choices.</p>{/if}
         {#if upgradeSeason.id === vaultCurrencySeason}
           <details class="disclosure" open>
             <summary>Tokens & Voidcore alternatives</summary>

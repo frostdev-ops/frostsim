@@ -25,6 +25,7 @@ function reportFor(ids: string[], names = ['Bob']): string {
   return JSON.stringify({
     version: '1210-01',
     report_version: '2.0.0',
+    git_revision: capability.ok ? capability.manifest.engine.upstreamCommit : '',
     sim: {
       options: {
         iterations: 100, target_error: 0, threads: 4, max_time: 300, fight_style: 'Patchwerk', desired_targets: 1, single_actor_batch: false,
@@ -415,7 +416,7 @@ describe('hybrid runs', () => {
     const worker = createHybridEngine({ fetch: s.fetch, pollMs: 1000, cloudThreads: 12, speedStore: null })(request(4), PACK_DIR)!('threaded') as unknown as LocalEngine
     const got: Record<string, unknown>[] = []
     worker.onmessage = (e) => got.push((e as MessageEvent).data)
-    worker.postMessage({ protocol: WORKER_PROTOCOL, jobId: 'j1', profile: 'x', args: [] })
+    worker.postMessage({ protocol: WORKER_PROTOCOL, jobId: 'j1', profile: 'x', args: [], engineManifest: capability.ok ? capability.manifest : undefined })
     await vi.advanceTimersByTimeAsync(0)
     await drive(s, () => got.some((m) => m.type === 'shutdown'))
     expect(got.filter((m) => m.type === 'done' || m.type === 'shutdown').map((m) => m.type)).toEqual(['done', 'shutdown'])

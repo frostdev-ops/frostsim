@@ -10,8 +10,9 @@
   import { fmtInt, fmtPct, fmtSeconds, titleCase } from '../format'
   import { spellIconUrl } from '../media.svelte'
   import { RAID_BUFFS, type RaidBuff } from '../simc/raid-buffs'
-  import { weeklyDefaultLines, weeklyDefaultsSource } from '../simc/weekly-defaults'
-  import { sharedConfidence, type SharedReport } from '../store/report-share'
+  import { sharedConfidence, sharedEngineChannel, type SharedReport } from '../store/report-share'
+  import { reportEngineChannel } from '../simc/report'
+  import { engineChannelLabel } from '../simc/channel'
   import { routeSummary } from '../dungeonRoute'
 
   interface Props { outcome?: SimOutcome; shared?: SharedReport; detail?: PlayerDetail | null }
@@ -25,9 +26,9 @@
     actualIterations: shared!.meta.samples, iterationsSimulated: shared!.o[3], worstRelativeErrorPct: sharedConfidence(shared!)?.relativePct,
   })
   const options = $derived(report.options)
+  const channel = $derived(outcome ? reportEngineChannel(outcome.report) : shared ? sharedEngineChannel(shared) : undefined)
   const route = $derived(shared?.meta.route ?? routeSummary([outcome?.request.profile ?? '', ...(outcome?.request.extraProfileLines ?? [])].join('\n').split('\n')))
   const consumables = $derived(detail?.consumables)
-  const weeklyDefaults = $derived(outcome && outcome.request.mode !== 'raw' && weeklyDefaultLines(outcome.request.profile).length > 0)
   const consumableRows = $derived([
     { label: 'Flask / phial', value: consumables?.flask },
     { label: 'Food', value: consumables?.food },
@@ -73,12 +74,12 @@
     <div><dt>Iterations</dt><dd>{fmtInt(report.actualIterations ?? report.iterationsSimulated)}</dd></div>
     <div><dt>Processing time</dt><dd>{fmtSeconds(outcome?.appElapsedSeconds ?? shared?.elapsed)}</dd></div>
     <div><dt>Engine</dt><dd>SimC {report.engine.simcVersion}</dd></div>
+    <div><dt>Game version</dt><dd>{channel ? engineChannelLabel(channel) : 'Channel not recorded'}</dd></div>
   </dl>
   <details class="disclosure"><summary>Consumables</summary><dl>{#each consumableRows as row (row.label)}{@const item = catalogConsumables.find(item => item.option === row.value)}<div><dt>{row.label}</dt><dd>{#if item}<ItemLink itemId={item.itemId} name={item.name} />{:else}{consumableName(row.value)}{/if}</dd></div>{/each}</dl></details>
   <details class="disclosure"><summary>Technical details</summary><dl>
     <div><dt>Build</dt><dd>{report.engine.gitRevision ?? '—'}</dd></div>
     <div><dt>Target error</dt><dd>{options.targetError}%</dd></div>
-    {#if weeklyDefaults}<div><dt>Default baseline</dt><dd>{weeklyDefaultsSource.commit.slice(0, 7)}</dd></div>{/if}
   </dl></details>
 </section>
 <style>

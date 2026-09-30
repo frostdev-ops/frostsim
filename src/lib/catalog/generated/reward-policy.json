@@ -1,0 +1,20 @@
+{
+  "engineChannel": "live",
+  "build": "12.1.0.69814",
+  "seasonId": 18,
+  "mplus": {
+    "seasonId": 18,
+    "reference": "https://www.wowhead.com/guide/midnight/season-mythic-plus-rewards-loot-drops-mounts-achievements",
+    "rows": [
+      { "minKey": 2, "endOfRun": ["Champion", 2], "vault": ["Hero", 1] },
+      { "minKey": 4, "endOfRun": ["Champion", 3], "vault": ["Hero", 2] },
+      { "minKey": 5, "endOfRun": ["Champion", 4], "vault": ["Hero", 2] },
+      { "minKey": 6, "endOfRun": ["Hero", 1], "vault": ["Hero", 3] },
+      { "minKey": 7, "endOfRun": ["Hero", 1], "vault": ["Hero", 4] },
+      { "minKey": 8, "endOfRun": ["Hero", 2], "vault": ["Hero", 4] },
+      { "minKey": 10, "endOfRun": ["Hero", 3], "vault": ["Myth", 1] }
+    ]
+  },
+  "raidBonusRollRanks": { "lfr": ["Champion", 1], "normal": ["Hero", 1], "heroic": ["Myth", 1], "mythic": ["Myth", 6] },
+  "vault": { "seasonId": 18, "tokenPerPane": 2, "maxTokenPanes": 3, "socketCost": 6, "socketBonusId": 1808, "socketSlots": ["head", "wrist", "waist"], "reference": "https://www.wowhead.com/guide/systems/the-great-vault-weekly-rewards" }
+}

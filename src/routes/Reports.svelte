@@ -19,6 +19,9 @@
   import { sendSetup } from '../lib/handoff.svelte'
   import { quickSettings } from '../lib/settings.svelte'
   import { run, startRun } from '../lib/job.svelte'
+  import { activeEngineChannel } from '../lib/simc/versions'
+  import { reportEngineChannel } from '../lib/simc/report'
+  import { engineChannelLabel } from '../lib/simc/channel'
   let savedOutcome = $state<SimOutcome | null>(null)
   let reportError = $state('')
   function editSaved(): void {
@@ -85,6 +88,8 @@
         const blob = new Blob([raw], { type: 'application/json' })
         const report = await loadReportSummary(blob)
         if (detail?.id !== r.id) return
+        const channel = reportEngineChannel(report)
+        if (channel) detail = { ...r, engine: { ...r.engine, engineChannel: channel } }
         savedOutcome = { jobId: r.id, request, report, profilesetStatus: { completed: report.profilesets.map(p => p.name), missing: [] }, inputWarnings: [], appElapsedSeconds: r.summary.elapsedSeconds ?? report.timings.engineElapsedSeconds, engineIdentity: r.engine.upstreamCommit ?? '', engineNotices: [], effectiveProfile: '', effectiveArgs: [], getRawJson: () => blob, getHtmlReport: () => null }
       } catch { reportError = 'The saved detail could not be read.' }
     }
@@ -148,7 +153,7 @@
 </script>
 
 {#if savedOutcome}
-  <div class="stack"><div><button class="ghost sm" onclick={() => { savedOutcome = null; detail = null; navigate('reports') }}>← All reports</button></div><ReportResult outcome={savedOutcome} onrerun={() => { const request = savedOutcome!.request; navigate('quick'); void startRun({ tool: 'quick', title: detail?.title ?? 'Quick Sim', request }) }} onedit={editSaved} /></div>
+  <div class="stack"><div><button class="ghost sm" onclick={() => { savedOutcome = null; detail = null; navigate('reports') }}>← All reports</button></div><ReportResult outcome={savedOutcome} onrerun={() => { const request = { ...savedOutcome!.request, engineChannel: activeEngineChannel }; navigate('quick'); void startRun({ tool: 'quick', title: detail?.title ?? 'Quick Sim', request }) }} onedit={editSaved} /></div>
 {:else}
 <div class="stack">
   <CatalogStatus />
@@ -240,6 +245,7 @@
                   <span class="row-tight">
                     <strong class="truncate">{rep.title}</strong>
                     <span class="chip">{TOOL_LABELS[rep.tool]}</span>
+                    <span class="chip">{rep.engine.engineChannel ? engineChannelLabel(rep.engine.engineChannel) : 'Channel not recorded'}</span>
                     {#if rep.completion === 'partial'}<span class="chip warn">partial</span>{/if}
                     {#if rep.completion === 'cancelled'}<span class="chip">cancelled</span>{/if}
                     {#if rep.completion === 'failed'}<span class="chip bad">failed</span>{/if}
@@ -347,6 +353,7 @@
           {#if detail.engine.upstreamCommit}({detail.engine.upstreamCommit.slice(0, 7)}){/if}
           {#if detail.engine.wowVersion}· game data {detail.engine.wowVersion}{/if}
         </dd>
+        <dt>Game version</dt><dd>{detail.engine.engineChannel ? engineChannelLabel(detail.engine.engineChannel) : 'Channel not recorded'}</dd>
       </dl>
 
       {#if detail.summary.topCandidates?.length}

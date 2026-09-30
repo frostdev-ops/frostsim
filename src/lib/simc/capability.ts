@@ -1,7 +1,8 @@
 // Engine manifest + browser capability check before downloading 60 MB wasm (P02.1, P02.8). Manifest from artifact, not build config; read maxThreads from it.
 
 import { FALLBACK_MAX_THREADS, type Accuracy } from './options'
-import { EngineUnavailable, selectedEngine } from './versions'
+import { activeEngineChannel, EngineUnavailable, selectedEngine, type EnginePack } from './versions'
+import { isEngineChannel, resolveEngineChannel, type EngineChannel } from './channel'
 
 export type EngineVariant = 'threaded' | 'fallback'
 
@@ -15,6 +16,8 @@ export const MANIFEST_URL = `${ENGINE_DIRS.threaded}manifest.json`
 
 export interface EngineManifest {
   schemaVersion: number
+  /** Active dataset; wow.ptr is only the binary's ability to run PTR. Omitted legacy manifests are Live. */
+  engineChannel?: EngineChannel
   artifact: 'threaded' | 'fallback'
   engine: {
     simcVersion: string
@@ -25,6 +28,7 @@ export interface EngineManifest {
   wow: {
     clientDataVersion: string
     hotfixHash?: string
+    hotfixDate?: string
     hotfixBuild?: number
     ptr?: boolean
   }
@@ -82,7 +86,10 @@ function isManifest(v: unknown): v is EngineManifest {
     Number.isInteger(m.capabilities.maxThreads) &&
     Array.isArray(m.capabilities.reportVersions) &&
     !!m.engine &&
-    typeof m.engine.simcVersion === 'string'
+    typeof m.engine.simcVersion === 'string' &&
+    typeof m.engine.upstreamCommit === 'string' &&
+    !!m.wow &&
+    typeof m.wow.clientDataVersion === 'string'
   )
 }
 
@@ -123,12 +130,24 @@ async function evaluate(
   fetchImpl: typeof fetch | undefined,
   manifestUrl?: string,
   baseUrl = '/engine/',
+  engineChannel: EngineChannel = 'live',
+  pack?: EnginePack,
 ): Promise<EngineCapability> {
   let manifest: EngineManifest
   try {
     manifest = await fetchManifest(manifestUrl ?? `${baseUrl}${variant === 'fallback' ? 'fallback/' : ''}manifest.json`, fetchImpl)
   } catch (err) {
     return { ok: false, reason: 'manifest-unavailable', detail: err instanceof Error ? err.message : String(err) }
+  }
+
+  if ((manifest.engineChannel !== undefined && !isEngineChannel(manifest.engineChannel)) ||
+      resolveEngineChannel(manifest.engineChannel) !== engineChannel || (engineChannel === 'ptr' && manifest.wow?.ptr !== true)) {
+    return { ok: false, reason: 'artifact-mismatch', detail: `This engine manifest does not identify a ${engineChannel === 'ptr' ? 'PTR' : 'Live'} engine.`, manifest }
+  }
+
+  if (pack?.upstreamCommit && (manifest.engine.upstreamCommit !== pack.upstreamCommit ||
+      (pack.clientDataVersion !== undefined && manifest.wow?.clientDataVersion !== pack.clientDataVersion))) {
+    return { ok: false, reason: 'artifact-mismatch', detail: `This engine manifest does not match selected pack ${pack.id}.`, manifest }
   }
 
   const mismatches = [...(manifest.lockMismatches ?? []), ...(manifest.buildTreeMismatches ?? [])]
@@ -188,6 +207,7 @@ export async function detectEngineCapability(
     manifestUrl?: string
     fetchImpl?: typeof fetch
     baseUrl?: string
+    engineChannel?: EngineChannel
   } = {},
 ): Promise<EngineCapability> {
   if (typeof WebAssembly === 'undefined') {
@@ -209,20 +229,25 @@ export async function detectEngineCapability(
     }
   }
 
-  if (options.variant) return evaluate(options.variant, options.fetchImpl, options.manifestUrl, options.baseUrl)
-  if (options.manifestUrl) return evaluate('threaded', options.fetchImpl, options.manifestUrl, options.baseUrl)
+  const channel = resolveEngineChannel(options.engineChannel, activeEngineChannel)
+  if (options.variant) return evaluate(options.variant, options.fetchImpl, options.manifestUrl, options.baseUrl, channel)
+  if (options.manifestUrl) return evaluate('threaded', options.fetchImpl, options.manifestUrl, options.baseUrl, channel)
 
   let baseUrl = options.baseUrl ?? '/engine/'
+  let pack: EnginePack | undefined
   if (!options.baseUrl && !options.fetchImpl) {
-    try { baseUrl = (await selectedEngine()).baseUrl }
+    try {
+      pack = await selectedEngine(channel)
+      baseUrl = pack.baseUrl
+    }
     catch (err) {
       return { ok: false, reason: err instanceof EngineUnavailable ? 'engine-updating' : 'manifest-unavailable', detail: err instanceof Error ? err.message : String(err) }
     }
   }
-  const threaded = await evaluate('threaded', options.fetchImpl, undefined, baseUrl)
+  const threaded = await evaluate('threaded', options.fetchImpl, undefined, baseUrl, channel, pack)
   if (threaded.ok) return threaded
 
-  const fallback = await evaluate('fallback', options.fetchImpl, undefined, baseUrl)
+  const fallback = await evaluate('fallback', options.fetchImpl, undefined, baseUrl, channel, pack)
   if (fallback.ok) return fallback
 
   // Report why preferred artifact can't run, not why fallback is also missing.
@@ -232,6 +257,7 @@ export async function detectEngineCapability(
 /** Cache identity: engine, game data, canonical input. Labels are not identity. */
 export function engineIdentity(manifest: EngineManifest): string {
   return [
+    resolveEngineChannel(manifest.engineChannel),
     manifest.artifact,
     manifest.engine.simcVersion,
     manifest.engine.upstreamCommit,

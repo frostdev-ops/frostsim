@@ -2,6 +2,8 @@
 
 import { WORKER_PROTOCOL } from './job'
 import { mergeCharacters } from './multi-actor'
+import { verifyRawReportIdentity } from './report'
+import type { EngineManifest } from './capability'
 
 type Msg = Record<string, unknown> & { type?: string }
 /** Lifecycle messages the controller takes once; a later group's become heartbeats, which only keep the stall timer quiet. */
@@ -66,6 +68,13 @@ export class SequenceWorker {
     if (msg?.protocol !== WORKER_PROTOCOL || i !== this.i) return
     const last = i === this.starts.length - 1
     if (msg.type === 'done') {
+      try {
+        if (!this.start?.engineManifest) throw new Error('The role comparison has no frozen engine identity')
+        verifyRawReportIdentity(JSON.parse(new TextDecoder().decode(msg.report as ArrayBuffer)), this.start.engineManifest as EngineManifest)
+      } catch (err) {
+        this.stopped = true
+        return this.post({ ...msg, type: 'error', code: 'engine-identity-mismatch', message: err instanceof Error ? err.message : String(err) })
+      }
       this.reports.push(msg.report as ArrayBuffer)
       if (last) {
         let report: ArrayBuffer

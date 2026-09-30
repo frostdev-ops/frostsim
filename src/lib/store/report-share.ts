@@ -3,13 +3,21 @@ import { pipe, toBase64Url, fromBase64Url } from './share'
 import { parseAddonExport, GEAR_SLOTS, type ItemInstance } from '../import/character'
 import { damageBreakdown, type DamageRow, type PlayerDetail, type BuffRow } from '../simc/detail'
 import type { SimRequest } from '../simc/assemble'
-import type { ConfidenceInterval, ReportLog, SimReport, Timeline } from '../simc/report'
+import { reportEngineChannel, type ConfidenceInterval, type ReportLog, type SimReport, type Timeline } from '../simc/report'
+import { isEngineChannel, type EngineChannel } from '../simc/channel'
 import type { OptimizationResult } from '../optimization/types'
 import { routeSummary } from '../dungeonRoute'
 
 // Immutable public game vocabulary; old dictionaries must remain deployed.
 export const DICTIONARY = '8c3d10f8870811f961211bda0cce4b3e'
 export const LINK_LIMITS = { compact: 2000, detailed: 8000 } as const
+
+/** Old links already carried dbc identity in game; never use the viewer's selected channel. */
+export function sharedEngineChannel(shared: SharedReport): EngineChannel | undefined {
+  const game = shared.game as { channel?: unknown } | undefined
+  const channel = typeof game?.channel === 'string' ? game.channel.toLowerCase() : undefined
+  return isEngineChannel(channel) ? channel : undefined
+}
 type Damage = [number, string, string, number, number, number | null, number | null, Damage[]]
 type Gear = [string, number, number[], number, number[], number[], number, number, number, number, number, number, Record<string, string>]
 export interface SharedReport {
@@ -44,7 +52,7 @@ export function reportSnapshot(outcome: SnapshotSource, detail: PlayerDetail): S
   const data: SharedReport = {
     v: 1, n: p.name, c: p.specialization, l: character.level ?? 0, d: p.dps.mean,
     e: [p.dpsConfidence?.margin ?? null, p.dpsConfidence?.level ?? null],
-    engine: [report.engine.simcVersion, report.engine.gitRevision ?? null], game: report.gameData,
+    engine: [report.engine.simcVersion, report.engine.gitRevision ?? null], game: report.gameData ?? (reportEngineChannel(report) ? { channel: reportEngineChannel(report) } : undefined),
     o: [report.options.fightStyle, report.options.maxTime, report.options.desiredTargets, report.options.iterations, report.options.targetError, report.options.threads],
     elapsed: outcome.appElapsedSeconds, talents: character.talents ?? '', cons: detail.consumables, raid: detail.raidBuffs,
     w: [...report.logs, ...outcome.engineNotices].filter((v, i, a) => a.findIndex(x => x.kind === v.kind && x.message === v.message) === i),

@@ -13,6 +13,7 @@ import type {
 import type { Selection, WorkEstimate } from '../optimization/topgear';
 import type { GemOption, SearchQuery } from './catalog';
 import type { CompatWarning, EngineIdentity } from './load';
+import type { SeasonRules } from './rules';
 import type {
   CatalogManifest, Consumable, Embellishment, EnchantOption, GearSlot, ItemInstance, LootProvenance,
   LootSource, ResolvedItem, SetBonus, SpecEntry, TalentTree,
@@ -85,6 +86,7 @@ export function inlineTransport(state: WorkerState = newState()): Transport {
 }
 
 export class CatalogClient {
+  rules: SeasonRules | null = null;
   private readonly talentTrees = new Map<number, Promise<TalentTree | null>>();
   private constructor(private readonly transport: Transport) {}
 
@@ -96,6 +98,8 @@ export class CatalogClient {
   async load(baseUrl: string, engine: EngineIdentity | null): Promise<CatalogHandleResult> {
     const r = await this.transport.send({ kind: 'load', baseUrl, engine });
     if (r.kind !== 'load') throw new Error(`unexpected response ${r.kind}`);
+    this.rules = r.ok ? r.rules : null;
+    this.talentTrees.clear();
     return r.ok
       ? { ok: true, manifest: r.manifest, warnings: r.warnings }
       : { ok: false, reason: r.reason, message: r.message };

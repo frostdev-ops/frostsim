@@ -3,6 +3,9 @@
 // fresh schema and unique Redis keys, and removes both.
 
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Redis as RawRedis } from 'ioredis';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp, type AppCtx } from '../app';
@@ -15,7 +18,7 @@ import { createSession } from '../session';
 import { sha256Hex } from '../signed';
 import type { SimRequest } from '../../../src/lib/simc/assemble';
 import { DEFAULT_SETTINGS } from '../../../src/lib/simc/options';
-import { SCOPE_LOCK, cancelJob, claimJob, completeJob, enqueueJob, expireJobs, failJob, jobView, progressJob, resultBytes, tasks as queueTasks } from './queue';
+import { SCOPE_LOCK, cancelJob, claimJob, completeJob as finishJob, enqueueJob, expireJobs, failJob, jobView, progressJob, resultBytes, tasks as queueTasks } from './queue';
 import { HEARTBEAT_LOSS_MS, tick } from './autoscaler';
 import { PROVIDER_COOLDOWN_MS, rememberOffers } from './fleet';
 import { routes as clientRoutes } from './routes';
@@ -26,6 +29,9 @@ const REDIS = process.env.FROSTSIM_TEST_REDIS;
 const ORIGIN = 'https://sim.test';
 const PACK = 'c97e14c7a5ad-dc0508afe741';
 const ENGINE_SHA = 'e'.repeat(64);
+const IDENTITY = { engineChannel: 'live' as const, upstreamCommit: 'c'.repeat(40), clientDataVersion: '12.1.0.69814' };
+const EVIDENCE = { ...IDENTITY, buildLevel: 69814 };
+const completeJob: typeof finishJob = (app, worker, id, wall, summary, notices = [], cpu, evidence = EVIDENCE) => finishJob(app, worker, id, wall, summary, notices, cpu, evidence);
 const RESULT = new Uint8Array([31, 139, 8, 0, 1, 2, 3]);
 const START = Date.parse('2026-09-15T10:00:00Z');
 const PERIOD = { start: new Date(START - 86_400_000), end: new Date(START + 29 * 86_400_000) };
@@ -43,6 +49,7 @@ function simRequest(over: Partial<SimRequest> = {}): SimRequest {
 }
 
 describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', () => {
+  let packDir: string;
   const schema = `t_compute_${randomBytes(4).toString('hex')}`;
   let admin: Sql;
   let sql: Sql;
@@ -98,6 +105,7 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
   }) as typeof fetch;
 
   const env = {
+    ENGINE_COMPAT: 'test', ENGINE_INDEX_PATH: '',
     FEATURES: 'compute', PUBLIC_ORIGIN: ORIGIN, DATABASE_URL: 'postgres://unused', SESSION_SECRET: 's'.repeat(32),
     R2_ACCOUNT_ID: 'acct', R2_ACCESS_KEY_ID: 'id', R2_SECRET_ACCESS_KEY: 'secret',
     HCLOUD_TOKEN: 'hc', HCLOUD_LOCATION: 'fsn1', HCLOUD_SNAPSHOT_ID: '42', HCLOUD_SERVER_TYPE: 'ccx53', WORKER_MAX: '2', WORKER_MONTHLY_EUR_CAP: '50', USD_PER_EUR: '1',
@@ -136,6 +144,11 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
   const jobRow = async (id: string) => (await sql`select * from compute_jobs where id = ${id}`)[0];
 
   beforeAll(async () => {
+    packDir = mkdtempSync(join(tmpdir(), 'compute-pack-'));
+    env.ENGINE_INDEX_PATH = join(packDir, 'engine-channels.json');
+    mkdirSync(join(packDir, 'engine/versions', PACK), { recursive: true });
+    writeFileSync(env.ENGINE_INDEX_PATH, JSON.stringify({ schemaVersion: 3, packs: [{ id: PACK, compat: 'test', ...IDENTITY }] }));
+    writeFileSync(join(packDir, 'engine/versions', PACK, 'manifest.json'), JSON.stringify({ engineChannel: 'live', engine: { upstreamCommit: IDENTITY.upstreamCommit }, wow: { clientDataVersion: IDENTITY.clientDataVersion } }));
     admin = connectDb(PG!);
     await admin.unsafe(`create schema ${schema}`);
     sql = connectDb(PG!, { connection: { search_path: schema } });
@@ -149,6 +162,7 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
   });
 
   afterAll(async () => {
+    if (packDir) rmSync(packDir, { recursive: true, force: true });
     if (raw && redisKeys.size) await raw.del(...redisKeys);
     redis?.disconnect();
     raw?.disconnect();
@@ -175,7 +189,7 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
     const job = await jobRow((res as { id: string }).id);
     expect(job).toMatchObject({ status: 'queued', threads: 16, source: 'web', pack_id: PACK, user_id: u, guild_id: null, attempts: 0 });
     expect(job.payload.args).toContain('threads=16');
-    expect(job.payload.args[0]).toBe('/profile.simc');
+    expect(job.payload.args.slice(0, 2)).toEqual(['ptr=0', '/profile.simc']);
     expect(job.payload.profile).toContain('warlock=Fixture');
     expect(job.request.settings.threads).toBe(4);
   });
@@ -375,6 +389,7 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
       values (${u}, 'web', ${PACK}, 16, 'running', ${w.id}, ${now()}, ${now()}) returning id`;
     const [{ id: capJob }] = await sql`insert into compute_jobs (user_id, source, pack_id, threads, status, worker_id, claimed_at, created_at)
       values (${u}, 'web', ${PACK}, 16, 'running', ${w.id}, ${now()}, ${now()}) returning id`;
+    await sql`update compute_jobs set payload = ${sql.json({ engineIdentity: IDENTITY })} where id in (${cpuJob}, ${capJob})`;
     clock += 2_000;
     uploaded.add(cpuJob);
     uploaded.add(capJob);
@@ -429,7 +444,7 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
     const a = app();
     a.r2 = { ...a.r2, presign: async () => { throw new Error('r2 down'); } };
     const res = await handle(a)(new Request(`${ORIGIN}/api/v1/worker/claim`, {
-      method: 'POST', body: JSON.stringify({ freeCores: 32, agentVersion: '1' }),
+      method: 'POST', body: JSON.stringify({ freeCores: 32, agentVersion: '2' }),
       headers: { authorization: `Bearer ${w.token}`, 'content-type': 'application/json' },
     }), '10.0.0.1');
     expect(res.status).toBe(500);
@@ -508,11 +523,11 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
 
     const w = await addWorker({ status: 'booting' });
     const bearer = { authorization: `Bearer ${w.token}` };
-    expect((await post('/api/v1/worker/claim', { freeCores: 32, agentVersion: '1' }, { authorization: 'Bearer nope' })).status).toBe(401);
-    const claimed = await post('/api/v1/worker/claim', { freeCores: 32, agentVersion: '1' }, bearer);
+    expect((await post('/api/v1/worker/claim', { freeCores: 32, agentVersion: '2' }, { authorization: 'Bearer nope' })).status).toBe(401);
+    const claimed = await post('/api/v1/worker/claim', { freeCores: 32, agentVersion: '2' }, bearer);
     expect(claimed.status).toBe(200);
     const job = await claimed.json();
-    expect(Object.keys(job).sort()).toEqual(['args', 'engine', 'jobId', 'leaseSeconds', 'profile', 'resultPut', 'threads']);
+    expect(Object.keys(job).sort()).toEqual(['args', 'engine', 'engineIdentity', 'jobId', 'leaseSeconds', 'profile', 'resultPut', 'threads']);
     expect(job).toMatchObject({ jobId: id, threads: 16, leaseSeconds: 60, engine: { sha256: ENGINE_SHA } });
     expect(job.engine.url).toContain(`/frostsim-engines/engines/${PACK}/simc-linux-x64.zst?`);
     expect(job.resultPut.url).toContain(`/frostsim-data/results/${id}.json.gz?`);
@@ -531,7 +546,7 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
     expect(running).not.toHaveProperty('effective');
     expect((await post(`/api/v1/worker/jobs/${id}/complete`, { wallSeconds: 1, summary: {}, notices: 'x' }, bearer)).status).toBe(400);
     const notices = [...Array.from({ length: 205 }, (_, i) => `n${i}`), 'y'.repeat(600)];
-    const done = await post(`/api/v1/worker/jobs/${id}/complete`, { wallSeconds: 1.5, summary: { dps: 1, iterations: 1000 }, notices }, bearer);
+    const done = await post(`/api/v1/worker/jobs/${id}/complete`, { wallSeconds: 1.5, summary: { dps: 1, iterations: 1000 }, notices, engineIdentity: EVIDENCE }, bearer);
     expect(done.status).toBe(204);
     // Stored bounded (the last 200 lines, 500 characters each) in the payload, and returned beside the summary with what the worker ran.
     const view = await (await call(`/api/v1/compute/jobs/${id}`, { headers: { cookie: mine } })).json();
@@ -556,7 +571,7 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
     redisKeys.add(`frostsim:rl:compute-submit:${owner}:${Math.floor(clock / 60_000)}`);
     const second = (await (await post('/api/v1/compute/jobs', { packId: PACK, request: simRequest() }, { cookie: mine, origin: ORIGIN })).json()).id;
     redisKeys.add(`frostsim:job:${second}:log`).add(`frostsim:job:${second}:seq`);
-    expect((await (await post('/api/v1/worker/claim', { freeCores: 32, agentVersion: '1' }, bearer)).json()).jobId).toBe(second);
+    expect((await (await post('/api/v1/worker/claim', { freeCores: 32, agentVersion: '2' }, bearer)).json()).jobId).toBe(second);
     expect((await call(`/api/v1/compute/jobs/${second}`, { method: 'DELETE', headers: { cookie: mine, origin: ORIGIN } })).status).toBe(204);
     expect(await (await post(`/api/v1/worker/jobs/${second}/progress`, { lines: [] }, bearer)).json()).toEqual({ cancel: true });
     expect((await post(`/api/v1/worker/jobs/${second}/complete`, { wallSeconds: 1, summary: {} }, bearer)).status).toBe(409);
@@ -568,7 +583,7 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
     const started = Date.now();
     setTimeout(() => gone.abort(), 150);
     const res = await handle()(new Request(`${ORIGIN}/api/v1/worker/claim`, {
-      method: 'POST', signal: gone.signal, body: JSON.stringify({ freeCores: 8, agentVersion: '1' }),
+      method: 'POST', signal: gone.signal, body: JSON.stringify({ freeCores: 8, agentVersion: '2' }),
       headers: { authorization: `Bearer ${w.token}`, 'content-type': 'application/json' },
     }), '10.0.0.1');
     expect(res.status).toBe(204);
@@ -679,7 +694,7 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
 
       // It boots, claims, then goes silent: the server is deleted and its job goes back to the queue.
       const claimed = await handle()(new Request(`${ORIGIN}/api/v1/worker/claim`, {
-        method: 'POST', body: JSON.stringify({ freeCores: 32, agentVersion: '1' }),
+        method: 'POST', body: JSON.stringify({ freeCores: 32, agentVersion: '2' }),
         headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
       }), '10.0.0.1');
       expect((await claimed.json()).jobId).toBe(id);
@@ -722,10 +737,16 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
       const small = { HCLOUD_SERVER_TYPE: 'ccx33' };
       const wide = await enqueue(await user()); // 32 threads, queued under the default config before any ccx33 price is known
       expect(wide).toMatchObject({ ok: true });
+      // A queued legacy client had no channel prefix or stored manifest identity.
+      const old = await jobRow((wide as { id: string }).id);
+      await sql`update compute_jobs set payload = payload - 'engineIdentity' || ${sql.json({ args: old.payload.args.slice(1) })}
+        where id = ${(wide as { id: string }).id}`;
       await tick(app(small)); // caches ccx33's 8 cores
       const narrowed = await jobRow((wide as { id: string }).id);
       expect(narrowed).toMatchObject({ status: 'queued', threads: 8 });
       expect(narrowed.payload.args).toContain('threads=8');
+      expect(narrowed.payload.args.slice(0, 2)).toEqual(['ptr=0', '/profile.simc']);
+      expect(narrowed.payload.engineIdentity).toEqual(IDENTITY);
       expect(hcloudCalls.filter((c) => c.method === 'POST')).toHaveLength(1);
       const capped = await enqueueJob(app(small), { userId: await user(), guildId: null, source: 'web', packId: PACK, request: simRequest() });
       expect(capped).toMatchObject({ ok: true });

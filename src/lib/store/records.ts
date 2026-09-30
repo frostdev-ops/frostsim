@@ -1,8 +1,10 @@
 // Stored record shapes and portable file/link format (P11.4-P11.6); everything pure for testing without IndexedDB.
 
 import type { ImportedCharacter } from '../import/character'
+import { engineChannelLabel, type EngineChannel } from '../simc/channel'
 
 export interface EngineIdentity {
+  engineChannel?: EngineChannel
   simcVersion?: string
   upstreamCommit?: string
   wowVersion?: string
@@ -191,6 +193,12 @@ export function engineCompatibility(
   stored: EngineIdentity | undefined,
   current: EngineIdentity | undefined,
 ): { compatible: boolean; reason?: string } {
+  if (current?.engineChannel && !stored?.engineChannel) {
+    return { compatible: false, reason: 'Channel not recorded. Rerunning creates a new result on this tab\'s game version.' }
+  }
+  if (stored?.engineChannel && current?.engineChannel && stored.engineChannel !== current.engineChannel) {
+    return { compatible: false, reason: `Produced on ${engineChannelLabel(stored.engineChannel)}; this tab uses ${engineChannelLabel(current.engineChannel)}. Rerunning creates a new result.` }
+  }
   if (!stored?.upstreamCommit || !current?.upstreamCommit) {
     return {
       compatible: false,

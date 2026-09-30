@@ -15,6 +15,9 @@ import { cvOf, fitSpeed, iterationsFor, remainingSeconds, runFraction, secondsFo
 import { latestProgress } from '../../../src/lib/simc/progress';
 import { CLASS_LABELS } from '../../../src/lib/import/character';
 import { PACK_ID, nativeEngine, nativeInputProblem } from './native';
+import { trustedPack, type PackIdentity } from './packs';
+import { resolveEngineChannel } from '../../../src/lib/simc/channel';
+import type { SeasonRules } from '../../../src/lib/catalog/rules';
 import { cachedOffers, coreRate, fleetConfig, hourlyUsdSql, loadIdleFactors, monthSpend, roomFor, spendRows, worstCaseUsd, type IdleFactors } from './fleet';
 
 export const LEASE_S = 60;
@@ -62,11 +65,11 @@ export function cloudRequestProblem(request: unknown): string | null {
 
 /** The run a worker would get for this request at `threads`, or why the server refuses it (400). Pure, so the refusal corpus test
  *  (cloud/worker/refusal-corpus.test.mjs) checks exactly what enqueue checks before a worker's agent sees the arguments. */
-export function cloudRun(request: SimRequest, threads: number): { run: AssembledRun } | { problem: string } {
+export function cloudRun(request: SimRequest, threads: number, rules?: SeasonRules | null): { run: AssembledRun } | { problem: string } {
   const cloudReq: SimRequest = { ...request, settings: { ...request.settings, threads } };
   const issues = validateRequest(cloudReq, threads);
   if (issues.length) return { problem: issues.map((i) => `${i.field}: ${i.message}`).join('; ').slice(0, 1000) };
-  const run = assembleRun(cloudReq, threads, 'native');
+  const run = assembleRun(cloudReq, threads, 'native', rules);
   const unsafe = nativeInputProblem(run, request.extraOptions);
   return unsafe ? { problem: unsafe } : { run };
 }
@@ -106,11 +109,14 @@ export async function enqueueJob(
   const used = await usedCoreSeconds(app.sql, guildId ? { guildId } : { userId: userId! }, pool.periodStart, pool.periodEnd);
   if (used >= pool.coreSeconds) return refuse(402, 'no-allowance', NO_ALLOWANCE);
 
-  const prepared = cloudRun(request, jobThreads(app, pool.maxThreads));
+  if (!(await nativeEngine(app, packId))) return refuse(409, 'no-native-engine', 'This engine version has no cloud build yet.');
+  const pack = await trustedPack(packId, app.config.env);
+  if (!pack) return refuse(409, 'engine-identity-unavailable', 'This engine pack has no trusted identity available.');
+  if (pack.identity.engineChannel !== resolveEngineChannel(request.engineChannel)) return refuse(409, 'engine-channel-mismatch', 'The requested channel does not match this engine pack.');
+  const prepared = cloudRun(request, jobThreads(app, pool.maxThreads), pack.rules);
   if ('problem' in prepared) return refuse(400, 'invalid', prepared.problem);
   const { run } = prepared;
 
-  if (!(await nativeEngine(app, packId))) return refuse(409, 'no-native-engine', 'This engine version has no cloud build yet.');
   const capacity = await capacityProblem(app, run.threads);
   if (capacity) return refuse(503, 'capacity', capacity);
   // A first look against the dearest server the job could land on; claimJob holds the line with the worker's own price.
@@ -128,7 +134,7 @@ export async function enqueueJob(
     const [row] = await tx`insert into compute_jobs (user_id, guild_id, source, pack_id, threads, request, payload, status, created_at,
         character_id, idempotency_key, kind, meta)
       values (${userId}, ${guildId}, ${source}, ${packId}, ${run.threads}, ${tx.json(request as unknown as postgres.JSONValue)},
-        ${tx.json({ profile: run.profile, args: run.args })}, 'queued', ${now}, ${job.characterId ?? null}, ${job.idempotencyKey ?? null},
+        ${tx.json({ profile: run.profile, args: run.args, engineIdentity: { ...pack.identity } })}, 'queued', ${now}, ${job.characterId ?? null}, ${job.idempotencyKey ?? null},
         ${job.kind ?? null}, ${job.meta === undefined ? null : tx.json(job.meta as postgres.JSONValue)})
       returning id`;
     return row.id as string;
@@ -477,7 +483,7 @@ export async function cancelJob(app: App, id: string, by: { userId: string } | {
 
 // ---- Worker side (DESIGN.md P1) ----
 
-export interface Claimed { id: string; threads: number; packId: string; profile: string; args: string[] }
+export interface Claimed { id: string; threads: number; packId: string; profile: string; args: string[]; engineIdentity?: PackIdentity }
 
 /** One claim attempt: the oldest queued job that fits `freeCores` and whose scope has nothing running. 'draining' tells the caller
  *  to stop polling. SKIP LOCKED keeps concurrent workers off each other's rows; the scope lock keeps one running job per scope.
@@ -526,7 +532,7 @@ export async function claimJob(app: App, workerId: string, freeCores: number): P
       const [{ attempts }] = await tx`update compute_jobs set status = 'running', worker_id = ${workerId}, claimed_at = ${now},
         reserve_usd = ${reserve}, lease_until = ${new Date(now.getTime() + LEASE_S * 1000)}, attempts = attempts + 1 where id = ${job.id} returning attempts`;
       retried = attempts > 1;
-      return { id: job.id, threads: job.threads, packId: job.pack_id, profile: job.payload.profile, args: job.payload.args };
+      return { id: job.id, threads: job.threads, packId: job.pack_id, profile: job.payload.profile, args: job.payload.args, engineIdentity: job.payload.engineIdentity };
     }
     return null;
   });
@@ -577,9 +583,19 @@ const noticesJson = (app: App, notices: readonly string[]) => app.sql.json({ not
  *  'missing' fails the job: no result object. */
 export async function completeJob(
   app: App, workerId: string, id: string, wallSeconds: number, summary: Summary, notices: readonly string[] = [], cpuSeconds?: number,
+  evidence?: PackIdentity & { buildLevel: number },
 ): Promise<'ok' | 'lost' | 'missing'> {
-  const [job] = await app.sql`select threads, claimed_at from compute_jobs where id = ${id} and worker_id = ${workerId} and status = 'running'`;
+  const [job] = await app.sql`select threads, claimed_at, payload, pack_id from compute_jobs where id = ${id} and worker_id = ${workerId} and status = 'running'`;
   if (!job) return 'lost';
+  const legacyLive = job.payload?.args?.[0] === '/profile.simc';
+  const expected: PackIdentity | undefined = job.payload?.engineIdentity ??
+    (legacyLive ? (await trustedPack(job.pack_id, app.config.env))?.identity : undefined);
+  if (!expected || !evidence || evidence.engineChannel !== expected.engineChannel ||
+      !/^[a-f0-9]{7,40}$/i.test(evidence.upstreamCommit) || !expected.upstreamCommit.startsWith(evidence.upstreamCommit) ||
+      evidence.clientDataVersion !== expected.clientDataVersion || evidence.buildLevel !== Number(expected.clientDataVersion.split('.').at(-1))) {
+    await failJob(app, workerId, id, 'The report does not match the selected engine pack.', notices);
+    return 'missing';
+  }
   const head = await app.r2.head(app.config.env.R2_DATA_BUCKET!, resultKey(id));
   const size = Number(head?.get('content-length'));
   const now = app.now();

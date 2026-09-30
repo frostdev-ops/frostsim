@@ -91,7 +91,7 @@
     )
     // One character: exactly the single-actor request as before. More: one block each (multi-actor.ts).
     const parts = extras.length
-      ? multiActorParts([{ character, overrides }, ...extras.map((e) => ({ character: e.character }))], lines)
+      ? multiActorParts([{ character, overrides }, ...extras.map((e) => ({ character: e.character }))], lines, app.catalogRules)
       : { profile: buildProfile(character, overrides), extraProfileLines: lines, names: [character.name] }
     const main = stored?.label ?? character.name
     // A new run shows its own result, even when started from the reopened setup.

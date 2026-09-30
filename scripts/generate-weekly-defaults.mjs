@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { selectedChannel, clientBuild } from './catalog/channel.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const WEEKLY = 'b845947a34429874433d8e9362326894650dd20a';
@@ -47,19 +48,29 @@ export function differingDefaults(weekly, current) {
 }
 
 async function main() {
+  const engineChannel = selectedChannel();
   const lock = JSON.parse(readFileSync(resolve(ROOT, 'engine.lock.json'), 'utf8'));
+  const outIndex = process.argv.indexOf('--out');
+  const path = resolve(ROOT, outIndex >= 0 ? process.argv[outIndex + 1]
+    : engineChannel === 'ptr' ? 'public/engine/ptr/weekly-defaults.json' : 'src/lib/simc/generated/weekly-defaults.json');
+  if (engineChannel === 'ptr') {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({ engineChannel, build: clientBuild(engineChannel), engine: { commit: lock.upstream.commit },
+      weekly: null, rules: [], unavailable: ['Verified PTR guided defaults are unavailable; engine defaults are used.'] }, null, 2) + '\n');
+    return;
+  }
   const current = execFileSync('git', ['show', `${lock.upstream.commit}:${SOURCE}`], { cwd: resolve(ROOT, lock.upstream.path), encoding: 'utf8' });
   const response = await fetch(URL, { signal: AbortSignal.timeout(30_000) });
   if (!response.ok) throw new Error(`Weekly source: HTTP ${response.status}`);
   const weekly = await response.text();
   const hash = (text) => createHash('sha256').update(text).digest('hex');
   const output = {
+    engineChannel, build: clientBuild(engineChannel),
     scope: 'Warlock consumable differences only; not a complete Weekly engine emulation',
     weekly: { commit: WEEKLY, source: URL, sha256: hash(weekly) },
     engine: { commit: lock.upstream.commit, source: SOURCE, sha256: hash(current) },
     rules: differingDefaults(weekly, current),
   };
-  const path = resolve(ROOT, 'src/lib/simc/generated/weekly-defaults.json');
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, JSON.stringify(output, null, 2) + '\n');
   process.stdout.write(`Generated ${output.rules.length} Weekly consumable override(s).\n`);

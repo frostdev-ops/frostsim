@@ -37,6 +37,7 @@ const fallbackCapability: EngineCapability = {
 const report = {
   version: '1210-01',
   report_version: '2.0.0',
+  git_revision: manifest.engine.upstreamCommit,
   sim: {
     options: {
       iterations: 53, target_error: 0, threads: 4, max_time: 300, fight_style: 'Patchwerk', desired_targets: 1,

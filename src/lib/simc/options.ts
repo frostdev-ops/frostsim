@@ -110,6 +110,51 @@ export interface SanitizedProfile {
 
 const OPTION_LINE = /^\s*([A-Za-z_][A-Za-z0-9_.]*)\s*(\+?=)/
 
+/** Same quote handling as simc util::string_split_allow_quotes (including its closing-quote delimiter quirk). */
+export function simcTokens(line: string): string[] {
+  const tokens: string[] = []
+  let buffer = '', start = 0, quoted = false
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] === '"') {
+      buffer += line.slice(start, i)
+      start = i + 1
+      quoted = !quoted
+    } else if (!quoted && /[ \t\n\r]/.test(line[i])) {
+      if (i > start) { tokens.push(buffer + line.slice(start, i)); buffer = '' }
+      start = i + 1
+    }
+  }
+  buffer += line.slice(start)
+  if (buffer) tokens.push(buffer)
+  return tokens
+}
+
+/** ptr is read while actors are constructed, so a later override cannot safely undo a script assignment. */
+export function channelOptionProblem(text: string): string | null {
+  function problem(token: string): string | null {
+    const eq = token.indexOf('=')
+    if (eq < 1) return null
+    const name = token.slice(0, eq).replace(/\s*\+?\s*$/, '').toLowerCase()
+    if (name === 'ptr') return '"ptr" is application-owned; choose Live or PTR with the engine selector.'
+    if (name.includes('$')) return 'Template variables in option names cannot be used; they could override the engine channel.'
+    if (name.startsWith('profileset') && name.includes('.')) {
+      if (token.slice(eq + 1).includes('$')) return 'Template variables in profileset options could override the engine channel.'
+      return problem(token.slice(eq + 1))
+    }
+    return null
+  }
+  for (const [index, raw] of text.split('\n').entries()) {
+    const line = index === 0 ? raw.replace(/^\uFEFF/, '') : raw
+    if (line.trimStart().startsWith('#')) continue
+    if (OPTION_LINE.exec(line)?.[1].toLowerCase() === 'ptr') return '"ptr" is application-owned; choose Live or PTR with the engine selector.'
+    for (const token of simcTokens(line)) {
+      const issue = problem(token)
+      if (issue) return issue
+    }
+  }
+  return null
+}
+
 /** Comments out application-owned assignments; in raw mode script's stopping options survive; when run settings state accuracy, app arguments come last. */
 export function sanitizeProfile(profile: string, mode: RunMode = 'guided'): SanitizedProfile {
   const warnings: string[] = []
@@ -343,6 +388,8 @@ export function validateProfile(profile: unknown): ValidationIssue[] {
   if (!profile.trim()) {
     return [{ field: 'profile', message: 'profile is empty' }]
   }
+  const channelProblem = channelOptionProblem(profile)
+  if (channelProblem) return [{ field: 'profile', message: channelProblem }]
   const bytes = new TextEncoder().encode(profile).length
   if (bytes > LIMITS.profileBytes) {
     return [
@@ -394,6 +441,8 @@ export function validateProfilesets(sets: readonly ProfilesetSpec[] | undefined)
         break
       }
       const item = itemLineProblem(line)
+      const channelProblem = channelOptionProblem(line)
+      if (channelProblem) { issues.push({ field: `${field}.lines`, message: channelProblem }); break }
       if (item) {
         issues.push({ field: `${field}.lines`, message: item })
         break
@@ -525,6 +574,8 @@ export function validateExtraProfileLines(lines: readonly string[] | undefined):
       continue
     }
     const name = OPTION_LINE.exec(line)?.[1]?.toLowerCase()
+    const channelProblem = channelOptionProblem(line)
+    if (channelProblem) { issues.push({ field: `extraProfileLines[${i}]`, message: channelProblem }); continue }
     if (name && PROTECTED_SET.has(name)) {
       issues.push({ field: `extraProfileLines[${i}]`, message: `"${name}" is application-owned and cannot be set here` })
       continue
@@ -556,6 +607,8 @@ export function validateSlots(slots: unknown): ValidationIssue[] {
     }
     total += text.length
     const lines = text.split('\n')
+    const channelProblem = channelOptionProblem(text)
+    if (channelProblem) issues.push({ field: `slots.${slot}`, message: channelProblem })
     for (let i = 0; i < lines.length; i++) {
       const name = OPTION_LINE.exec(lines[i])?.[1]?.toLowerCase()
       if (name && PROTECTED_SET.has(name)) {
@@ -586,6 +639,8 @@ export function validateExtraOptions(options: readonly string[] | undefined): Va
       continue
     }
     const name = OPTION_LINE.exec(opt)?.[1]?.toLowerCase()
+    const channelProblem = channelOptionProblem(opt)
+    if (channelProblem) { issues.push({ field: `extraOptions[${i}]`, message: channelProblem }); continue }
     if (name && PROTECTED_SET.has(name)) {
       issues.push({ field: `extraOptions[${i}]`, message: `"${name}" is application-owned and cannot be set here` })
       continue

@@ -8,6 +8,8 @@
   // are looking at is broken. Everything below is measured in this page, from
   // this origin, right now.
   import { app, catalogBaseUrl, engineIdentity, isBusy } from '../lib/app.svelte'
+  import { activeEngineChannel } from '../lib/simc/versions'
+  import { engineChannelLabel } from '../lib/simc/channel'
   import { engineSlotStatus, engineSlotSupported } from '../lib/simc/client'
   import {
     auditDiagnostic, browserFacts, buildDiagnostic, buildIdentity, engineCached,
@@ -43,7 +45,7 @@
     if (!manifest || !catalog) return null
     const problems: string[] = []
     const catalogId = catalog.catalogId ?? ''
-    if (catalogId && !catalogId.startsWith(manifest.wow.clientDataVersion)) {
+    if (catalogId && !catalogId.includes(manifest.wow.clientDataVersion)) {
       problems.push(
         `The engine carries game data ${manifest.wow.clientDataVersion}, and the catalog was built for a different version (${catalogId}).`,
       )
@@ -173,6 +175,7 @@
     <h2 class="small">Engine and game data</h2>
     {#if manifest}
       <dl class="kv">
+        <dt>Game version</dt><dd>{engineChannelLabel(manifest.engineChannel ?? activeEngineChannel)}</dd>
         <dt>SimulationCraft</dt><dd class="mono">{manifest.engine.simcVersion}</dd>
         <dt>Upstream revision</dt>
         <dd class="mono">
@@ -201,8 +204,9 @@
           {manifest.wow.hotfixHash?.slice(0, 12) ?? 'none recorded'}
           ({manifest.wow.hotfixBuild ?? '—'})
         </dd>
-        <dt>PTR data</dt>
-        <dd>{manifest.wow.ptr ? 'included' : 'excluded — Frostsim does not simulate PTR content'}</dd>
+        <dt>PTR tables compiled</dt>
+        <dd>{manifest.wow.ptr ? 'included' : 'excluded'}</dd>
+        <dt>Data hotfix date</dt><dd>{manifest.wow.hotfixDate ?? 'not recorded'}</dd>
         <dt>Artifact</dt><dd class="mono">{manifest.artifact}</dd>
       </dl>
     {:else}

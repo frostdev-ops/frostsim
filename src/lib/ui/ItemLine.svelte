@@ -43,7 +43,7 @@
   }
   const closeTip = () => (tipAt = null)
   const info = $derived(item ? display(item, app.resolved, app.catalogState === 'ready') : null)
-  const upgrade = $derived(item ? itemUpgradeTrack(item) : null)
+  const upgrade = $derived(item ? itemUpgradeTrack(item, app.catalogRules) : null)
 
   // Quality rim is item-tooltip cue; quality name always shown.
   const qualityVar = $derived(

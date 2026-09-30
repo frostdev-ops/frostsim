@@ -18,6 +18,9 @@ import {
 } from './cost'
 import { localCv, localSpeed, recordRawReport } from './speed-store'
 import type { EngineVariant } from './capability'
+import type { EngineManifest } from './capability'
+import type { SeasonRules } from '../catalog/rules'
+import { verifyRawReportIdentity } from './report'
 
 export { characterBlocks, mergeCharacters, splitOf, type SplitKind }
 
@@ -87,7 +90,7 @@ interface Plan {
   shared: number
   both?: string[]
   request: (pieces: readonly number[]) => SimRequest
-  localStart: (start: { profile: string; args: string[] }, pieces: readonly number[]) => { profile: string; args: string[] }
+  localStart: (start: { profile: string; args: string[]; seasonRules?: unknown }, pieces: readonly number[]) => { profile: string; args: string[] }
 }
 
 export function planOf(req: SimRequest): Plan | null {
@@ -112,7 +115,7 @@ export function planOf(req: SimRequest): Plan | null {
     return {
       kind: 'characters', names: blocks.map((b) => b.name), shared, request,
       // The profile is independent of the thread ceiling; args stay the controller's own.
-      localStart: (start, pieces) => ({ ...start, profile: assembleRun(request(pieces), Math.max(1, req.settings.threads)).profile }),
+      localStart: (start, pieces) => ({ ...start, profile: assembleRun(request(pieces), Math.max(1, req.settings.threads), 'wasm', start.seasonRules as SeasonRules | null | undefined).profile }),
     }
   }
   const { stats, both } = scaleStats(req.extraOptions ?? [])!
@@ -529,6 +532,13 @@ class HybridWorker {
 
   private chunkDone(c: Chunk, report: ArrayBuffer): void {
     if (c.cancelled || c.done) return
+    try {
+      if (!this.start?.engineManifest) throw new Error('The hybrid run has no frozen engine identity')
+      verifyRawReportIdentity(JSON.parse(new TextDecoder().decode(report)), this.start.engineManifest as EngineManifest)
+    } catch (err) {
+      this.post({ type: 'error', code: 'engine-identity-mismatch', message: err instanceof Error ? err.message : String(err) })
+      return
+    }
     c.done = true
     if (c.side === 'cloud') this.running.delete(c)
     const fresh = c.pieces.filter((i) => !this.done.has(i))

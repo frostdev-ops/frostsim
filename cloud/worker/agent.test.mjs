@@ -147,7 +147,8 @@ else {
   console.log('Generating baseline...');
   process.stderr.write('Warning: fake notice\\n');
   setTimeout(() => {
-    fs.writeFileSync(out, JSON.stringify({ sim: { options: { iterations: 1000, confidence_estimator: 1.96 },
+    fs.writeFileSync(out, JSON.stringify({ git_revision: '${'a'.repeat(40)}', sim: { options: { iterations: 1000, confidence_estimator: 1.96,
+      dbc: { version_used: 'Live', Live: { wow_version: '12.1.0.69814', build_level: 69814 } } },
       players: [{ collected_data: { dps: { mean: 1234.5, mean_std_dev: 10 } } }] } }));
     console.log('done');
     if (text.includes('MODE=cpu')) process.stderr.write('Service runtime: 20ms\\nCPU time consumed: 1.5s\\nMemory peak: 1M\\n');
@@ -224,6 +225,7 @@ describe('serve against a fake coordinator', { timeout: SERVE_TIMEOUT_MS }, () =
   });
 
   const job = (jobId, profile, overrides = {}) => ({ jobId, threads: 2, profile, args: ARGS, leaseSeconds: 60,
+    engineIdentity: { engineChannel: 'live', upstreamCommit: 'a'.repeat(40), clientDataVersion: '12.1.0.69814' },
     engine: { url: `${base}/engine`, sha256: engineSha }, resultPut: { url: `${base}/result/${jobId}` }, ...overrides });
 
   // Emulates the systemd bind mount: /job inside the sandbox is the host job dir.
@@ -245,7 +247,7 @@ describe('serve against a fake coordinator', { timeout: SERVE_TIMEOUT_MS }, () =
     push(503, job('ok-1', 'MODE=slow\n'), job('ok-2', 'MODE=slow\n'));
     await withAgent(() => until(() => logged('ok-1', 'done') && logged('ok-2', 'done')));
     expect(record.claims.slice(0, 3).map((c) => c.freeCores)).toEqual([4, 4, 2]);
-    expect(record.claims[0].agentVersion).toBe('1');
+    expect(record.claims[0].agentVersion).toBe('2');
     for (const id of ['ok-1', 'ok-2']) {
       const result = record.results.get(id);
       expect(result.type).toBe('application/gzip');

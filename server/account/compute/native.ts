@@ -3,7 +3,7 @@
 
 import type { AppCtx } from '../app';
 import { tryRedis } from '../redis';
-import { PROFILE_PATH, PROTECTED_OPTIONS, REPORT_PATH } from '../../../src/lib/simc/options';
+import { PROFILE_PATH, PROTECTED_OPTIONS, REPORT_PATH, simcTokens } from '../../../src/lib/simc/options';
 import type { AssembledRun } from '../../../src/lib/simc/assemble';
 
 /** Same shape the browser accepts for a pack id (src/lib/simc/versions.ts). */
@@ -33,29 +33,7 @@ const PROTECTED: ReadonlySet<string> = new Set<string>(PROTECTED_OPTIONS);
 /** simc's util::string_split_allow_quotes, ported exactly: split on space/tab/CR/LF outside double quotes, quotes dropped. Its quirk
  *  is kept too: a delimiter right after a closing quote does not end the token (`a="x" b=1` is ONE token). A looser tokenizer here
  *  could pass a token simc then sees differently. */
-export function simcTokens(line: string): string[] {
-  const tokens: string[] = [];
-  let buffer = '';
-  let start = 0;
-  let quoted = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === '"') {
-      buffer += line.slice(start, i);
-      start = i + 1;
-      quoted = !quoted;
-    } else if (!quoted && (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r')) {
-      if (i > start) {
-        tokens.push(buffer + line.slice(start, i));
-        buffer = '';
-      }
-      start = i + 1;
-    }
-  }
-  buffer += line.slice(start);
-  if (buffer) tokens.push(buffer);
-  return tokens;
-}
+export { simcTokens } from '../../../src/lib/simc/options';
 
 /** Option names simc reads or writes a file for (vendor/simc: input, output, html, xml, json, json2, local_json, save, save_gear,
  *  save_talents, save_actions, save_prefix, save_suffix, reforge_plot_output_file, spell_query_xml_output_file), matched anywhere in a
@@ -103,7 +81,10 @@ export function nativeInputProblem(run: AssembledRun, extraOptions: readonly str
     if (problem) return `Extra option: ${problem}.`;
   }
   const reports = run.args.filter((arg) => arg.startsWith('json='));
-  if (run.args[0] !== PROFILE_PATH || reports.length !== 1 || reports[0] !== `json=${REPORT_PATH},version=2`) {
+  const prefix = run.args[0] === 'ptr=0' || run.args[0] === 'ptr=1';
+  const profileIndex = prefix ? 1 : 0;
+  if (run.args[profileIndex] !== PROFILE_PATH || reports.length !== 1 || reports[0] !== `json=${REPORT_PATH},version=2` ||
+      run.args.slice(profileIndex + 1).some((arg) => /(^|[\s="'])ptr\s*\+?=/i.test(arg))) {
     return 'The run arguments are not the ones a cloud worker accepts.';
   }
   return null;

@@ -2,10 +2,28 @@
 
 import { Catalog, type CatalogPayloads } from './catalog';
 import type { CatalogManifest, TalentTree } from './types';
+import { rulesMatch, type SeasonRules } from './rules';
+import type { EngineChannel } from '../simc/channel';
+import { isEngineChannel } from '../simc/channel';
 
 export const SUPPORTED_CATALOG_SCHEMA = 1;
 
+/** Validate fields read before and during catalog use; malformed metadata must settle loading. */
+export function validCatalogManifest(manifest: CatalogManifest): boolean {
+  const engine = manifest?.engine;
+  return !!engine && typeof manifest.catalogId === 'string' && Array.isArray(manifest.coverage)
+    && manifest.coverage.every(entry => !!entry && typeof entry.field === 'string'
+      && ['verified', 'partial', 'unavailable'].includes(entry.status))
+    && !!manifest.counts && typeof manifest.counts === 'object' && Array.isArray(manifest.files)
+    && typeof engine.clientDataVersion === 'string' && typeof engine.hotfixHash === 'string'
+    && (engine.upstreamCommit === null || typeof engine.upstreamCommit === 'string')
+    && (manifest.engineChannel === undefined || isEngineChannel(manifest.engineChannel))
+    && (engine.engineChannel === undefined || isEngineChannel(engine.engineChannel))
+    && (!manifest.engineChannel || !engine.engineChannel || manifest.engineChannel === engine.engineChannel);
+}
+
 export interface EngineIdentity {
+  engineChannel?: EngineChannel;
   upstreamCommit?: string | null;
   clientDataVersion?: string;
   hotfixHash?: string;
@@ -28,6 +46,10 @@ export function checkCompatibility(manifest: CatalogManifest, engine: EngineIden
   }
   const out: CompatWarning[] = [];
   const c = manifest.engine;
+  const channel = manifest.engineChannel ?? c.engineChannel ?? 'live';
+  if (engine.engineChannel && engine.engineChannel !== channel) {
+    out.push({ code: 'ptr_mismatch', message: 'catalog and engine channels do not match' });
+  }
   if (engine.clientDataVersion && engine.clientDataVersion !== c.clientDataVersion) {
     out.push({
       code: 'wow_version_mismatch',
@@ -46,7 +68,7 @@ export function checkCompatibility(manifest: CatalogManifest, engine: EngineIden
       message: `catalog built from ${c.upstreamCommit.slice(0, 7)}, engine from ${engine.upstreamCommit.slice(0, 7)}`,
     });
   }
-  if (engine.ptr !== undefined && engine.ptr !== c.ptr) {
+  if (!engine.engineChannel && engine.ptr !== undefined && engine.ptr !== c.ptr) {
     out.push({ code: 'ptr_mismatch', message: 'catalog and engine disagree on PTR data' });
   }
   return out;
@@ -80,6 +102,9 @@ export async function loadCatalog(opts: LoadOptions): Promise<CatalogLoadResult>
       message: `catalog schema ${manifest?.schemaVersion} is not supported (expected ${SUPPORTED_CATALOG_SCHEMA})`,
     };
   }
+  if (!validCatalogManifest(manifest)) return { ok: false, reason: 'malformed', message: 'Catalog manifest is missing valid engine identity or metadata.' };
+  const warnings = checkCompatibility(manifest, opts.engine ?? null);
+  if (warnings.some(w => w.code === 'ptr_mismatch')) return { ok: false, reason: 'malformed', message: 'Catalog belongs to a different engine channel.' };
 
   try {
     const [items, bonus, scaling, enchants, gems, sets, embellishments, consumables] = await Promise.all([
@@ -93,6 +118,8 @@ export async function loadCatalog(opts: LoadOptions): Promise<CatalogLoadResult>
       fetchJson(baseUrl, 'consumables.json', signal),
     ]);
     const payloads = { manifest, items, bonus, scaling, enchants, gems, sets, embellishments, consumables } as CatalogPayloads;
+    const rules = await fetchJson(baseUrl, 'rules.json', signal).catch(() => null) as SeasonRules | null;
+    payloads.rules = rules && rulesMatch(rules, manifest) ? rules : null;
     if (!payloads.items?.count || !Array.isArray(payloads.items.id)) {
       return { ok: false, reason: 'malformed', message: 'items.json is missing its columns' };
     }

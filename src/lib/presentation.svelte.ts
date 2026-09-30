@@ -7,11 +7,11 @@ export function initPresentation(): Promise<void> {
   // Spell names and consumable labels come from the running engine's pack; the local dev engine uses public/.
   // no-cache: the dev copy is regenerated in place under the same commit.
   return pending ??= selectedEngine().then(async pack => {
-    const local = pack.id === 'local'
-    const response = await fetch(local ? '/presentation.json' : `${pack.baseUrl}presentation.json`, { cache: 'no-cache' })
+    const local = pack.id === 'local' || pack.id === 'local-ptr'
+    const response = await fetch(local && pack.engineChannel === 'live' ? '/presentation.json' : `${pack.baseUrl}presentation.json`, { cache: 'no-cache' })
     if (!response.ok) throw Error('Presentation data unavailable')
     const data = await response.json()
-    if (data.engineCommit !== (local ? lock.upstream.commit : pack.upstreamCommit) || !data.names || !Array.isArray(data.augmentation) || !Array.isArray(data.weapon)) throw Error('Presentation data mismatch')
+    if ((data.engineChannel ?? 'live') !== pack.engineChannel || data.engineCommit !== (local ? lock.upstream.commit : pack.upstreamCommit) || !data.names || !Array.isArray(data.augmentation) || !Array.isArray(data.weapon)) throw Error('Presentation data mismatch')
     presentation.data = data
   }).catch(() => { pending = null })
 }

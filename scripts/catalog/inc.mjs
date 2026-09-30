@@ -3,7 +3,7 @@
 /** @typedef {string|number|null|Ref|Value[]} Value */
 /** @typedef {{ ref: string, index: number }} Ref */
 
-const DECL = /(?:^|\n)\s*static\s+(?:const|constexpr)\b[^;{]*?\b(__\w+)\s*(?:\[[^\]]*\]\s*)*(?:=\s*)?\{/g;
+const DECL = /(?:^|\n)\s*static\s+(?:const|constexpr)\b[^;{]*?\b((?:__|_ptr__)\w+)\s*(?:\[[^\]]*\]\s*)*(?:=\s*)?\{/g;
 
 /**
  * @param {string} text

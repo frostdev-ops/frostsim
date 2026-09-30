@@ -3,7 +3,7 @@
   import { loadPlayerDetail } from '../simc/client'
   import type { SimOutcome } from '../simc/job'
   import { createReportLink, reportSnapshot, LINK_LIMITS, type SharedReport } from '../store/report-share'
-  import { engineIdentity } from '../app.svelte'
+  import { reportEngineChannel } from '../simc/report'
   let { outcome, transform = (s: SharedReport) => s }: { outcome: SimOutcome; transform?: (s: SharedReport) => SharedReport } = $props()
   let open = $state(false), working = $state(false), error = $state(''), copied = $state(false)
   let mode = $state<'compact' | 'detailed' | 'hosted'>('detailed')
@@ -22,7 +22,7 @@
       snapshot ??= reportSnapshot(outcome, await loadPlayerDetail(outcome.getRawJson(), outcome.report.players[0].name))
       const shared = transform(snapshot)
       const result = import.meta.env.VITE_FEATURE_ACCOUNTS === true && mode === 'hosted'
-        ? { url: await (await import('../account/hosted')).createHostedShare({ shared, rawReport: await outcome.getRawJson().text() }, engineIdentity()), report: shared }
+        ? { url: await (await import('../account/hosted')).createHostedShare({ shared, rawReport: await outcome.getRawJson().text() }, { engineChannel: reportEngineChannel(outcome.report), simcVersion: outcome.report.engine.simcVersion, upstreamCommit: outcome.report.engine.gitRevision, wowVersion: outcome.report.gameData?.wowVersion }), report: shared }
         : await createReportLink(shared, LINK_LIMITS[mode as 'compact' | 'detailed'])
       if (token === generation) link = result
     } catch (e) { if (token === generation) error = e instanceof Error ? e.message : 'The link could not be created.' }

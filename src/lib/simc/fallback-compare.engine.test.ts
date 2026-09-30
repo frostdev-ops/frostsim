@@ -7,16 +7,26 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { existsSync } from 'node:fs'
 import { Worker as NodeWorker } from 'node:worker_threads'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { applyWeeklyDefaults } from './weekly-defaults'
 import { runComparison } from './compare'
 import { runJob, __resetEngineRuntimeForTests, type SimRequest } from './job'
 import { buildArgs, DEFAULT_SETTINGS, sanitizeProfile, withPlayerScopedLines } from './options'
 import type { EngineCapability, EngineManifest } from './capability'
+import type { EngineChannel } from './channel'
 
-const CLI = 'build/wasm-fallback/simc-node.cjs'
+const { channel } = vi.hoisted(() => {
+  const selected = process.env.FROSTSIM_ENGINE_CHANNEL ?? 'live'
+  if (selected !== 'live' && selected !== 'ptr') throw new Error('FROSTSIM_ENGINE_CHANNEL requires live or ptr')
+  return { channel: selected as EngineChannel }
+})
+vi.mock('./versions', async (importOriginal) => ({
+  ...await importOriginal<typeof import('./versions')>(), activeEngineChannel: channel,
+}))
+const CLI = `build/wasm${channel === 'ptr' ? '-ptr' : ''}-fallback/simc-node.cjs`
 const PROFILE = 'tests/fixtures/addon-export-demonology.simc'
-const enabled = process.env.FROSTSIM_ENGINE === '1' && existsSync(CLI)
+const enabled = process.env.FROSTSIM_ENGINE === '1'
+if (enabled && !existsSync(CLI)) throw new Error(`Real ${channel} engine tests require ${CLI}; run engine-smoke.sh for this channel first`)
 
 // Two real candidates from character's own export, one in each scope defect dropped: talent hash (addon "ST" loadout) and gear line (trinket swap). Both meaningless as sim arguments and both change number.
 const CANDIDATES = [
@@ -29,11 +39,15 @@ const CANDIDATES = [
   { id: 'gear-trinket1', lines: ['trinket1=,id=270164'] },
 ]
 
+const engineRoot = process.env.FROSTSIM_ENGINE_DIR ?? `public/engine${channel === 'ptr' ? '/ptr' : ''}`
+const artifactManifest: EngineManifest = JSON.parse(readFileSync(`${engineRoot}/fallback/manifest.json`, 'utf8'))
+if (enabled && (artifactManifest.engineChannel ?? 'live') !== channel) throw new Error('Real engine manifest has the wrong channel')
 const manifest: EngineManifest = {
   schemaVersion: 1,
   artifact: 'fallback',
-  engine: { simcVersion: 'local', upstreamCommit: 'local' },
-  wow: { clientDataVersion: 'local' },
+  engineChannel: channel,
+  engine: artifactManifest.engine,
+  wow: artifactManifest.wow,
   capabilities: {
     threads: false,
     pthreadPoolSize: 0,
@@ -59,6 +73,7 @@ const extraOptions = ['deterministic=1']
 
 const base: SimRequest = {
   schemaVersion: 1,
+  engineChannel: channel,
   profile: readFileSync(PROFILE, 'utf8'),
   settings,
   accuracy,
@@ -99,7 +114,7 @@ function runDirectWith(appended: readonly string[]): number {
   const profileFile = join(dir, 'profile.simc')
   const reportFile = join(dir, 'out.json')
   // Compare the same guided inputs; otherwise this tests different potions.
-  const text = applyWeeklyDefaults(sanitizeProfile(base.profile, 'guided').text)
+  const text = applyWeeklyDefaults(sanitizeProfile(base.profile, 'guided').text, channel === 'ptr' ? null : undefined)
   writeFileSync(profileFile, appended.length ? `${text}\n${appended.join('\n')}\n` : text)
 
   const built = buildArgs({ settings, accuracy, extraOptions, maxThreads: 1, mode: 'guided' })
@@ -107,7 +122,7 @@ function runDirectWith(appended: readonly string[]): number {
     a === built[0] ? profileFile : a.startsWith('json=') ? `json=${reportFile},version=2` : a,
   )
 
-  execFileSync(process.execPath, [CLI, ...argv], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
+  execFileSync(process.execPath, [CLI, `ptr=${channel === 'ptr' ? 1 : 0}`, ...argv], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 })
   return JSON.parse(readFileSync(reportFile, 'utf8')).sim.players[0].collected_data.dps.mean
 }
 
@@ -124,6 +139,7 @@ describe.skipIf(!enabled)('fallback comparison against the real engine', () => {
       createEngineWorker: () =>
         new WorkerAdapter('engine-cli.mjs', {
           variant: 'fallback',
+          engineChannel: channel,
           cwd: process.cwd(),
         }) as unknown as Worker,
       createReportWorker: () => new WorkerAdapter('report-stub.mjs') as unknown as Worker,
@@ -182,7 +198,7 @@ describe.skipIf(!enabled)('fallback comparison against the real engine', () => {
       capability,
       threadReapGraceMs: 0,
       createEngineWorker: () =>
-        new WorkerAdapter('engine-cli.mjs', { variant: 'fallback', cwd: process.cwd() }) as unknown as Worker,
+        new WorkerAdapter('engine-cli.mjs', { variant: 'fallback', engineChannel: channel, cwd: process.cwd() }) as unknown as Worker,
       createReportWorker: () => new WorkerAdapter('report-stub.mjs') as unknown as Worker,
     })
     const outcome = await handle.result
@@ -215,7 +231,7 @@ describe.skipIf(!enabled)('fallback comparison against the real engine', () => {
         capability,
         threadReapGraceMs: 0,
         createEngineWorker: () =>
-          new WorkerAdapter('engine-cli.mjs', { variant: 'fallback', cwd: process.cwd() }) as unknown as Worker,
+          new WorkerAdapter('engine-cli.mjs', { variant: 'fallback', engineChannel: channel, cwd: process.cwd() }) as unknown as Worker,
         createReportWorker: () => new WorkerAdapter('report-stub.mjs') as unknown as Worker,
       })
       return handle.result
@@ -266,7 +282,7 @@ describe.skipIf(!enabled)('fallback comparison against the real engine', () => {
         capability,
         threadReapGraceMs: 0,
         createEngineWorker: () =>
-          new WorkerAdapter('engine-cli.mjs', { variant: 'fallback', cwd: process.cwd() }) as unknown as Worker,
+          new WorkerAdapter('engine-cli.mjs', { variant: 'fallback', engineChannel: channel, cwd: process.cwd() }) as unknown as Worker,
         createReportWorker: () => new WorkerAdapter('report-stub.mjs') as unknown as Worker,
       },
     )
@@ -290,7 +306,7 @@ describe.skipIf(!enabled)('fallback comparison against the real engine', () => {
       capability,
       threadReapGraceMs: 0,
       createEngineWorker: () =>
-        new WorkerAdapter('engine-cli.mjs', { variant: 'fallback', cwd: process.cwd() }) as unknown as Worker,
+        new WorkerAdapter('engine-cli.mjs', { variant: 'fallback', engineChannel: channel, cwd: process.cwd() }) as unknown as Worker,
       createReportWorker: () => new WorkerAdapter('report-stub.mjs') as unknown as Worker,
     })
     const outcome = await handle.result

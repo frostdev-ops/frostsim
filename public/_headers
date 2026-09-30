@@ -34,3 +34,5 @@
   Cross-Origin-Resource-Policy: cross-origin
 /engine-versions.json
   Cache-Control: no-cache, must-revalidate
+/engine-channels.json
+  Cache-Control: no-cache, must-revalidate

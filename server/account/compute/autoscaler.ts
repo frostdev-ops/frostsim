@@ -8,6 +8,8 @@ import type { AppCtx, Task } from '../app';
 import { errorSummary } from '../http';
 import { sha256Hex } from '../signed';
 import type { SimRequest } from '../../../src/lib/simc/assemble';
+import { resolveEngineChannel } from '../../../src/lib/simc/channel';
+import { trustedPack } from './packs';
 import { cloudModel, cloudRun, expectedRunS, forgetWorker, liteColumns, liteWork } from './queue';
 import {
   BILLING, DEFAULT_RUN_S, EC2_IDLE_S, HOUR_MS, PROVIDER_COOLDOWN_MS, cheapest, coolDown, cooling, fleetConfig, hourlyUsdSql, monthSpend, providers, rememberOffers, roomFor, spendRows,
@@ -270,12 +272,16 @@ async function narrowQueued(app: AppCtx, fleet: Fleet): Promise<Fleet> {
     ...fleet.workers.filter((w) => w.status !== 'draining').map((w) => w.cores));
   if (!fleet.offers.length || !fleet.queued.some((j) => j.threads > widest)) return fleet;
   // The payload carries threads= (and the profileset work split), so it is assembled again from the stored request.
-  const wide = await app.sql`select id, request from compute_jobs where status = 'queued' and threads > ${widest} and request is not null`;
+  const wide = await app.sql`select id, request, pack_id from compute_jobs where status = 'queued' and threads > ${widest} and request is not null`;
   for (const job of wide) {
-    const prepared = cloudRun(job.request as SimRequest, widest);
+    const pack = await trustedPack(job.pack_id, app.config.env);
+    if (!pack || pack.identity.engineChannel !== resolveEngineChannel(job.request.engineChannel)) continue;
+    const prepared = cloudRun(job.request as SimRequest, widest, pack.rules);
     if ('problem' in prepared) continue;
     const { run } = prepared;
-    await app.sql`update compute_jobs set threads = ${run.threads}, payload = ${app.sql.json({ profile: run.profile, args: run.args })}
+    // A legacy payload gains the trusted identity before receiving the new channel prefix.
+    // Existing frozen identity takes precedence over this default.
+    await app.sql`update compute_jobs set threads = ${run.threads}, payload = ${app.sql.json({ engineIdentity: { ...pack.identity } })} || payload || ${app.sql.json({ profile: run.profile, args: run.args })}
       where id = ${job.id} and status = 'queued'`;
     app.log(`compute: narrowed queued job ${job.id} to ${run.threads} threads, the widest server on offer`);
   }

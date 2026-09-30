@@ -2,7 +2,8 @@
   import { tick } from 'svelte'
   import type { ItemInstance } from '../import/character'
   import type { ResolvedItem } from '../catalog/types'
-  import { itemUpgradeTrack, MAX_ITEM_LEVEL, upgradeTracks, withItemLevel, withUpgradeRank } from '../catalog/upgrades'
+  import { itemUpgradeTrack, MAX_ITEM_LEVEL, tracksFor, withItemLevel, withUpgradeRank } from '../catalog/upgrades'
+  import { app } from '../app.svelte'
 
   interface Props {
     item: ItemInstance
@@ -16,8 +17,9 @@
   let { item, original, resolved, onchange, disabled = false, catalogSearch = false }: Props = $props()
   let custom = $state(false)
   let error = $state('')
-  const known = $derived(itemUpgradeTrack(item))
-  const importedTrack = $derived(original ? itemUpgradeTrack(original) : null)
+  const upgradeTracks = $derived(tracksFor(app.catalogRules))
+  const known = $derived(itemUpgradeTrack(item, app.catalogRules))
+  const importedTrack = $derived(original ? itemUpgradeTrack(original, app.catalogRules) : null)
   const track = $derived(known?.track ?? importedTrack?.track)
   const customLevel = $derived(item.itemLevel !== undefined)
   const name = $derived(resolved?.name ?? item.addonName ?? `Item ${item.itemId}`)
@@ -38,7 +40,7 @@
         <select value={track?.id ?? ''} {disabled} onchange={async (e) => {
           const input = e.currentTarget
           const trackId = Number(input.value)
-          if (trackId) { custom = false; update(() => withUpgradeRank(item, trackId, 1)) }
+          if (trackId) { custom = false; update(() => withUpgradeRank(item, trackId, 1, app.catalogRules)) }
           await tick()
           input.value = String(track?.id ?? '')
         }}>
@@ -55,7 +57,7 @@
         <select value={customLevel ? '' : known?.rank.rank ?? ''} {disabled} onchange={async (e) => {
           const input = e.currentTarget
           const rank = Number(input.value)
-          if (rank && track) { custom = false; update(() => withUpgradeRank(item, track.id, rank)) }
+          if (rank && track) { custom = false; update(() => withUpgradeRank(item, track.id, rank, app.catalogRules)) }
           await tick()
           input.value = String(customLevel ? '' : known?.rank.rank ?? '')
         }}>
@@ -97,6 +99,7 @@
     </label>
   {/if}
   {#if item.upgradeTrackHypothetical}<p class="xs muted">Hypothetical track; this item's acquisition track is not verified.</p>{/if}
+  {#if !app.catalogRules?.upgrades}<p class="xs muted">Verified upgrade tracks are unavailable for this engine pack. Custom item levels remain available.</p>{/if}
   {#if known?.rank.extended && !customLevel}<p class="xs muted">Restricted rank read from this item; unlock eligibility cannot be checked.</p>{/if}
   {#if error}<p class="xs warn-text" role="alert">{error}</p>{/if}
 </div>

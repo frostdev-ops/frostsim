@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Generates versioned game-data catalogs (P05) from pinned SimulationCraft; traces to vendor/simc/engine/dbc/generated/*.inc, nothing hand-typed; PTR never read (SC_USE_PTR=0).
+// Generates versioned game-data catalogs (P05) from the selected pinned Live/PTR SimulationCraft tables.
 
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
@@ -12,10 +12,12 @@ import { structFields, mapRows } from './structs.mjs';
 import * as blizzardJournal from './sources/blizzard-journal.mjs';
 import * as localDb2 from './sources/db2-loot.mjs';
 import { mergeLootCatalogs, unknownItems, validateLootCatalog } from './sources/loot-schema.mjs';
+import { selectedChannel, channelFile, channelDecl } from './channel.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const DBC = join(ROOT, 'vendor/simc/engine/dbc');
 const GEN = join(DBC, 'generated');
+let engineChannel = 'live';
 
 export const CATALOG_SCHEMA_VERSION = 1;
 
@@ -24,8 +26,9 @@ export const CATALOG_SCHEMA_VERSION = 1;
 // ---------------------------------------------------------------------------
 
 /** Reads the same fields the engine manifest reports, from the same source files. */
-export function engineIdentity() {
-  const v = readFileSync(join(GEN, 'client_data_version.inc'), 'utf8');
+export function engineIdentity(channel = engineChannel) {
+  const v = readFileSync(join(GEN, channelFile('client_data_version.inc', channel)), 'utf8')
+    .replaceAll('PTR_CLIENT_', 'CLIENT_').replaceAll('PTR_SIMC_', 'SIMC_');
   const pick = (re, label) => {
     const m = re.exec(v);
     if (!m) throw new Error(`client_data_version.inc: could not read ${label}`);
@@ -46,7 +49,8 @@ export function engineIdentity() {
     hotfixDate: pick(/#define\s+CLIENT_DATA_HOTFIX_DATE\s+"([^"]+)"/, 'CLIENT_DATA_HOTFIX_DATE'),
     hotfixBuild: Number(pick(/#define\s+CLIENT_DATA_HOTFIX_BUILD\s+\((\d+)\)/, 'CLIENT_DATA_HOTFIX_BUILD')),
     hotfixHash: pick(/#define\s+CLIENT_DATA_HOTFIX_HASH\s+"([^"]+)"/, 'CLIENT_DATA_HOTFIX_HASH'),
-    ptr: false,
+    engineChannel: channel,
+    ptr: channel === 'ptr',
   };
 }
 
@@ -56,7 +60,7 @@ export function engineIdentity() {
  */
 export function catalogId(engine) {
   const commit = engine.upstreamCommit ? engine.upstreamCommit.slice(0, 7) : 'unknown';
-  return `${engine.clientDataVersion}-${engine.hotfixHash.slice(0, 12)}-${commit}`;
+  return `${engine.engineChannel ?? 'live'}-${engine.clientDataVersion}-${engine.hotfixHash.slice(0, 12)}-${commit}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -66,13 +70,15 @@ export function catalogId(engine) {
 const cache = new Map();
 /** @param {string} file .inc basename */
 function inc(file) {
+  file = channelFile(file, engineChannel);
   if (!cache.has(file)) cache.set(file, parseInc(readFileSync(join(GEN, file), 'utf8')));
   return cache.get(file);
 }
 
 /** @param {string} file .inc basename @param {string} decl __array name */
 function rows(file, decl) {
-  const t = inc(file).get(decl);
+  const t = inc(file).get(channelDecl(decl, engineChannel))
+    ?? (engineChannel === 'ptr' ? inc(file).get(decl.replace(/^__/, '_ptr__')) : undefined);
   if (!t) throw new Error(`${file}: declaration ${decl} not found`);
   return t;
 }
@@ -101,7 +107,7 @@ function readItems() {
   const out = [];
   for (let c = 0; ; c++) {
     const decl = `__item_data_chunk${c}`;
-    if (!inc('item_data.inc').has(decl)) break;
+    if (!inc('item_data.inc').has(channelDecl(decl, engineChannel))) break;
     for (const row of rows('item_data.inc', decl)) {
       const it = mapRows([row], fields, 'dbc_item_data_t')[0];
       if (!it.name || it.id === 0) continue;
@@ -314,7 +320,7 @@ function readEmbellishments() {
 
 /** Specializations: id, class, display name; three sources no hand-typed names; token with no case falls back to suffix. */
 function readSpecs() {
-  const enumSrc = readFileSync(join(GEN, 'sc_specialization_data.inc'), 'utf8');
+  const enumSrc = readFileSync(join(GEN, channelFile('sc_specialization_data.inc', engineChannel)), 'utf8');
   const idByToken = new Map();
   for (const m of enumSrc.matchAll(/^\s*([A-Z][A-Z0-9_]*)\s*=\s*(\d+)\s*,/gm)) {
     idByToken.set(m[1], Number(m[2]));
@@ -327,8 +333,8 @@ function readSpecs() {
   }
 
   // __class_spec_id[class][spec]: outer index is class id, 0 is pets.
-  const listSrc = readFileSync(join(GEN, 'sc_spec_list.inc'), 'utf8');
-  const table = /__class_spec_id\s*\[[^\]]*\]\s*\[[^\]]*\]\s*=\s*\{([\s\S]*?)\n\};/.exec(listSrc);
+  const listSrc = readFileSync(join(GEN, channelFile('sc_spec_list.inc', engineChannel)), 'utf8');
+  const table = /__(?:ptr_)?class_spec_id\s*\[[^\]]*\]\s*\[[^\]]*\]\s*=\s*\{([\s\S]*?)\n\};/.exec(listSrc);
   if (!table) throw new Error('sc_spec_list.inc: could not find __class_spec_id');
 
   const byClass = {};
@@ -417,6 +423,7 @@ function readConsumables(items) {
 
 /** Every catalog field with authoritative source and status; unavailable entries are real gaps so feature stays off. Loot sources are optional and off by default. */
 async function collectLoot(log, knownItemIds) {
+  if (engineChannel === 'ptr') return { catalog: null, attempted: [] };
   const parts = [];
   const attempted = [];
 
@@ -530,6 +537,8 @@ function sha256(buf) {
 }
 
 async function main(argv) {
+  engineChannel = selectedChannel(argv);
+  cache.clear();
   const pretty = argv.includes('--pretty');
   const outIdx = argv.indexOf('--out');
   const engine = engineIdentity();
@@ -566,6 +575,27 @@ async function main(argv) {
   emit('sets.json', { sets: readSets() });
   emit('embellishments.json', { embellishments: readEmbellishments() });
   emit('consumables.json', { consumables: readConsumables(items) });
+  const bundled = (path) => JSON.parse(readFileSync(join(ROOT, path), 'utf8'));
+  const seasonData = 'src/lib/catalog/generated/';
+  const upgrades = bundled(seasonData + 'upgrades.json');
+  const costs = bundled(seasonData + 'upgrade-costs.json');
+  const raid = bundled(seasonData + 'raid-rewards.json');
+  const policy = bundled(seasonData + 'reward-policy.json');
+  const weekly = bundled('src/lib/simc/generated/weekly-defaults.json');
+  // Verified Live tables may be shared only after the publisher's build attestation.
+  // PTR has no corresponding season/reward proof; never copy Live values into it.
+  const sameBuild = engineChannel === 'live' && engine.clientDataVersion === upgrades.build;
+  const sections = {
+    upgrades: sameBuild ? upgrades : null,
+    costs: sameBuild && costs.build === engine.clientDataVersion ? costs : null,
+    raid: sameBuild && raid.build === engine.clientDataVersion ? { ...raid, bonusRollRanks: policy.raidBonusRollRanks } : null,
+    mplus: sameBuild && policy.build === engine.clientDataVersion ? policy.mplus : null,
+    vault: sameBuild && policy.build === engine.clientDataVersion ? policy.vault : null,
+    weekly: engineChannel === 'live' && weekly.engine.commit === engine.upstreamCommit ? weekly : null,
+  };
+  emit('rules.json', { schemaVersion: 1, engineChannel, build: engine.clientDataVersion, engineCommit: engine.upstreamCommit,
+    ...sections, unavailable: Object.entries(sections).filter(([, value]) => !value)
+      .map(([name]) => `Verified ${engineChannel.toUpperCase()} ${name} data is unavailable for this pack.`) });
 
   const talents = readTalents();
   const specs = readSpecs();
@@ -613,6 +643,7 @@ async function main(argv) {
     catalogId: id,
     generatedAt: new Date().toISOString(),
     generator: { script: 'scripts/catalog/build-catalogs.mjs', node: process.version, elapsedMs: Date.now() - started },
+    engineChannel,
     engine,
     counts,
     files,
@@ -626,7 +657,16 @@ async function main(argv) {
       : null,
     lootAdaptersAttempted: attempted,
     warnings: lootWarnings,
-    coverage: coverage(counts, files.some((f) => f.path === 'loot.json') ? loot : null),
+    coverage: coverage(counts, files.some((f) => f.path === 'loot.json') ? loot : null).map(entry => {
+      if (engineChannel === 'ptr') entry = { ...entry, source: entry.source.replace(/\b(\w+)\.inc\b/g, '$1_ptr.inc') };
+      const section = entry.field.startsWith('item upgrade track') ? 'upgrades'
+        : entry.field.startsWith('upgrade currency') ? 'costs'
+        : entry.field.includes('Great Vault') ? 'vault' : null;
+      return section && !sections[section] ? { ...entry, status: 'unavailable',
+        notes: `Verified ${engineChannel.toUpperCase()} ${section} data is unavailable for this pack.` }
+        : engineChannel === 'ptr' && entry.field.startsWith('loot source membership') ? { ...entry,
+          notes: 'Verified PTR loot source membership is unavailable. Live loot is not substituted.' } : entry;
+    }),
   };
   writeFileSync(join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
   for (const w of lootWarnings) process.stderr.write(`warning: ${w}\n`);

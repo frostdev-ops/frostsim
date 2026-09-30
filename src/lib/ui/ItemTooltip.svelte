@@ -5,6 +5,7 @@
   import { mediaVersion, tooltipFor } from '../media.svelte'
   import { fmtInt } from '../format'
   import { itemUpgradeTrack } from '../catalog/upgrades'
+  import { app } from '../app.svelte'
 
   interface Props {
     /** The engine-resolved instance. Authoritative for stats and item level. */
@@ -20,7 +21,7 @@
   })
   const rich = $derived(extra?.status === 'ready' ? extra.tooltip : null)
   const provenance = $derived(extra?.status === 'ready' ? extra.provenance : null)
-  const upgrade = $derived(item.instance ? itemUpgradeTrack(item.instance) : null)
+  const upgrade = $derived(item.instance ? itemUpgradeTrack(item.instance, app.catalogRules) : null)
 
   const stats = $derived(
     (item.stats ?? [])

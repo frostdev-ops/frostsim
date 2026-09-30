@@ -19,11 +19,13 @@ const arg = (name, fallback) => {
   const i = argv.indexOf(name);
   return i === -1 ? fallback : argv[i + 1];
 };
-const buildDir = resolve(root, arg('--build-dir', 'build/wasm'));
+const channel = arg('--channel', 'live');
+if (!['live', 'ptr'].includes(channel)) throw new Error('--channel requires live or ptr');
+const buildDir = resolve(root, arg('--build-dir', `build/wasm${channel === 'ptr' ? '-ptr' : ''}`));
 // Which tree compiler read and which patches were in it; fallback built from staged copy with patches; reference checkout never modified.
 const sourceTreeArg = arg('--source-tree', null);
 const patchFiles = argv.reduce((acc, a, i) => (a === '--patch' ? [...acc, argv[i + 1]] : acc), []);
-const engineDir = resolve(root, arg('--engine-dir', 'public/engine'));
+const engineDir = resolve(root, arg('--engine-dir', process.env.FROSTSIM_ENGINE_DIR ?? `public/engine${channel === 'ptr' ? '/ptr' : ''}`));
 const measureCompression = !argv.includes('--no-compression');
 
 const read = (p) => readFileSync(p, 'utf8');
@@ -50,12 +52,13 @@ const git = (...args) => {
 const checkoutCommit = git('rev-parse', 'HEAD');
 const config = read(join(simcDir, 'engine/config.hpp'));
 const simcVersion = `${define(config, 'SC_MAJOR_VERSION')}-${define(config, 'SC_MINOR_VERSION')}`;
-const dataVersion = read(join(simcDir, 'engine/dbc/generated/client_data_version.inc'));
+const dataVersion = read(join(simcDir, `engine/dbc/generated/client_data_version${channel === 'ptr' ? '_ptr' : ''}.inc`));
+const dataDefine = name => define(dataVersion, `${channel === 'ptr' ? 'PTR_' : ''}CLIENT_DATA_${name}`);
 const wow = {
-  clientDataVersion: define(dataVersion, 'CLIENT_DATA_WOW_VERSION'),
-  hotfixDate: define(dataVersion, 'CLIENT_DATA_HOTFIX_DATE'),
-  hotfixBuild: Number(define(dataVersion, 'CLIENT_DATA_HOTFIX_BUILD')),
-  hotfixHash: define(dataVersion, 'CLIENT_DATA_HOTFIX_HASH'),
+  clientDataVersion: dataDefine('WOW_VERSION'),
+  hotfixDate: dataDefine('HOTFIX_DATE'),
+  hotfixBuild: Number(dataDefine('HOTFIX_BUILD')),
+  hotfixHash: dataDefine('HOTFIX_HASH'),
 };
 
 // Lock is release contract; checkout is what got compiled; report disagreements in manifest, never ship silent mismatches.
@@ -69,8 +72,10 @@ for (const [key, field] of [
   ['clientDataHotfixDate', wow.hotfixDate],
   ['clientDataHotfixHash', wow.hotfixHash],
 ]) {
-  if (lock.expected?.[key] && lock.expected[key] !== field) {
-    mismatches.push(`${key}: lock ${lock.expected[key]}, checkout ${field}`);
+  const expected = channel === 'ptr' && !lock.engineChannel ? lock.expectedByChannel?.ptr : lock.expected;
+  const value = key === 'simcVersion' ? lock.expected?.simcVersion : expected?.[key];
+  if (value && value !== field) {
+    mismatches.push(`${key}: lock ${value}, checkout ${field}`);
   }
 }
 
@@ -123,6 +128,10 @@ const artifactFlags = {
 
 // Disagreement = artifact not from this build tree with these flags = not reproducible = release blocker.
 const buildTreeMismatches = [];
+const compiledPtr = /(?:^|\s)-DSC_USE_PTR=1(?:\s|$)/.test(cxxFlags);
+if (!new RegExp(`(?:^|\\s)-DSC_USE_PTR=${channel === 'ptr' ? 1 : 0}(?:\\s|$)`).test(cxxFlags)) {
+  buildTreeMismatches.push(`active channel ${channel} disagrees with SC_USE_PTR in compile flags`);
+}
 const configuredPool = Number(linkOpt('PTHREAD_POOL_SIZE'));
 if (threading && Number.isFinite(configuredPool) && configuredPool !== poolSize) {
   buildTreeMismatches.push(`pthread pool: build tree configured ${configuredPool}, artifact has ${poolSize}`);
@@ -205,6 +214,7 @@ const manifest = {
   schemaVersion: 1,
   generatedAt: new Date().toISOString(),
   artifact: threading ? 'threaded' : 'fallback',
+  engineChannel: channel,
   engine: {
     simcVersion,
     upstreamCommit: checkoutCommit ?? lock.upstream.commit,
@@ -212,7 +222,7 @@ const manifest = {
     upstreamBranch: lock.upstream.branch,
     license: lock.upstream.license,
   },
-  wow: { ...wow, ptr: !flags.includes('-DSC_USE_PTR=0') },
+  wow: { ...wow, ptr: compiledPtr },
   capabilities: {
     threads: threading,
     // Hard ceiling on threads=N: main() blocks in callMain, no pthread beyond pool starts, simc deadlocks (D11).

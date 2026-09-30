@@ -75,6 +75,7 @@ export function quickRequest(character: ImportedCharacter, q: QuickOptions): Sim
 export function compareRequest(characters: readonly ImportedCharacter[], q: QuickOptions): SimRequest {
   const one = quickRequest(characters[0], q)
   if (characters.length < 2) return one
-  const parts = multiActorParts(characters.map((character) => ({ character })), one.extraProfileLines ?? [])
+  // Trusted selected-pack defaults are applied during assembly, before any actor is created.
+  const parts = multiActorParts(characters.map((character) => ({ character })), one.extraProfileLines ?? [], null)
   return { ...one, profile: parts.profile, extraProfileLines: parts.extraProfileLines }
 }

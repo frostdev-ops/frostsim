@@ -8,6 +8,7 @@ import { rateLimit } from '../ratelimit';
 import { sha256Hex } from '../signed';
 import { LEASE_S, claimJob, completeJob, failJob, progressJob, resultKey, unclaimJob, type Summary } from './queue';
 import { engineKey, nativeEngine } from './native';
+import { trustedPack, type PackIdentity } from './packs';
 
 const JOB = '(?<id>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 /** nginx's proxy_read_timeout on /api/ is 30 s. */
@@ -52,6 +53,7 @@ async function claim(ctx: RequestCtx): Promise<Response> {
   const freeCores = body.freeCores;
   if (!Number.isInteger(freeCores) || (freeCores as number) < 1 || (freeCores as number) > 1024) throw invalid('freeCores must be a whole number from 1.');
   if (typeof body.agentVersion !== 'string' || body.agentVersion.length > 64) throw invalid('agentVersion must be a short string.');
+  if (body.agentVersion !== '2') throw new HttpError(409, 'agent-update-required', 'This worker must update to verify engine channel and report identity.');
   const until = Date.now() + CLAIM_POLL_MS;
   const { signal } = ctx.request;
   // Never claim once the worker has hung up: nobody would receive the job and it would sit out its lease.
@@ -59,9 +61,10 @@ async function claim(ctx: RequestCtx): Promise<Response> {
     const job = await claimJob(ctx, ctx.workerId!, freeCores as number);
     if (job === 'draining') break;
     if (job) {
-      let engine, engineUrl, resultUrl;
+      let engine, engineUrl, resultUrl, pack;
       try {
         engine = await nativeEngine(ctx, job.packId);
+        pack = await trustedPack(job.packId, ctx.config.env);
         if (engine) {
           [engineUrl, resultUrl] = await Promise.all([
             ctx.r2.presign(ctx.config.env.R2_ENGINES_BUCKET!, engineKey(job.packId), 'GET', PRESIGN_S),
@@ -73,7 +76,7 @@ async function claim(ctx: RequestCtx): Promise<Response> {
         await unclaimJob(ctx, ctx.workerId!, job.id);
         throw err;
       }
-      if (!engine) {
+      if (!engine || !pack) {
         await failJob(ctx, ctx.workerId!, job.id, 'This engine version has no cloud build.');
         continue;
       }
@@ -83,6 +86,7 @@ async function claim(ctx: RequestCtx): Promise<Response> {
         profile: job.profile,
         args: job.args,
         engine: { url: engineUrl, sha256: engine.sha256 },
+        engineIdentity: pack.identity,
         resultPut: { url: resultUrl },
         leaseSeconds: LEASE_S,
       });
@@ -128,7 +132,8 @@ async function complete(ctx: RequestCtx): Promise<Response> {
     if (!finite(raw[key])) throw invalid(`summary.${key} must be a number.`);
     summary[key] = raw[key] as number;
   }
-  const state = await completeJob(ctx, ctx.workerId!, ctx.params.id, body.wallSeconds as number, summary, notices(body.notices), body.cpuSeconds as number | undefined);
+  const state = await completeJob(ctx, ctx.workerId!, ctx.params.id, body.wallSeconds as number, summary, notices(body.notices), body.cpuSeconds as number | undefined,
+    body.engineIdentity as PackIdentity & { buildLevel: number } | undefined);
   if (state === 'lost') throw new HttpError(409, 'conflict', 'This worker no longer holds the job.');
   if (state === 'missing') throw new HttpError(409, 'conflict', 'No result was uploaded; the job has failed.');
   return noContent();

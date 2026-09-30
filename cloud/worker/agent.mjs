@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import zlib from 'node:zlib';
 
-export const AGENT_VERSION = '1';
+export const AGENT_VERSION = '2';
 const ENV_FILE = '/etc/frostsim/worker.env';
 const JOBS = '/var/lib/frostsim-worker/jobs';
 const ENGINES = '/var/cache/frostsim/engines';
@@ -34,15 +34,20 @@ function argProblem(arg) {
   if (typeof arg !== 'string' || !/^[^=]+=/.test(arg) || /[\0\r\n$]/.test(arg) || FILE_OPTION.test(arg)) return true;
   const eq = arg.indexOf('=');
   const name = arg.slice(0, eq).toLowerCase();
+  if (name.replace(/\s*\+?\s*$/, '') === 'ptr') return true;
   return name.startsWith('profileset') && name.includes('.') && argProblem(arg.slice(eq + 1));
 }
 
 /** buildArgs output -> simc argv inside the sandbox. Throws on anything that could make simc open a file other than the two it maps. */
-export function mapArgs(args, dir) {
-  if (!Array.isArray(args) || args[0] !== '/profile.simc') throw new Error('Refused args: the first must be /profile.simc');
+export function mapArgs(args, dir, engineChannel = 'live') {
+  if (engineChannel !== 'live' && engineChannel !== 'ptr') throw new Error('Refused engine channel');
+  const prefix = Array.isArray(args) && args[0] === (engineChannel === 'ptr' ? 'ptr=1' : 'ptr=0');
+  const profileIndex = prefix ? 1 : 0;
+  if (!Array.isArray(args) || (!prefix && engineChannel !== 'live') || args[profileIndex] !== '/profile.simc') throw new Error('Refused args: trusted channel and /profile.simc must come first');
   if (args.filter((arg) => arg === REPORT_ARG).length !== 1) throw new Error(`Refused args: exactly one ${REPORT_ARG} is required`);
   return args.map((arg, i) => {
-    if (i === 0) return `${dir}/profile.simc`;
+    if (prefix && i === 0) return arg;
+    if (i === profileIndex) return `${dir}/profile.simc`;
     if (arg === REPORT_ARG) return `json=${dir}/out.json,version=2`;
     if (argProblem(arg)) throw new Error(`Refused arg: ${String(arg).slice(0, 100)}`);
     return arg;
@@ -60,6 +65,27 @@ export function summarize(report) {
     dpsError: stdDev !== undefined && estimator !== undefined ? stdDev * estimator : undefined,
     iterations: num(sim?.options?.iterations),
   };
+}
+
+/** Compare report evidence to the coordinator's trusted pack, before any upload or acceptance. */
+export function verifyReportIdentity(report, identity, legacyLive = false) {
+  // Old coordinators provide the content hash but no manifest identity. Only their prefix-free Live protocol is accepted.
+  if (!identity) {
+    const dbc = report?.sim?.options?.dbc;
+    if (legacyLive && dbc?.version_used === 'Live' && typeof dbc.Live?.wow_version === 'string' &&
+        dbc.Live.build_level === Number(dbc.Live.wow_version.split('.').at(-1))) return;
+    throw new Error('The coordinator did not provide the engine pack identity');
+  }
+  const channel = identity.engineChannel;
+  const dbc = report?.sim?.options?.dbc;
+  const expected = channel === 'ptr' ? 'PTR' : channel === 'live' ? 'Live' : null;
+  const revision = report?.git_revision;
+  if (!expected || dbc?.version_used !== expected || (channel === 'ptr' && !report.ptr_enabled) ||
+      typeof revision !== 'string' || !/^[a-f0-9]{7,40}$/i.test(revision) || !identity.upstreamCommit?.startsWith(revision) ||
+      dbc[expected]?.wow_version !== identity.clientDataVersion ||
+      dbc[expected]?.build_level !== Number(identity.clientDataVersion.split('.').at(-1))) {
+    throw new Error('The simulation report does not match the selected engine pack');
+  }
 }
 
 /** Queues output lines, dropping the oldest past `max`: progress is about now, and a failure shows at the end of stderr. */
@@ -263,7 +289,7 @@ export async function serve(options) {
     try {
       if (!threads) throw new Error('Invalid thread count');
       if (typeof job.profile !== 'string' || typeof job.resultPut?.url !== 'string') throw new Error('Invalid job');
-      const args = mapArgs(job.args, JOB_DIR);
+      const args = mapArgs(job.args, JOB_DIR, job.engineIdentity?.engineChannel ?? 'live');
       const binary = await engine(job.engine);
       if (state.cancelled) return;
       await rm(hostDir, { recursive: true, force: true });
@@ -279,7 +305,9 @@ export async function serve(options) {
       if (state.cancelled) { o.log(`job ${id}: cancelled`); return; }
       if (code !== 0) throw new Error(`simc exited with status ${code}${state.notices.length ? `: ${state.notices.join('\n')}` : ''}`);
       const raw = await readReport(join(hostDir, 'out.json'));
-      const summary = summarize(JSON.parse(raw.toString('utf8')));
+      const report = JSON.parse(raw.toString('utf8'));
+      verifyReportIdentity(report, job.engineIdentity, job.engineIdentity === undefined && job.args[0] === '/profile.simc');
+      const summary = summarize(report);
       const body = await gzip(raw);
       const put = await retry(() => o.fetch(job.resultPut.url, {
         method: 'PUT', headers: { 'content-type': 'application/gzip' }, body, signal: AbortSignal.timeout(120_000),
@@ -288,7 +316,10 @@ export async function serve(options) {
       if (!put.ok) throw new Error(`Result upload failed with status ${put.status}`);
       await flush();
       if (state.cancelled) { o.log(`job ${id}: cancelled during upload`); return; }
-      const res = await retry(() => call(`${jobPath}/complete`, { wallSeconds, ...(cpu === null ? {} : { cpuSeconds: cpu }), summary, notices: state.notices }));
+      const dbc = report.sim.options.dbc;
+      const evidence = { engineChannel: dbc.version_used === 'PTR' ? 'ptr' : 'live', upstreamCommit: report.git_revision,
+        clientDataVersion: dbc[dbc.version_used].wow_version, buildLevel: dbc[dbc.version_used].build_level };
+      const res = await retry(() => call(`${jobPath}/complete`, { wallSeconds, ...(cpu === null ? {} : { cpuSeconds: cpu }), summary, notices: state.notices, engineIdentity: evidence }));
       await discard(res);
       o.log(`job ${id}: done in ${wallSeconds.toFixed(1)} s (complete ${res.status})`);
     } catch (err) {
