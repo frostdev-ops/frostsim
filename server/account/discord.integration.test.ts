@@ -208,6 +208,8 @@ describe.skipIf(!PG)('discord postgres integration (needs FROSTSIM_TEST_PG; the 
     expect((await cancel(web.id)).status).toBe(404);
     const [untouched] = await sql`select status from compute_jobs where id = ${web.id}`;
     expect(untouched.status).toBe('queued');
+    // This ownership-only row has no assembled payload; retire it before the later worker claim test.
+    await sql`update compute_jobs set status = 'cancelled' where id = ${web.id}`;
   });
 
   it('treats a suspended user, and under ADMIN_ONLY a non-admin, as not linked', async () => {
