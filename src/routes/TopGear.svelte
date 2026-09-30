@@ -65,7 +65,11 @@
   import ComparisonBars, { type ComparisonRow } from '../lib/ui/ComparisonBars.svelte'
   import ItemSearch from '../lib/ui/ItemSearch.svelte'
   import ItemUpgradePicker from '../lib/ui/ItemUpgradePicker.svelte'
-  import { withMaxUpgrade } from '../lib/catalog/upgrades'
+  import { withMaxUpgrade, upgradeSeason } from '../lib/catalog/upgrades'
+  import { VAULT_SOCKET_REWARD_ID, vaultCurrencySeason, vaultRewardReference, vaultTokenCount } from '../lib/catalog/vaultRewards'
+  import { vaultRecommendation } from '../lib/optimization/vault'
+  import type { GemOption } from '../lib/catalog/catalog'
+  import ChoiceSelect from '../lib/ui/ChoiceSelect.svelte'
   import { serializeItem } from '../lib/catalog/serialize'
   import { classId } from '../lib/import/constraints'
   import { isHypothetical } from '../lib/hypothetical'
@@ -107,6 +111,8 @@
     embellishments = draft?.embellishments ?? {}
     requiredSets = draft?.requiredSets ?? []
     selectedLoadouts = draft?.selectedLoadouts ?? []
+    vaultPaneOverride = null
+    vaultSocketGem = ''
     result = null
     shareOutcome = null
     searchError = ''
@@ -154,6 +160,26 @@
     ...savedLoadouts,
   ].filter((l, i, all) => all.findIndex((other) => other.talents === l.talents) === i) : [])
   let gems = $state<Partial<Record<GearSlot, number[][]>>>({})
+  let vaultPaneOverride = $state<number | null>(null)
+  let vaultSocketGem = $state('')
+  let vaultGemOptions = $state<GemOption[]>([])
+  let vaultGemError = $state('')
+  let vaultGemRetry = $state(0)
+  const vaultPanes = $derived(vaultPaneOverride ?? new Set(importedVault.map(item => item.vaultRewardId)).size)
+  $effect(() => {
+    const client = catalogClient()
+    const level = character?.level ?? 0
+    vaultGemRetry
+    vaultGemOptions = []
+    vaultGemError = ''
+    if (!client) return
+    let cancelled = false
+    void client.gemsFor([14]).then(options => {
+      if (!cancelled) vaultGemOptions = options.filter(gem => !level || (gem.reqLevel ?? 0) <= level)
+        .sort((a, b) => (b.itemLevel ?? 0) - (a.itemLevel ?? 0) || (b.craftingQuality ?? 0) - (a.craftingQuality ?? 0))
+    }).catch(() => { if (!cancelled) vaultGemError = 'Socket gems could not be loaded.' })
+    return () => { cancelled = true }
+  })
   let enchants = $state<Partial<Record<GearSlot, number[]>>>({})
 
   /** P08.2: Embellishment bonus ids per slot; slot applicability and count cap not in data, user-decided. */
@@ -201,7 +227,7 @@
   })
   let collapsedSlots = $state<GearSlot[]>([])
   let itemFilter = $state('')
-  let result = $state<(OptimizationResult & { generation?: GenerationReport }) | null>(null)
+  let result = $state<(OptimizationResult & { generation?: GenerationReport; budgetExhausted?: boolean; comparisonLooks?: number; comparisonCandidates?: number }) | null>(null)
   let setupOpen = $state(false)
   let resultHeading: HTMLHeadingElement | undefined = $state()
   let resultExtraLines = $state<string[]>([])
@@ -217,6 +243,8 @@
     loadouts: { name: string; talents: string }[]
     settings: ReturnType<typeof gearSettings.snapshot>
     extraLines: string[]
+    vaultPanes: number
+    vaultRewardIds: string[]
   } | null>(null)
   let progress = $state<OptimizationProgress | null>(null)
   let searchError = $state('')
@@ -485,6 +513,7 @@
       embellishments: Object.keys(embellishments).length ? embellishments : undefined,
       consumables: Object.keys(consumables).length ? consumables : undefined,
       requiredSets: requiredSets.length ? requiredSets : undefined,
+      vaultSocketGemId: vaultTokenCount(vaultPanes) === 6 && vaultSocketGem ? Number(vaultSocketGem) : undefined,
     }
   })
 
@@ -523,7 +552,7 @@
       Object.values(enchants).reduce((n, l) => n + (l?.length ?? 0), 0) +
       Object.values(embellishments).reduce((n, l) => n + (l?.length ?? 0), 0) +
       Object.values(consumables).reduce((n, l) => n + (l?.length ?? 0), 0) +
-      selectedLoadouts.length,
+      selectedLoadouts.length + (effectiveSelection.vaultSocketGemId ? 1 : 0),
   )
 
   /** Iterations per second for one candidate at thread count; placeholder until engine track measures; labelled estimate. */
@@ -597,6 +626,8 @@
         loadouts: loadoutOptions,
         settings: gearSettings.snapshot(),
         extraLines: gearSettings.extraProfileLines() ?? [],
+        vaultPanes,
+        vaultRewardIds: [...new Set(vaultItems.map(item => item.vaultRewardId!))],
       })
     } catch (err) {
       searchError = err instanceof Error ? err.message : String(err)
@@ -700,7 +731,7 @@
       if (plan.report.rejectedIllegal) {
         warnings.push(`${plan.report.rejectedIllegal} combinations were rejected as illegal before reaching the engine`)
       }
-      result = { ...r, warnings, generation: plan.report }
+      result = { ...r, warnings, generation: plan.report, comparisonCandidates: plan.candidates.length }
       app.job.status = r.incomplete ? 'error' : 'complete'
 
       // Saving must not discard finished search; measurements cost minutes and already on screen; TypeError or full disk not a reason to fail.
@@ -880,6 +911,12 @@
       // Verification replaces ranking as strictly better measurement of same candidates; warnings carry precision.
       result = {
         ...verified,
+        comparisonCandidates: result.comparisonCandidates ?? result.candidates.length,
+        comparisonLooks: (result.comparisonLooks ?? 1) + verified.comparisonLooks,
+        truncated: result.truncated || verified.truncated,
+        droppedWhileAlive: [...new Set([...result.droppedWhileAlive, ...verified.droppedWhileAlive])],
+        incomplete: result.incomplete ?? verified.incomplete,
+        budgetExhausted: result.budgetExhausted || verified.budgetExhausted,
         warnings: [
           `these numbers come from a verification run at ${(verifyTarget).toFixed(2)}% target error, not from the staged search`,
           ...verified.warnings,
@@ -975,30 +1012,35 @@
     if (!result || !lastSearch) return []
     const rewards = new Map(Object.values(lastSearch.selection.slots).flatMap((items) => items ?? [])
       .filter((item) => item.vaultRewardId).map((item) => [item.vaultRewardId!, item]))
+    const socket = measured.find(state => state.candidate.provenance.vaultRewardId === VAULT_SOCKET_REWARD_ID)?.candidate.provenance.vaultItem
+    if (socket) rewards.set(VAULT_SOCKET_REWARD_ID, socket)
     return [...rewards].map(([id, reward]) => {
       const best = measured.find((state) => state.status === 'measured'
         && state.candidate.provenance.vaultRewardId === id && !result!.droppedWhileAlive.includes(state.candidate.id))
       const item = best?.candidate.provenance.vaultItem ?? [...(best?.candidate.delta.gear?.values() ?? [])].find((item) => item?.vaultRewardId === id) ?? reward
       const m = best?.measurement
       const factor = lastSearch!.plan.retentionFactor * (lastSearch!.plan.correctForMultipleComparisons === false ? 1
-        : multiplicityFactor(measured.length - 1, m?.confidence ?? 0.95, Math.max(1, lastSearch!.plan.stages.length - 1)))
+        : multiplicityFactor((result!.comparisonCandidates ?? result!.candidates.length) - 1, m?.confidence ?? 0.95, result!.comparisonLooks ?? Math.max(1, lastSearch!.plan.stages.length - 1)))
       const verdict = m && ownedBest?.measurement && Math.min(m.iterations, ownedBest.measurement.iterations) >= lastSearch!.plan.minIterations
         ? compareCandidates(m, ownedBest.measurement, factor) : 'unknown'
       return {
-        id, label: best ? display(item as ItemInstance, new Map([...app.resolved, ...best.candidate.provenance.items.map(item => [item.instanceId, item] as const)])).name : display(item as ItemInstance, app.resolved).name,
-        changes: best && ownedBest ? changeList(best, ownedBest) : undefined,
+        id, label: id === VAULT_SOCKET_REWARD_ID ? `Tokens: socket on ${display(item as ItemInstance, app.resolved).name}` : best ? display(item as ItemInstance, new Map([...app.resolved, ...best.candidate.provenance.items.map(item => [item.instanceId, item] as const)])).name : display(item as ItemInstance, app.resolved).name,
+        changes: best && ownedBest ? [...(id === VAULT_SOCKET_REWARD_ID ? [{ slot: 'Reward', name: '6 Merit tokens → socket + selected gem' }] : []), ...changeList(best, ownedBest)] : undefined,
         item: best?.candidate.provenance.items.find((resolved) => resolved.instanceId === item.instanceId && resolved.slot === item.slot) ?? resolveItem(item as ItemInstance, app.resolved) ?? undefined,
         resolvedItems: best?.candidate.provenance.items,
         mean: m?.mean, margin: m?.margin ?? undefined, iterations: m?.iterations,
         indistinguishable: verdict === 'unknown' ? undefined : verdict === 'indistinguishable',
         icons: [item as ItemInstance], changedSlots: best && ownedBest
           ? [...new Set([...(best.candidate.delta.gear?.keys() ?? []), ...(ownedBest.candidate.delta.gear?.keys() ?? [])])] : [item.slot],
-        hypothetical: isHypothetical(item as ItemInstance),
-        detail: result!.incomplete ? 'Partial search — best measured combination' : 'Best measured combination with this reward',
+        hypothetical: id !== VAULT_SOCKET_REWARD_ID && isHypothetical(item as ItemInstance),
+        detail: id === VAULT_SOCKET_REWARD_ID ? '6 Thalassian Tokens of Merit → Miasmic Jewelbinder + selected gem'
+          : result!.incomplete ? 'Partial search — best measured combination' : 'Best measured combination with this reward',
         status: m ? best!.status : 'No measured setup for this reward',
       }
     })
   })
+  const vaultAdvice = $derived(result && lastSearch && upgradeSeason.id === vaultCurrencySeason
+    ? vaultRecommendation(result, lastSearch.plan, lastSearch.vaultRewardIds, lastSearch.vaultPanes, !!lastSearch.selection.vaultSocketGemId) : null)
 
   function deltaOf(mean: number): number {
     return mean - baselineMean
@@ -1096,7 +1138,7 @@
             <button class="danger" onclick={() => cancelSearch?.()}>Cancel</button>
           {:else}
             <button class="ghost sm" disabled={!selectedCount} onclick={() => {
-              selection = {}; gems = {}; enchants = {}; consumables = {}; embellishments = {}; requiredSets = []; selectedLoadouts = []
+              selection = {}; gems = {}; enchants = {}; consumables = {}; embellishments = {}; requiredSets = []; selectedLoadouts = []; vaultSocketGem = ''; vaultPaneOverride = null
             }}>Reset choices</button>
             <button
               class="primary"
@@ -1192,6 +1234,21 @@
           <p class="small">Open your Great Vault in game, then paste a fresh SimulationCraft addon export to import its reward choices. You can also add a hypothetical choice below.</p>
         {/if}
         <div class="row-tight wrap"><label class="small">Reward slot <select bind:value={vaultSlot}>{#each GEAR_SLOTS.filter(slot => !['shirt', 'tabard', 'finger2', 'trinket2'].includes(slot)) as slot}<option value={slot}>{SLOT_LABELS[slot]}</option>{/each}</select></label><button class="sm" disabled={app.catalogState !== 'ready'} onclick={() => { searchAsVault = true; searchSlot = vaultSlot }}>Add Vault choice</button></div>
+        {#if upgradeSeason.id === vaultCurrencySeason}
+          <details class="disclosure" open>
+            <summary>Tokens & Voidcore alternatives</summary>
+            <div class="stack-sm">
+              <label class="small">Unlocked Vault panes <select aria-label="Unlocked Vault panes" value={vaultPanes} onchange={event => vaultPaneOverride = Number(event.currentTarget.value)}><option value="0">Not known — check in game</option>{#each Array.from({ length: 9 }, (_, i) => i + 1) as count}<option value={count}>{count}</option>{/each}</select></label>
+              <p class="xs muted">{vaultTokenCount(vaultPanes) ? `${vaultTokenCount(vaultPanes)} Thalassian Tokens of Merit instead of gear.` : 'One, two or three or more unlocked panes award 2, 4 or 6 tokens.'} {vaultPanes >= 3 ? 'You can choose a Nebulous Voidcore directly from the Vault instead.' : 'A Nebulous Voidcore requires at least three unlocked panes.'} Include every offered item for a recommendation. <a href={vaultRewardReference} target="_blank" rel="noreferrer">Season 2 reward rules</a>.</p>
+              {#if vaultTokenCount(vaultPanes) === 6}
+                <ChoiceSelect label="Gem for token-bought socket" bind:value={vaultSocketGem} options={[{ value: '', label: 'Do not compare a socket' }, ...vaultGemOptions.map(gem => ({ value: String(gem.itemId), label: `${gem.name}${gem.craftingQuality ? ` (quality ${gem.craftingQuality})` : ''}`, itemId: gem.itemId }))]} />
+                {#if vaultGemError}<p class="xs" role="alert">{vaultGemError} <button class="sm" onclick={() => vaultGemRetry++}>Retry</button></p>{/if}
+                <p class="xs muted">Six tokens buy Miasmic Jewelbinder. Select a gem to simulate one added socket on eligible owned Season 2 head, wrist or waist gear, instead of a Vault item. Existing sockets, PvP gear and items with unverified season membership are excluded.</p>
+              {/if}
+              <p class="xs muted">Voidcore loot is random. Use Droptimizer's Bonus roll option to compare your target pool; this export does not identify which bonus-roll items remain. Tokens can also buy crests or a crafting Spark.</p>
+            </div>
+          </details>
+        {/if}
       </section>
 
       <section id="gear-items" class="stack gear-section">
@@ -1584,6 +1641,7 @@
         <section class="panel stack-sm">
           <h2>Great Vault choices</h2>
           <p class="small muted">Each row equips one reward with its best measured gear combination. The comparison is against your best setup without taking a Vault item.</p>
+          {#if vaultAdvice}<div class="panel stack-sm" role="status"><strong>{vaultAdvice.title}</strong><p class="small">{vaultAdvice.reason}</p>{#if vaultComparisons.some(row => row.hypothetical)}<p class="xs muted">This advice includes hypothetical Vault scenarios. Confirm your actual offers before claiming a reward.</p>{/if}</div>{/if}
           {#if ownedBest?.measurement}
             <ComparisonBars rows={vaultComparisons} baseline={{ label: 'Best setup without a Vault reward', mean: ownedBest.measurement.mean, margin: ownedBest.measurement.margin ?? undefined, equipped: false }} baselineGear={ownedBestGear} baselineResolvedItems={ownedBest.candidate.provenance.items} caption="Great Vault rewards compared one at a time" />
           {:else}

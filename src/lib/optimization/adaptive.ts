@@ -70,6 +70,8 @@ export interface AdaptivePass {
 
 /** Extends `OptimizationResult`; never replaces a field of it. */
 export interface AdaptiveResult extends OptimizationResult {
+  /** Ceiling on statistical looks used by the adaptive search's multiplicity correction. */
+  comparisonLooks: number;
   passes: AdaptivePass[];
   /** True when the loop stopped on the iteration or time budget, not on an answer. */
   budgetExhausted: boolean;
@@ -519,6 +521,7 @@ export async function runAdaptiveSearch(
 
   return {
     ...result,
+    comparisonLooks: looks,
     warnings: [...new Set([...result.warnings, ...warnings])],
     passes: result.stagesRun.map((s) => ({
       label: s.label,
