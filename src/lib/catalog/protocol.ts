@@ -1,7 +1,8 @@
 // Catalog worker protocol: handler is plain function over plain state (testable without worker). Everything structured-clonable.
 
 import { Catalog, type CatalogPayloads, type GemOption, type SearchQuery } from './catalog';
-import { checkCompatibility, type CompatWarning, type EngineIdentity } from './load';
+import { checkCompatibility, validCatalogManifest, type CompatWarning, type EngineIdentity } from './load';
+import { rulesMatch, type SeasonRules } from './rules';
 import type { CharacterConstraints } from './legality';
 import { collect, generate, type GenerationReport } from '../optimization/candidates';
 import {
@@ -69,7 +70,7 @@ export interface WorkerPlanOptions {
 }
 
 export type CatalogResponse =
-  | { kind: 'load'; ok: true; manifest: CatalogManifest; warnings: CompatWarning[] }
+  | { kind: 'load'; ok: true; manifest: CatalogManifest; rules: SeasonRules | null; warnings: CompatWarning[] }
   | { kind: 'load'; ok: false; reason: string; message: string }
   | { kind: 'resolve'; items: [string, ResolvedItem][]; missing: string[] }
   | { kind: 'search'; items: ResolvedItem[] }
@@ -197,12 +198,17 @@ export async function handleRequest(
     if (manifest?.schemaVersion !== 1) {
       return { kind: 'load', ok: false, reason: 'unsupported_schema', message: `catalog schema ${manifest?.schemaVersion} is not supported` };
     }
+    if (!validCatalogManifest(manifest)) return { kind: 'load', ok: false, reason: 'malformed', message: 'Catalog manifest is missing valid engine identity or metadata.' };
+    const warnings = checkCompatibility(manifest, request.engine);
+    if (warnings.some(w => w.code === 'ptr_mismatch')) return { kind: 'load', ok: false, reason: 'channel_mismatch', message: 'Catalog belongs to a different engine channel.' };
     try {
       const parts = await Promise.all(PAYLOAD_FILES.map((f) => fetchJson(`${base}/${f}`)));
       const [items, bonus, scaling, enchants, gems, sets, embellishments, consumables] = parts;
       // Optional: catalog before spec table has no specs.json (must load not fail); specsFor() returns empty (documented as "rebuild catalog").
       const specs = await fetchJson(`${base}/specs.json`).catch(() => undefined);
       const payloads = { manifest, items, bonus, scaling, enchants, gems, sets, embellishments, consumables, specs } as CatalogPayloads;
+      const rules = await fetchJson(`${base}/rules.json`).catch(() => null) as SeasonRules | null;
+      payloads.rules = rules && rulesMatch(rules, manifest) ? rules : null;
       if (!payloads.items?.count || !Array.isArray(payloads.items.id)) {
         return { kind: 'load', ok: false, reason: 'malformed', message: 'items.json is missing its columns' };
       }
@@ -217,7 +223,7 @@ export async function handleRequest(
       }
       state.catalog = catalog;
       state.baseUrl = base;
-      return { kind: 'load', ok: true, manifest, warnings: checkCompatibility(manifest, request.engine) };
+      return { kind: 'load', ok: true, manifest, rules: catalog.rules, warnings };
     } catch (err) {
       return { kind: 'load', ok: false, reason: 'unavailable', message: `catalog payload unavailable: ${String(err)}` };
     }

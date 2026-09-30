@@ -1,5 +1,7 @@
 <script lang="ts">
   import type { SimOutcome } from '../simc/job'
+  import { reportEngineChannel } from '../simc/report'
+  import { engineChannelLabel } from '../simc/channel'
   import type { PlayerDetail as Detail } from '../simc/detail'
   import { parseAddonExport } from '../import/character'
   import ResultHeader from './ResultHeader.svelte'
@@ -16,6 +18,7 @@
   const shown = $derived(outcome.report.players.find((p) => p.name === focus) ?? outcome.report.players[0])
   const top = $derived(ranked[0]?.dps.mean || 1)
   const fmt = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 })
+  const channel = $derived(reportEngineChannel(outcome.report))
   function download(name: string, blob: Blob) { const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = name; a.click(); URL.revokeObjectURL(url) }
 </script>
 <div class="report-layout">
@@ -47,7 +50,7 @@
       <ShareReport {outcome} />
       <details class="disclosure"><summary>Export report</summary><div class="stack-sm">
         <button class="sm" onclick={() => download('report.json', outcome.getRawJson())}>Download JSON</button>
-        <button class="sm" onclick={() => download('profile.simc', new Blob([outcome.effectiveProfile || outcome.request.profile], { type: 'text/plain' }))}>Download profile</button>
+        <button class="sm" onclick={() => download('profile.simc', new Blob([`# Frostsim game version: ${channel ? engineChannelLabel(channel) : 'Channel not recorded'}\n`, outcome.effectiveProfile || outcome.request.profile], { type: 'text/plain' }))}>Download profile</button>
         {#if outcome.getHtmlReport()}<button class="sm" onclick={() => download('report.html', outcome.getHtmlReport()!)}>Download HTML</button>{/if}
       </div></details>
     </section>

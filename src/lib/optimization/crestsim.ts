@@ -1,7 +1,7 @@
 // Crest Sim: pure; three-phase search (phase 1: anchor measurements, phase 2: knapsack, phase 3: top-K sims).
 
 import { GEAR_SLOTS, type GearSlot, type ItemInstance, type ResolvedItem } from '../catalog/types';
-import { itemUpgradeTrack, upgradeTracks, withUpgradeRank, type UpgradeTrack } from '../catalog/upgrades';
+import { itemUpgradeTrack, withUpgradeRank, type UpgradeTrack } from '../catalog/upgrades';
 import { canonicalize, deltaToLines } from './candidates';
 import type { Candidate, CandidateDelta, OptimizationProgress } from './types';
 
@@ -9,6 +9,8 @@ import type { Candidate, CandidateDelta, OptimizationProgress } from './types';
 
 export type { CrestCurrency, Cost, SlotWatermarks } from '../catalog/upgradeCosts';
 import type { CrestCurrency, Cost, SlotWatermarks } from '../catalog/upgradeCosts';
+import { liveRules, type SeasonRules } from '../catalog/rules';
+import { tracksFor } from '../catalog/upgrades';
 
 export interface UpgradeCosts {
   upgradeStepCost(trackId: number, fromRank: number, toRank: number): Cost;
@@ -61,6 +63,7 @@ export interface CrestCandidateSet {
 }
 
 export interface CrestCandidateOptions {
+  rules?: SeasonRules | null;
   costs: UpgradeCosts;
   /** The addon's rows, verbatim. Absent means no watermark discount is applied. */
   watermarks?: { slotIndex: number; current: number; max: number }[];
@@ -94,7 +97,8 @@ export function crestCandidates(
 ): CrestCandidateSet {
   const steps: CrestStep[] = [];
   const excluded: CrestExclusion[] = [];
-  const tracks = opts.tracks ?? upgradeTracks;
+  const rules = opts.rules === undefined ? liveRules : opts.rules;
+  const tracks = opts.tracks ?? tracksFor(rules);
   const seenSlots = new Set<GearSlot>();
 
   for (const { slot, item } of items) {
@@ -103,7 +107,7 @@ export function crestCandidates(
     if (seenSlots.has(slot)) continue;
     seenSlots.add(slot);
     const label = nameOf(item, opts.names);
-    const known = itemUpgradeTrack(item);
+    const known = itemUpgradeTrack(item, rules);
     const track = known && tracks.find((t) => t.id === known.track.id);
     if (!known || !track) {
       excluded.push({ slot, itemName: label, rank: null, reason: 'no upgrade track this season recognises' });
@@ -148,7 +152,7 @@ export function crestCandidates(
       }
       let upgraded: ItemInstance;
       try {
-        upgraded = withUpgradeRank(item, track.id, rank.rank);
+        upgraded = withUpgradeRank(item, track.id, rank.rank, rules);
       } catch (err) {
         excluded.push({ slot, itemName: label, rank: rank.rank, reason: reason(err) });
         continue;

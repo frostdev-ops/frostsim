@@ -1,6 +1,7 @@
 // Season upgrade costs and weekly crest supply from generated/upgrade-costs.json (engine-pinned DB2s). No hardcoded costs, currency ids, or caps.
 import data from './generated/upgrade-costs.json';
 import { GEAR_SLOTS, type GearSlot } from './types';
+import { liveRules, type SeasonRules } from './rules';
 
 /** Crest wallet cap and weekly earn; unencoded fields are null and named in unavailable. */
 export interface CapModel {
@@ -50,11 +51,6 @@ export const seasonStartsAt: string | null = data.season.startsAt ?? null;
 /** Data-level gaps for whole table, not per-step. */
 export const costUnavailable: string[] = data.unavailable;
 
-const crests: CrestCurrency[] = data.crests.map(crest => ({
-  id: crest.id, name: crest.name, tier: crest.tier,
-  trackId: crest.trackId, trackLabel: crest.trackLabel, cap: crest.cap,
-}));
-const crestIds = new Set(crests.map(crest => crest.id));
 
 /** Published weekly cap statement when available (not DB2 field; see capSearch in generated file). */
 export const seasonCapSource: {
@@ -67,8 +63,8 @@ export const watermarkSlots: readonly { index: number; name: string }[] = data.w
 export const watermarkSource = data.watermarkSource;
 
 /** Enum field name for a watermark slot index, or null when it is not one. */
-export function watermarkSlot(slotIndex: number): string | null {
-  return watermarkSlots.find(entry => entry.index === slotIndex)?.name ?? null;
+export function watermarkSlot(slotIndex: number, rules: SeasonRules | null = liveRules): string | null {
+  return rules?.costs?.watermarkSlots.find(entry => entry.index === slotIndex)?.name ?? null;
 }
 
 // Gear slot to Enum.ItemRedundancySlot mapping: redundancy groups (rings->Finger, trinkets->Trinket). Weapons absent (class-dependent). Only three spelling differences listed.
@@ -88,24 +84,26 @@ for (const slot of Object.keys(GEAR_TO_ENUM) as GearSlot[]) {
 }
 
 /** Watermark slot index for gear slot; null for shirt/tabard and weapons (class-dependent). */
-export function watermarkSlotForGear(slot: GearSlot): number | null {
-  return gearToIndex.get(slot) ?? null;
+export function watermarkSlotForGear(slot: GearSlot, rules: SeasonRules | null = liveRules): number | null {
+  if (rules === liveRules) return gearToIndex.get(slot) ?? null;
+  const name = GEAR_TO_ENUM[slot] ?? slot;
+  return rules?.costs?.watermarkSlots.find(entry => entry.name.toLowerCase() === name.toLowerCase())?.index ?? null;
 }
 
 /** Season crest currencies, lowest tier first. */
-export function crestCurrencies(): CrestCurrency[] {
-  return crests;
+export function crestCurrencies(rules: SeasonRules | null = liveRules): CrestCurrency[] {
+  return rules?.costs?.crests ?? [];
 }
 
-function track(trackId: number) {
-  const found = data.tracks.find(entry => entry.trackId === trackId);
+function track(trackId: number, rules: SeasonRules | null) {
+  const found = rules?.costs?.tracks.find(entry => entry.trackId === trackId);
   if (!found) throw Error(`Unknown upgrade track ${trackId}.`);
   return found;
 }
 
 /** Summed cost fromRank to toRank on one track; unpurchasable steps list in unavailable, not treated as free. */
-export function upgradeStepCost(trackId: number, fromRank: number, toRank: number): Cost {
-  const steps = track(trackId).steps;
+export function upgradeStepCost(trackId: number, fromRank: number, toRank: number, rules: SeasonRules | null = liveRules): Cost {
+  const steps = track(trackId, rules).steps;
   if (!Number.isInteger(fromRank) || !Number.isInteger(toRank) || toRank < fromRank) {
     throw Error('Upgrade ranks must be whole numbers with toRank >= fromRank.');
   }
@@ -134,10 +132,11 @@ export function effectiveWatermark(at: SlotWatermarks): number {
 }
 
 /** Waive crests for steps at/below watermark; gold always charged. */
-export function applyHighWatermark(cost: Cost, at: SlotWatermarks, trackId: number, toRank: number): Cost {
+export function applyHighWatermark(cost: Cost, at: SlotWatermarks, trackId: number, toRank: number, rules: SeasonRules | null = liveRules): Cost {
   if (toRank !== cost.toRank) throw Error('applyHighWatermark: toRank does not match the cost it was given.');
   const watermark = effectiveWatermark(at);
-  const steps = track(trackId).steps;
+  const steps = track(trackId, rules).steps;
+  const crestIds = new Set(crestCurrencies(rules).map(crest => crest.id));
   const waived: Cost = { ...cost, currencies: { ...cost.currencies } };
   for (let rank = cost.fromRank + 1; rank <= toRank; rank++) {
     const step = steps.find(entry => entry.toRank === rank);
@@ -154,10 +153,11 @@ export function applyHighWatermark(cost: Cost, at: SlotWatermarks, trackId: numb
 
 /** Total crests obtainable by season week weekIndex (0 = first week); null if unencoded and no override. Mid-season removal is hotfix, not DB2 date. */
 export function weeklyCrestCap(currency: CrestCurrency, weekIndex: number,
-  opts?: { capRemoved?: boolean; perWeek?: number; startQuantity?: number }): number | null {
+  opts?: { capRemoved?: boolean; perWeek?: number; startQuantity?: number }, rules: SeasonRules | null = liveRules): number | null {
+  const seasonCapSource = rules?.costs?.seasonCapSource;
   if (!Number.isInteger(weekIndex) || weekIndex < 0) throw Error('weekIndex must be a whole number >= 0.');
   if (opts?.capRemoved) return Number.POSITIVE_INFINITY;
-  const removedWeek = seasonCapSource?.capRemovedAt ? seasonWeekIndex(Date.parse(seasonCapSource.capRemovedAt)) : null;
+  const removedWeek = seasonCapSource?.capRemovedAt ? seasonWeekIndex(Date.parse(seasonCapSource.capRemovedAt), rules) : null;
   if (removedWeek !== null && weekIndex >= removedWeek) return Number.POSITIVE_INFINITY;
   const perWeek = opts?.perWeek ?? currency.cap.perWeek ?? seasonCapSource?.perWeek;
   if (perWeek === null || perWeek === undefined) return null;
@@ -166,16 +166,17 @@ export function weeklyCrestCap(currency: CrestCurrency, weekIndex: number,
 }
 
 /** Season week at given date; null if season start unavailable. */
-export function seasonWeekIndex(at: number | Date = Date.now()): number | null {
+export function seasonWeekIndex(at: number | Date = Date.now(), rules: SeasonRules | null = liveRules): number | null {
+  const seasonStartsAt = rules?.costs?.season.startsAt;
   if (!seasonStartsAt) return null;
   const elapsed = (at instanceof Date ? at.getTime() : at) - Date.parse(seasonStartsAt);
   return elapsed < 0 ? null : Math.floor(elapsed / 604_800_000);
 }
 
 /** Current crest amounts from an addon import, one entry per season crest. */
-export function characterCrests(character: { currencies?: { upgrade?: Record<number, number> } }): Record<number, number> {
+export function characterCrests(character: { currencies?: { upgrade?: Record<number, number> } }, rules: SeasonRules | null = liveRules): Record<number, number> {
   const held = character.currencies?.upgrade ?? {};
-  return Object.fromEntries(crests.map(crest => [crest.id, held[crest.id] ?? 0]));
+  return Object.fromEntries(crestCurrencies(rules).map(crest => [crest.id, held[crest.id] ?? 0]));
 }
 
 /** Per-slot watermark levels from addon import, keyed by raw addon slot index. */

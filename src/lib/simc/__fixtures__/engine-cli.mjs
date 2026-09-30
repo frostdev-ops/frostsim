@@ -7,15 +7,18 @@ import { join } from 'node:path'
 import { parentPort, workerData } from 'node:worker_threads'
 import { PROTOCOL, validate } from './protocol.mjs'
 
+const channel = workerData?.engineChannel ?? 'live'
+if (!['live', 'ptr'].includes(channel)) throw new Error('Unknown real engine channel')
+const suffix = channel === 'ptr' ? '-ptr' : ''
 const CLI = {
-  threaded: 'build/wasm/simc-node.cjs',
-  fallback: 'build/wasm-fallback/simc-node.cjs',
+  threaded: `build/wasm${suffix}/simc-node.cjs`,
+  fallback: `build/wasm${suffix}-fallback/simc-node.cjs`,
 }
 
 parentPort.on('message', (data) => {
   const post = (msg) => parentPort.postMessage({ protocol: PROTOCOL, jobId: data?.jobId, ...msg })
 
-  const problem = validate(data)
+  const problem = validate(data) || (data.args[0] !== `ptr=${channel === 'ptr' ? 1 : 0}` ? 'Wrong real engine channel' : null)
   if (problem) {
     post({ type: 'error', code: 'protocol', message: problem })
     return

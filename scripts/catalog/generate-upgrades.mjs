@@ -3,9 +3,12 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { parseCsv } from './sources/db2-loot.mjs';
+import { selectedChannel, clientBuild } from './channel.mjs';
+const engineChannel = selectedChannel();
+if (engineChannel === 'ptr') throw Error('Verified PTR season and upgrade group membership is unavailable; upgrade recommendations are disabled for PTR.');
 
 const lock = JSON.parse(readFileSync('engine.lock.json', 'utf8'));
-const build = lock.expected.clientDataWowVersion;
+const build = clientBuild(engineChannel);
 const arg = process.argv.indexOf('--cache');
 const cache = arg < 0 ? `build/upgrade-data-${build}` : process.argv[arg + 1];
 mkdirSync(cache, { recursive: true });
@@ -30,7 +33,7 @@ const offsets = new Map((await csv('ItemOffsetCurve')).map(row => [row.ID, row])
 const descriptions = await csv('ItemNameDescription');
 const groups = new Map((await csv('ItemBonusListGroup')).map(row => [row.ID, row]));
 const byBonus = Map.groupBy(bonuses, row => row.ParentItemBonusListID);
-const catalogDir = readdirSync('public/catalogs').find(dir => dir.startsWith(build + '-'));
+const catalogDir = readdirSync('public/catalogs').find(dir => dir.startsWith(engineChannel + '-' + build + '-') || dir.startsWith(build + '-'));
 if (!catalogDir) throw Error('Build the engine-pinned catalog first');
 const catalogRoot = `public/catalogs/${catalogDir}`;
 const scaling = JSON.parse(readFileSync(`${catalogRoot}/scaling.json`, 'utf8'));
@@ -76,7 +79,7 @@ const tracks = seasonGroups.flatMap(({ seasonId, ids }) => ids.map((id, i) => {
   return { id, label, seasonId, max, ranks };
 }));
 if (!tracks.some(track => track.seasonId === loot.season?.id)) throw Error('Current loot season has no verified upgrade data');
-const output = { build, engineCommit: lock.upstream.commit, season: loot.season, sources, tracks };
+const output = { engineChannel, build, engineCommit: lock.upstream.commit, season: loot.season, sources, tracks };
 mkdirSync('src/lib/catalog/generated', { recursive: true });
 writeFileSync('src/lib/catalog/generated/upgrades.json', JSON.stringify(output, null, 2) + '\n');
 console.log(`Generated ${tracks.length} upgrade tracks for ${build}; current ${loot.season.name}`);

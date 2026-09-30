@@ -118,21 +118,28 @@ describe('native builds', () => {
       .toThrow(/readable by other users/);
   });
 
-  it('builds packs missing native.json from their source archive, uploads to R2 and writes native.json last', async () => {
+  it('builds packs missing verified native identity from their source archive, uploads to R2 and writes native.json last', async () => {
     const output = join(tmp, 'out');
     const pack = id => join(output, 'engine/versions', id);
     for (const id of ['new', 'done', 'nosource']) mkdirSync(join(pack(id), 'source'), { recursive: true });
     writeFileSync(join(pack('new'), 'source/simc.tar.gz'), '');
     writeFileSync(join(pack('done'), 'source/simc.tar.gz'), '');
+    const manifest = { engineChannel: 'live', engine: { upstreamCommit: 'a'.repeat(40) }, wow: { clientDataVersion: '12.1.0.69814' } };
+    for (const id of ['new', 'done']) writeFileSync(join(pack(id), 'manifest.json'), JSON.stringify(manifest));
     writeFileSync(join(pack('done'), 'native.json'), '{}');
     const packs = ['new', 'done', 'nosource'].map(id => ({ id }));
+    expect(nativeTargets(output, packs).map(p => p.id)).toEqual(['new', 'done']);
+    writeFileSync(join(pack('done'), 'native.json'), JSON.stringify({ schemaVersion: 2, engineChannel: 'live', upstreamCommit: 'a'.repeat(40),
+      key: 'engines/done/simc-linux-x64.zst', sha256: 'b'.repeat(64),
+      clientDataVersion: '12.1.0.69814', gitRevision: 'a'.repeat(7), dbcVersionUsed: 'Live', buildLevel: 69814 }));
     expect(nativeTargets(output, packs).map(p => p.id)).toEqual(['new']);
 
     const commands = [];
     const exec = (cwd, command, args) => {
       commands.push([command, ...args].join(' '));
       if (command === 'cmake' && args[0] === '--build') { mkdirSync(join(cwd, 'build/native'), { recursive: true }); writeFileSync(join(cwd, 'build/native/simc'), 'ELF binary'); }
-      if (command.endsWith('build/native/simc')) writeFileSync(join(cwd, 'native-smoke.json'), JSON.stringify({ sim: { players: [{ collected_data: { dps: { mean: 1 } } }] } }));
+      if (command.endsWith('build/native/simc')) writeFileSync(join(cwd, 'native-smoke.json'), JSON.stringify({ git_revision: 'a'.repeat(7),
+        sim: { options: { dbc: { version_used: 'Live', Live: { wow_version: '12.1.0.69814', build_level: 69814 } } }, players: [{ collected_data: { dps: { mean: 1 } } }] } }));
     };
     const puts = [];
     const fetchFn = async (url, init) => { puts.push({ url, init }); return new Response(null, { status: 200 }); };

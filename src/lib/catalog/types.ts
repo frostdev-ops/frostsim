@@ -99,10 +99,12 @@ export interface ResolvedItem {
 }
 
 export interface CatalogIdentity {
+  engineChannel?: import('../simc/channel').EngineChannel;
   schemaVersion: number;
   catalogId: string;
   generatedAt: string;
   engine: {
+    engineChannel?: import('../simc/channel').EngineChannel;
     simcVersion: string | null;
     upstreamCommit: string | null;
     clientDataVersion: string;
@@ -302,6 +304,8 @@ export interface SubTree {
 }
 
 export interface TalentLayout {
+  engineChannel?: import('../simc/channel').EngineChannel;
+  descriptionsChannel?: import('../simc/channel').EngineChannel | null;
   schemaVersion: 1;
   classId: number;
   build: string;

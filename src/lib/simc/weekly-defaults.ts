@@ -1,8 +1,11 @@
 import { CLASS_LABELS, parseAddonExport } from '../import/character'
 import defaults from './generated/weekly-defaults.json'
+import { liveRules, type SeasonRules } from '../catalog/rules'
 
 /** Actor-scoped guided defaults; explicit user options including empty ones win. */
-export function weeklyDefaultLines(profile: string): string[] {
+export function weeklyDefaultLines(profile: string, context: SeasonRules | null = liveRules): string[] {
+  const defaults = context?.weekly
+  if (!defaults) return []
   const character = parseAddonExport(profile)
   const keys = character.profileLines.map((line) => line.match(/^\s*([\w.]+)\s*\+?=/)?.[1]).filter(Boolean)
   // Raw/multi-actor profiles cannot safely inherit one character's defaults.
@@ -13,8 +16,8 @@ export function weeklyDefaultLines(profile: string): string[] {
 }
 
 /** Insert after player declaration, before any later enemy changes scope. */
-export function applyWeeklyDefaults(profile: string): string {
-  const additions = weeklyDefaultLines(profile)
+export function applyWeeklyDefaults(profile: string, context: SeasonRules | null = liveRules): string {
+  const additions = weeklyDefaultLines(profile, context)
   if (!additions.length) return profile
   const lines = profile.split('\n')
   const actor = lines.findIndex((line) => {

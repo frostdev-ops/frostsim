@@ -6,14 +6,23 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 VARIANT=threaded
-if [ "${1:-}" = "--fallback" ]; then VARIANT=fallback; shift; fi
+CHANNEL=live
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --fallback) VARIANT=fallback; shift ;;
+    --channel) CHANNEL="${2:?--channel requires live or ptr}"; shift 2 ;;
+    *) break ;;
+  esac
+done
+case "$CHANNEL" in live) SUFFIX= ;; ptr) SUFFIX=-ptr ;; *) echo '--channel requires live or ptr' >&2; exit 1 ;; esac
+ENGINE_ROOT="${FROSTSIM_ENGINE_DIR:-public/engine${SUFFIX:+/ptr}}"
 
 if [ "$VARIANT" = threaded ]; then
-  BUILD_DIR=build/wasm
-  ENGINE_DIR=public/engine
+  BUILD_DIR=build/wasm$SUFFIX
+  ENGINE_DIR=$ENGINE_ROOT
 else
-  BUILD_DIR=build/wasm-fallback
-  ENGINE_DIR=public/engine/fallback
+  BUILD_DIR=build/wasm$SUFFIX-fallback
+  ENGINE_DIR=$ENGINE_ROOT/fallback
 fi
 CLI="$BUILD_DIR/simc-node.cjs"
 
@@ -25,6 +34,7 @@ POOL="$(node -e '
 const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
 process.stdout.write(String(m.capabilities.pthreadPoolSize));
 ' "$ENGINE_DIR/manifest.json" 2>/dev/null || echo 16)"
+INITIAL_MEMORY="$(node -e 'const m=JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); const n=m.build.artifactFlags.initialMemory ?? Number(m.build.linkFlags.match(/-sINITIAL_MEMORY=(\d+)/)?.[1]); if(!Number.isInteger(n)||n<1)throw Error("Missing initial memory"); process.stdout.write(String(n))' "$ENGINE_DIR/manifest.json")"
 
 if [ ! -f "$CLI" ] || [ "$BUILD_DIR/engine/libengine.a" -nt "$CLI" ]; then
   echo "engine-smoke: relinking node CLI (pool $POOL)..."
@@ -36,9 +46,9 @@ if [ ! -f "$CLI" ] || [ "$BUILD_DIR/engine/libengine.a" -nt "$CLI" ]; then
   em++ -O3 -flto -fwasm-exceptions ${THREAD_FLAGS[@]+"${THREAD_FLAGS[@]}"} \
     "$BUILD_DIR/CMakeFiles/simc.dir/engine/sc_main.cpp.o" "$BUILD_DIR/engine/libengine.a" \
     -o "$CLI" \
-    -fwasm-exceptions ${THREAD_FLAGS[@]+"${THREAD_FLAGS[@]}"} -sINITIAL_MEMORY=134217728 \
+    -fwasm-exceptions ${THREAD_FLAGS[@]+"${THREAD_FLAGS[@]}"} "-sINITIAL_MEMORY=$INITIAL_MEMORY" \
     -sALLOW_MEMORY_GROWTH=1 -sMAXIMUM_MEMORY=4gb -sENVIRONMENT=node,worker \
     -sNODERAWFS=1 -sEXIT_RUNTIME=1
 fi
 
-exec node "$CLI" "$@"
+exec node "$CLI" "ptr=$([ "$CHANNEL" = ptr ] && echo 1 || echo 0)" "$@"

@@ -262,7 +262,7 @@
       The % in a rotation label is the main target's damage with Power Infusion as a share of its damage
       alone, shown from two targets on. {data.fightStyle},
       target error {data.targetError}% per run{runs.at(-1)! > 1 ? `, each spec averaged over ${runs.length > 1 ? `${runs[0]} to ${runs.at(-1)}` : runs[0]} independent runs` : ''}, simc {data.engine.simcVersion} ({data.engine.commit.slice(0, 10)}),
-      WoW {data.engine.wowVersion}, generated {data.generatedAt}.
+      Live · WoW {data.engine.wowVersion}, generated {data.generatedAt}.
       {#each carried as specs (specs[0].engine!.commit)}
         {specs.map((s) => s.name).join(', ')}: carried over from simc {specs[0].engine!.simcVersion}
         ({specs[0].engine!.commit.slice(0, 10)}), WoW {specs[0].engine!.wowVersion}.

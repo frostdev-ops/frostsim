@@ -2,11 +2,13 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { parseCsv } from './catalog/sources/db2-loot.mjs';
+import { selectedChannel, clientBuild } from './catalog/channel.mjs';
 const lock = JSON.parse(readFileSync('engine.lock.json', 'utf8'));
-const build = lock.expected.clientDataWowVersion;
+const engineChannel = selectedChannel();
+const build = clientBuild(engineChannel);
 const arg = (name, fallback) => { const i = process.argv.indexOf(name); return i === -1 ? fallback : process.argv[i + 1]; };
-const cache = arg('--cache', 'build/talent-layout-' + build);
-const out = arg('--out', 'public/talent-layout');
+const cache = arg('--cache', `build/talent-layout-${engineChannel}-${build}`);
+const out = arg('--out', engineChannel === 'ptr' ? 'public/engine/ptr/talent-layout' : 'public/talent-layout');
 mkdirSync(cache, { recursive: true });
 const sources = [];
 async function csv(name) {
@@ -38,6 +40,10 @@ const nodesById = new Map(nodeRows.map(row => [row.ID, row]));
 const entriesById = new Map(entryRows.map(row => [row.ID, row]));
 const definitionsById = new Map(definitions.map(row => [row.ID, row]));
 
+const tooltips = new Map();
+const shapes = new Map();
+let tooltipSource = null;
+if (engineChannel === 'live') {
 const oauth = await fetch('https://oauth.battle.net/token', { method: 'POST', headers: {
   Authorization: 'Basic ' + Buffer.from(process.env.BLIZZARD_CLIENT_ID + ':' + process.env.BLIZZARD_CLIENT_SECRET).toString('base64'),
   'Content-Type': 'application/x-www-form-urlencoded',
@@ -50,8 +56,7 @@ async function get(url) {
   return response.json();
 }
 const index = await get('https://us.api.blizzard.com/data/wow/talent-tree/index?namespace=static-us&locale=en_US');
-const tooltips = new Map();
-const shapes = new Map();
+tooltipSource = index._links.self.href;
 for (const spec of index.spec_talent_trees) {
   const response = await get(spec.key.href + '&locale=en_US');
   for (const node of [...response.class_talent_nodes, ...response.spec_talent_nodes, ...(response.hero_talent_trees ?? []).flatMap(tree => tree.hero_talent_nodes)]) {
@@ -63,11 +68,12 @@ for (const spec of index.spec_talent_trees) {
     }
   }
 }
-const catalogRoot = arg('--catalog', null) ?? ('public/catalogs/' + readdirSync('public/catalogs').find(name => name.startsWith(build + '-') && !name.includes(' ')));
+}
+const catalogRoot = arg('--catalog', null) ?? ('public/catalogs/' + readdirSync('public/catalogs').find(name => name.startsWith(engineChannel + '-' + build + '-') && !name.includes(' ')));
 const manifest = JSON.parse(readFileSync(catalogRoot + '/manifest.json', 'utf8'));
-if (manifest.engine.upstreamCommit !== lock.upstream.commit || manifest.engine.clientDataVersion !== build) throw Error('Talent catalog does not match the engine lock');
+if (manifest.engine.upstreamCommit !== lock.upstream.commit || manifest.engine.clientDataVersion !== build || manifest.engineChannel !== engineChannel) throw Error('Talent catalog does not match the selected engine');
 const generatedAt = new Date().toISOString();
-const provenance = { schemaVersion: 1, build, engineCommit: lock.upstream.commit, generatedAt, expiresAt: new Date(Date.now() + 30 * 86400000).toISOString(), sources, tooltipSource: index._links.self.href };
+const provenance = { schemaVersion: 1, engineChannel, build, engineCommit: lock.upstream.commit, generatedAt, expiresAt: new Date(Date.now() + 30 * 86400000).toISOString(), sources, tooltipSource, descriptionsChannel: engineChannel === 'live' ? 'live' : null };
 mkdirSync(out, { recursive: true });
 for (let classId = 1; classId <= 13; classId++) {
   const tree = JSON.parse(readFileSync(catalogRoot + '/talents/class-' + classId + '.json', 'utf8'));

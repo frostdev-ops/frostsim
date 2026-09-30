@@ -16,6 +16,9 @@ public/engine/fallback/simc.wasm
 public/engine/versions/
 # Written only by scripts/update-engines.mjs into the published output; dev runs public/engine/ without one.
 public/engine-versions.json
+public/engine-channels.json
+public/.engine-update-started-at
+public/engine/ptr/
 
 # Generated catalogs (npm run catalog:build). Same treatment as the engine binaries: the data
 # is a deterministic build artifact of the pinned checkout, so it is not source — but each

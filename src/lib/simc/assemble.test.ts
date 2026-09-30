@@ -20,6 +20,7 @@ describe('assembleRun', () => {
     expect(run.profile).toContain('warlock=Fixture\npotion=potion_of_recklessness_2\nlevel=90')
     expect(run.profile.endsWith('\n')).toBe(true)
     expect(run.args).toEqual([
+      'ptr=0',
       '/profile.simc',
       'fight_style=Patchwerk', 'max_time=300', 'desired_targets=1',
       'single_actor_batch=1', 'optimize_expressions=1',

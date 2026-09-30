@@ -238,7 +238,15 @@ if (globalThis.name !== 'em-pthread') {
       }
       if (/[\0\n\r]/.test(arg)) return 'args[' + i + '] contains a control character'
     }
-    if (data.args[0] !== data.profilePath) return 'args[0] must be the profile path'
+    const channel = data.engineChannel === undefined ? 'live' : data.engineChannel
+    if (channel !== 'live' && channel !== 'ptr') return 'engineChannel must be live or ptr'
+    const prefix = data.args[0] === (channel === 'ptr' ? 'ptr=1' : 'ptr=0')
+    const profileIndex = prefix ? 1 : 0
+    if ((!prefix && channel !== 'live') || data.args[profileIndex] !== data.profilePath) return 'args must start with the trusted channel and profile path'
+    // Channel is set before actor creation. Refuse later or nested assignments; legacy prefix-free Live requests remain valid.
+    const ptrOption = /(^|[\s="'])ptr\s*\+?=/i
+    if (data.args.slice(profileIndex + 1).some((arg) => ptrOption.test(arg))) return 'ptr is application-owned'
+    if (data.profile.split('\n').some((line) => !line.trimStart().startsWith('#') && ptrOption.test(line))) return 'ptr is application-owned'
     if (data.compiledModule !== undefined && !(data.compiledModule instanceof WebAssembly.Module)) {
       return 'compiledModule must be a WebAssembly.Module'
     }

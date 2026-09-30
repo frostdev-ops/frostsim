@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // Engine publisher: newest green upstream `midnight` commit -> validated pack -> index, replaced LAST.
-// One channel. Clients run the newest pack whose `compat` equals their own (scripts/engine-compat.mjs).
+// Live and PTR promote independently. Clients match both channel and compat.
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, readdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { createHash, createHmac } from 'node:crypto';
 import { brotliCompressSync, constants as zlib, gzipSync, zstdCompressSync } from 'node:zlib';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import assert from 'node:assert/strict';
@@ -87,6 +87,26 @@ export function readIndex(value) {
   return { schemaVersion: 2, packs, status: null };
 }
 
+/** A schema-2 pack predates channels and is always Live. Never relabel it as PTR. */
+export function readChannelIndex(value) {
+  if (value?.schemaVersion === 3) {
+    assert.deepEqual(value.channels, ['live', 'ptr'], 'Index must advertise Live and PTR');
+    assert(Array.isArray(value.packs) && value.statusByChannel && 'live' in value.statusByChannel && 'ptr' in value.statusByChannel);
+    assert(value.packs.every(p => p.engineChannel === 'live' || p.engineChannel === 'ptr'), 'Pack has no valid channel');
+    return value;
+  }
+  const legacy = readIndex(value);
+  return { schemaVersion: 3, channels: ['live', 'ptr'], packs: legacy.packs.map(p => ({ ...p, engineChannel: 'live' })),
+    statusByChannel: { live: legacy.status ?? null, ptr: null },
+    skipped: (legacy.skipped ?? []).map(s => ({ ...s, engineChannel: 'live' })),
+    nativeStatusByChannel: { live: legacy.nativeStatus ?? null, ptr: null } };
+}
+
+export function liveIndex(index) {
+  return { schemaVersion: 2, packs: index.packs.filter(p => p.engineChannel === 'live'), status: index.statusByChannel.live,
+    skipped: (index.skipped ?? []).filter(s => s.engineChannel === 'live'), nativeStatus: index.nativeStatusByChannel?.live ?? null };
+}
+
 const newestFirst = (a, b) => (b.commitDate ?? '').localeCompare(a.commitDate ?? '') || (b.publishedAt ?? '').localeCompare(a.publishedAt ?? '');
 
 /**
@@ -96,12 +116,13 @@ const newestFirst = (a, b) => (b.commitDate ?? '').localeCompare(a.commitDate ??
 export function retainedPacks(packs, now = Date.now()) {
   const sorted = [...packs].sort(newestFirst);
   const age = pack => now - Date.parse(pack.publishedAt ?? 0);
-  const keep = new Set(sorted.slice(0, 6).map(p => p.id));
+  const keep = new Set(['live', 'ptr'].flatMap(channel => sorted.filter(p => (p.engineChannel ?? 'live') === channel).slice(0, 6).map(p => p.id)));
   for (const pack of sorted) if (age(pack) < 48 * 3600_000) keep.add(pack.id);
   const seen = new Set();
   for (const pack of sorted) {
-    if (seen.has(pack.compat)) continue;
-    seen.add(pack.compat);
+    const key = `${pack.engineChannel ?? 'live'}:${pack.compat}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     if (age(pack) < 30 * 86400_000) keep.add(pack.id);
   }
   return sorted.filter(p => keep.has(p.id));
@@ -114,10 +135,60 @@ export function issueAction(openIssue, previous, status) {
   return previous?.state === status.state && previous?.reason === status.reason ? null : 'comment';
 }
 
-function verifyPack(pack, commit) {
+/** A completed channel is not a crash, even when the other channel/native phase took hours. */
+export function crashAlertNeeded(previous, startedAt = Date.now() - 30 * 60_000) {
+  return !(['current', 'blocked', 'failed'].includes(previous?.state) && Date.parse(previous.checkedAt) >= startedAt);
+}
+
+const BUILD_FILE = /^(?:engine\/config\.hpp|engine\/report\/json\/report_json\.cpp|(?:.*\/)?CMakeLists\.txt|(?:cmake|source_files|lib|engine\/lib)\/.*|engine\/dbc\/generated\/(?![^/]*_ptr\.inc$).*)$/;
+// Files that reach neither the wasm (the build is -DSC_USE_PTR=0, so the *_ptr.inc tables are compiled out) nor a generator.
+const SKIP_FILE = [/^(?:\.github|ActionPriorityLists|profiles|qt|gui|dbc_extract3|casc_extract|doc|tests|util_scripts|SpellDataDump|vs|WinReleaseScripts|logos)\//,
+  /^(?:\.[^/]+|[^/]+\.(?:md|sh|bat|sln)|Dockerfile|flake\.[a-z]+|COPYING|LICENSE[^/]*)$/, /\.md$/i, /^engine\/dbc\/generated\/[^/]*_ptr\.inc$/];
+
+/** The files our patches/ edit, from their `+++ b/` headers: a change there can break a patch that still applies. */
+export function patchedFiles(dir = join(root, 'patches')) {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir).filter(f => /\.(?:patch|diff)$/.test(f))
+    .flatMap(f => [...readFileSync(join(dir, f), 'utf8').matchAll(/^\+\+\+ b\/(.+)$/gm)].map(m => m[1]));
+}
+
+/** `build` (a file that must be built), `skip` (nothing reaches the binary) or `ask` (engine source: the files to judge). */
+export function pathVerdict(names, patched = [], channel = 'live') {
+  const forced = names.filter(n => BUILD_FILE.test(n) || patched.includes(n) || (channel === 'ptr' && n.startsWith('engine/dbc/generated/')));
+  if (forced.length) return { verdict: 'build', files: forced };
+  const ask = names.filter(n => !SKIP_FILE.some(re => re.test(n)));
+  return ask.length ? { verdict: 'ask', files: ask } : { verdict: 'skip', files: [] };
+}
+
+/** `base...head` from GitHub: the commit subjects (first 100), the files (up to GitHub's 300) and whether head is ahead of base. */
+export async function compareRange(base, head, gh = github) {
+  const range = { status: null, total: 0, subjects: [], files: [] };
+  for (let page = 1; page <= 3; page++) {
+    const r = await gh(`/compare/${base}...${head}?per_page=100&page=${page}`);
+    if (page === 1) Object.assign(range, { status: r.status, total: r.total_commits ?? 0, subjects: (r.commits ?? []).map(c => c.commit.message.split('\n')[0]) });
+    range.files.push(...(r.files ?? []));
+    if ((r.files ?? []).length < 100) break;
+  }
+  return range;
+}
+
+export const newestPackFor = (packs, compat, channel = 'live') => [...packs].filter(p => p.compat === compat && (p.engineChannel ?? 'live') === channel).sort(newestFirst)[0];
+
+/** Upstream subjects are plain-text changelog entries; only cloud adds optional AI summaries. */
+export function releaseNotes({ range, channel = 'live' }) {
+  // Without per-commit file evidence, suppress ambiguous ranges containing PTR table changes.
+  if (channel === 'live' && range?.files?.some(f => [f.filename, f.previous_filename].some(name => name?.endsWith('_ptr.inc')))) return null;
+  const changelog = (range?.subjects ?? []).filter(s => channel === 'ptr' || !/\bptr\b/i.test(s))
+    .map(s => s.replace(/https?:\/\/\S+/g, '').trim().slice(0, 160)).filter(Boolean).slice(0, 6);
+  return changelog.length ? { banner: null, changelog } : null;
+}
+
+function verifyPack(pack, commit, channel = 'live') {
   for (const variant of ['', 'fallback']) {
     const dir = join(pack, variant), manifest = json(join(dir, 'manifest.json'));
     assert.equal(manifest.engine.upstreamCommit, commit);
+    assert.equal(manifest.engineChannel, channel);
+    assert.equal(manifest.wow.ptr, channel === 'ptr');
     assert.equal(manifest.artifact, variant ? 'fallback' : 'threaded');
     assert.deepEqual(manifest.lockMismatches, []);
     assert.deepEqual(manifest.buildTreeMismatches, []);
@@ -126,17 +197,37 @@ function verifyPack(pack, commit) {
   }
   const catalog = json(join(pack, 'catalog/manifest.json'));
   assert.equal(catalog.engine.upstreamCommit, commit);
+  assert.equal(catalog.engineChannel, channel);
   const engine = json(join(pack, 'manifest.json'));
   assert.equal(catalog.engine.clientDataVersion, engine.wow.clientDataVersion);
   assert.equal(catalog.engine.hotfixHash, engine.wow.hotfixHash);
   assert(catalog.counts.items > 0 && catalog.counts.traitNodes > 0, 'Catalog contains no usable game data');
-  assert(typeof catalog.seasonDataBuild === 'string', 'Catalog is missing its season data attestation');
+  if (channel === 'live') assert(typeof catalog.seasonDataBuild === 'string', 'Catalog is missing its season data attestation');
+  const rules = json(join(pack, 'catalog/rules.json'));
+  assert.equal(rules.engineChannel, channel);
+  assert.equal(rules.engineCommit, commit);
+  assert.equal(rules.build, engine.wow.clientDataVersion);
   for (const file of catalog.files) assert.equal(sha256(readFileSync(join(pack, 'catalog', file.path))), file.sha256);
-  assert.equal(json(join(pack, 'presentation.json')).engineCommit, commit);
+  const presentation = json(join(pack, 'presentation.json'));
+  assert.equal(presentation.engineCommit, commit);
+  assert.equal(presentation.engineChannel, channel);
+  assert.equal(presentation.build, engine.wow.clientDataVersion);
+  const unavailableFile = join(pack, 'talent-layout/unavailable.json');
+  const unavailable = existsSync(unavailableFile) ? json(unavailableFile) : null;
+  if (unavailable) {
+    assert.equal(channel, 'ptr');
+    assert.equal(unavailable.engineChannel, channel);
+    assert.equal(unavailable.engineCommit, commit);
+    assert.equal(unavailable.build, engine.wow.clientDataVersion);
+    assert.equal(unavailable.status, 'unavailable');
+    assert(typeof unavailable.reason === 'string' && unavailable.reason.length > 0);
+  }
   for (let classId = 1; classId <= 13; classId++) {
+    if (!existsSync(join(pack, `talent-layout/class-${classId}.json`)) && unavailable) continue;
     const layout = json(join(pack, `talent-layout/class-${classId}.json`));
     const tree = json(join(pack, `catalog/talents/class-${classId}.json`));
     assert.equal(layout.engineCommit, commit);
+    assert.equal(layout.engineChannel, channel);
     assert.equal(layout.build, engine.wow.clientDataVersion);
     assert(Date.parse(layout.expiresAt) > Date.now(), 'Talent metadata expired');
     for (const node of tree.nodes.filter(n => n.treeIndex !== 4)) {
@@ -151,7 +242,7 @@ function verifyPack(pack, commit) {
 
 /** Season data without its provenance stamps: what the app actually uses. */
 export function seasonBody(data) {
-  const { build: _build, engineCommit: _commit, sources: _sources, ...body } = data;
+  const { build: _build, engineCommit: _commit, engineChannel: _channel, sources: _sources, ...body } = data;
   return body;
 }
 
@@ -169,7 +260,7 @@ function seasonData(work, lock, cacheRoot) {
     const catalogs = join(work, 'public/catalogs');
     mkdirSync(catalogs, { recursive: true });
     // The generators read the engine-pinned catalog by id; point that id at this pack's catalog.
-    run(work, 'ln', ['-sfn', '../engine/catalog', join(catalogs, `${build}-${lock.expected.clientDataHotfixHash.slice(0, 12)}-${lock.upstream.commit.slice(0, 7)}`)]);
+    run(work, 'ln', ['-sfn', '../engine/catalog', join(catalogs, `live-${build}-${lock.expected.clientDataHotfixHash.slice(0, 12)}-${lock.upstream.commit.slice(0, 7)}`)]);
     // Both generators cache wago.tools DB2 exports under build/upgrade-data-<build>; keep that across runs.
     mkdirSync(join(cacheRoot, `upgrade-data-${build}`), { recursive: true });
     mkdirSync(join(work, 'build'), { recursive: true });
@@ -182,13 +273,24 @@ function seasonData(work, lock, cacheRoot) {
     });
   }
   const manifest = join(work, 'public/engine/catalog/manifest.json');
-  writeJson(manifest, { ...json(manifest), seasonDataBuild });
+  const generated = name => json(join(work, 'src/lib/catalog/generated', `${name}.json`));
+  const policy = generated('reward-policy');
+  const costs = generated('upgrade-costs');
+  const rulesFile = join(work, 'public/engine/catalog/rules.json');
+  const rules = { ...json(rulesFile), upgrades: { ...generated('upgrades'), build }, costs: costs.build === build ? costs : null,
+    raid: { ...generated('raid-rewards'), build, bonusRollRanks: policy.raidBonusRollRanks }, mplus: policy.mplus, vault: policy.vault,
+    weekly: json(join(work, 'src/lib/simc/generated/weekly-defaults.json')),
+    unavailable: costs.build === build ? [] : ['Verified LIVE upgrade cost data is unavailable for this pack.'] };
+  writeJson(rulesFile, rules);
+  const catalog = json(manifest);
+  catalog.files = catalog.files.map(f => f.path === 'rules.json' ? { ...f, bytes: statSync(rulesFile).size, sha256: sha256(readFileSync(rulesFile)) } : f);
+  writeJson(manifest, { ...catalog, seasonDataBuild });
 }
 
-async function build(candidate, commit, output, id) {
+async function build(candidate, commit, output, id, channel) {
   const work = process.env.FROSTSIM_BUILD_WORKSPACE
     ? resolve(process.env.FROSTSIM_BUILD_WORKSPACE)
-    : mkdtempSync(join(process.env.FROSTSIM_BUILD_TMP ?? tmpdir(), 'frostsim-engine-'));
+    : mkdtempSync(join(process.env.FROSTSIM_BUILD_TMP ?? tmpdir(), `frostsim-engine-${id}-`));
   mkdirSync(work, { recursive: true });
   console.log(`Build workspace: ${work}`);
   try {
@@ -204,16 +306,18 @@ async function build(candidate, commit, output, id) {
     run(work, 'chmod', ['-R', 'u+w', '.']);
     run(work, 'git', ['init', '-q']);
     const lock = json(join(work, 'engine.lock.json'));
+    lock.engineChannel = channel;
     lock.upstream.commit = commit;
     lock.upstream.branch = 'midnight';
     lock.upstream.commitDate = candidate.date;
     const config = await sourceText(commit, 'engine/config.hpp');
-    const data = await sourceText(commit, 'engine/dbc/generated/client_data_version.inc');
+    const data = await sourceText(commit, `engine/dbc/generated/client_data_version${channel === 'ptr' ? '_ptr' : ''}.inc`);
+    const field = name => define(data, `${channel === 'ptr' ? 'PTR_' : ''}CLIENT_DATA_${name}`);
     lock.expected = {
       simcVersion: `${define(config, 'SC_MAJOR_VERSION')}-${define(config, 'SC_MINOR_VERSION')}`,
-      clientDataWowVersion: define(data, 'CLIENT_DATA_WOW_VERSION'),
-      clientDataHotfixDate: define(data, 'CLIENT_DATA_HOTFIX_DATE'),
-      clientDataHotfixHash: define(data, 'CLIENT_DATA_HOTFIX_HASH'),
+      clientDataWowVersion: field('WOW_VERSION'),
+      clientDataHotfixDate: field('HOTFIX_DATE'),
+      clientDataHotfixHash: field('HOTFIX_HASH'),
     };
     writeJson(join(work, 'engine.lock.json'), lock);
     run(work, 'npm', ['ci', '--ignore-scripts']);
@@ -226,41 +330,60 @@ async function build(candidate, commit, output, id) {
     if (actorBody(readFileSync(actors, 'utf8')) !== previousActors) throw new GateError('Upstream changed the actor option contract (gen-actor-options.mjs); Frostsim needs an update');
     const weekly = join(work, 'src/lib/simc/generated/weekly-defaults.json');
     const previousWeekly = json(weekly);
-    run(work, 'node', ['scripts/generate-weekly-defaults.mjs']);
+    run(work, 'node', ['scripts/generate-weekly-defaults.mjs', '--channel', channel]);
     const generatedWeekly = json(weekly);
     try {
+      if (channel === 'live') {
       assert.deepEqual(generatedWeekly.rules, previousWeekly.rules);
       assert.deepEqual(generatedWeekly.weekly, previousWeekly.weekly);
+      }
     } catch { throw new GateError('Upstream changed the guided consumable defaults (generate-weekly-defaults.mjs); Frostsim needs an update'); }
-    run(work, 'bash', ['scripts/build-engine.sh']);
-    run(work, 'bash', ['scripts/build-engine.sh', '--fallback']);
+    const talentCache = join(process.env.FROSTSIM_TALENT_CACHE || join(root, 'build'), `talent-layout-${channel}-${lock.expected.clientDataWowVersion}`);
+    const env = { ...process.env, FROSTSIM_ENGINE_DIR: 'public/engine' };
+    run(work, 'bash', ['scripts/build-engine.sh', '--channel', channel], { env });
+    run(work, 'bash', ['scripts/build-engine.sh', '--channel', channel, '--fallback'], { env });
     const dataEnv = process.env.FROSTSIM_DATA_ENV_FILE;
-    if (!dataEnv || !existsSync(dataEnv)) throw new Error('FROSTSIM_DATA_ENV_FILE must name the protected Blizzard data credential file');
-    run(work, 'node', [`--env-file=${resolve(dataEnv)}`, 'scripts/catalog/build-catalogs.mjs', '--out', join(work, 'public/engine/catalog')]);
-    const talentCache = join(process.env.FROSTSIM_TALENT_CACHE || join(root, 'build'), `talent-layout-${lock.expected.clientDataWowVersion}`);
-    run(work, 'node', [`--env-file=${resolve(dataEnv)}`, 'scripts/generate-talent-layout.mjs',
-      '--catalog', join(work, 'public/engine/catalog'), '--out', join(work, 'public/engine/talent-layout'), '--cache', talentCache]);
-    seasonData(work, lock, process.env.FROSTSIM_TALENT_CACHE || join(root, 'build'));
-    // Spell names/icons and consumable labels belong to this engine's spell data, so they ship in the pack.
-    run(work, 'node', ['scripts/generate-presentation.mjs']);
+    if (channel === 'live' && (!dataEnv || !existsSync(dataEnv))) throw new Error('FROSTSIM_DATA_ENV_FILE must name the protected Blizzard data credential file');
+    const dataArgs = channel === 'live' ? [`--env-file=${resolve(dataEnv)}`] : [];
+    run(work, 'node', [...dataArgs, 'scripts/catalog/build-catalogs.mjs', '--channel', channel, '--out', join(work, 'public/engine/catalog')]);
+    try {
+      run(work, 'node', [...dataArgs, 'scripts/generate-talent-layout.mjs', '--channel', channel,
+        '--catalog', join(work, 'public/engine/catalog'), '--out', join(work, 'public/engine/talent-layout'), '--cache', talentCache]);
+    } catch (err) {
+      if (channel === 'live') throw err;
+      const layout = join(work, 'public/engine/talent-layout');
+      rmSync(layout, { recursive: true, force: true });
+      mkdirSync(layout, { recursive: true });
+      writeJson(join(layout, 'unavailable.json'), { schemaVersion: 1, engineChannel: channel, engineCommit: commit,
+        build: lock.expected.clientDataWowVersion, status: 'unavailable', reason: 'Verified PTR talent layout metadata could not be generated.' });
+      console.error('PTR talent layouts unavailable; raw and item simulation remain available');
+    }
+    if (channel === 'live') seasonData(work, lock, process.env.FROSTSIM_TALENT_CACHE || join(root, 'build'));
+    run(work, 'node', ['scripts/generate-presentation.mjs', '--channel', channel, '--cache', talentCache, '--out', 'public/presentation.json']);
     cpSync(join(work, 'public/presentation.json'), join(work, 'public/engine/presentation.json'));
     for (const variant of ['', '--fallback']) {
       const report = join(work, variant ? 'fallback-report.json' : 'threaded-report.json');
-      run(work, 'bash', ['scripts/engine-smoke.sh', ...(variant ? [variant] : []),
-        'vendor/simc/profiles/MID2/MID2_Mage_Frost.simc', 'iterations=50', `threads=${variant ? 1 : 4}`, `json=${report},version=2`]);
+      run(work, 'bash', ['scripts/engine-smoke.sh', '--channel', channel, ...(variant ? [variant] : []),
+        'vendor/simc/profiles/MID2/MID2_Mage_Frost.simc', 'iterations=50', `threads=${variant ? 1 : 4}`, `json=${report},version=2`],
+      { env: { ...process.env, FROSTSIM_ENGINE_DIR: 'public/engine' } });
       const dps = json(report).sim.players[0].collected_data.dps;
       assert(dps.mean > 0 && dps.count > 0, 'Engine smoke produced no DPS samples');
+      assert.equal(json(report).sim.options.dbc.version_used, channel === 'ptr' ? 'PTR' : 'Live', 'Smoke selected the wrong DBC');
     }
-    run(work, 'npx', ['vitest', 'run', 'src/lib/simc'], { env: { ...process.env, FROSTSIM_ENGINE: '1' } });
+    run(work, 'npx', ['vitest', 'run', 'src/lib/simc'], { env: { ...process.env, FROSTSIM_ENGINE: '1', FROSTSIM_ENGINE_CHANNEL: channel, FROSTSIM_ENGINE_DIR: 'public/engine' } });
     run(work, 'npm', ['run', 'check']);
     const pack = join(work, 'public/engine');
     const source = join(pack, 'source');
     mkdirSync(source, { recursive: true });
     run(work, 'git', ['-C', 'vendor/simc', 'archive', '--format=tar.gz', `--output=${join(source, 'simc.tar.gz')}`, commit]);
-    for (const file of ['engine.lock.json', 'patches', 'scripts', 'package.json', 'package-lock.json']) cpSync(join(work, file), join(source, file), { recursive: true });
+    for (const file of ['engine.lock.json', 'patches', 'scripts', 'package.json', 'package-lock.json']) cpSync(join(work, file), join(source, file), {
+      recursive: true,
+      // Private operator scripts belong only to the internal deployment archive.
+      filter: path => file !== 'scripts' || !['deploy-vps.sh', 'install-engine-updater.sh', 'run-engine-update.sh'].includes(basename(path)),
+    });
     cpSync(join(work, 'vendor/simc/LICENSE'), join(source, 'LICENSE'));
-    verifyPack(pack, commit);
-    writeJson(join(pack, 'validation.json'), { checkedAt: new Date().toISOString(), commit,
+    verifyPack(pack, commit, channel);
+    writeJson(join(pack, 'validation.json'), { checkedAt: new Date().toISOString(), engineChannel: channel, commit,
       checks: ['both-wasm-builds', 'manifest-and-catalog-hashes', 'both-node-smokes', 'unit-and-real-engine-tests', 'types'],
       browserAcceptance: 'Browser loader acceptance belongs to the application deployment; these are engine checks.' });
     // nginx serves these through gzip_static / brotli_static.
@@ -282,6 +405,12 @@ function writeIndex(indexPath, index) {
   if (existsSync(indexPath)) cpSync(indexPath, `${indexPath}.previous`);
   writeJson(`${indexPath}.tmp`, index);
   renameSync(`${indexPath}.tmp`, indexPath);
+  if (index.schemaVersion === 3) {
+    const legacy = join(dirname(indexPath), 'engine-versions.json');
+    if (existsSync(legacy)) cpSync(legacy, `${legacy}.previous`);
+    writeJson(`${legacy}.tmp`, liveIndex(index));
+    renameSync(`${legacy}.tmp`, legacy);
+  }
 }
 
 function prune(output, index) {
@@ -312,8 +441,7 @@ async function alertApi(token, path, init = {}) {
 }
 
 function describe(status) {
-  return [`**State:** ${status.state}`, `**Reason:** ${status.reason ?? '—'}`,
-    `**Upstream head:** ${status.upstreamHead ?? 'unknown'}${status.upstreamCiUrl ? ` ([CI](${status.upstreamCiUrl}))` : ''}`,
+  return [`**State:** ${status.state}`, `**Reason:** ${status.reason ?? '—'}`, `**Upstream head:** ${status.upstreamHead ?? 'unknown'}${status.upstreamCiUrl ? ` ([CI](${status.upstreamCiUrl}))` : ''}`,
     `**Checked:** ${status.checkedAt}`, '', 'Logs: `journalctl -u frostsim-engine-update.service` on the VPS.'].join('\n');
 }
 
@@ -382,33 +510,72 @@ async function r2Put(creds, key, body, headers, fetchFn) {
   if (!response.ok) throw new Error(`R2 PUT ${key}: HTTP ${response.status}`);
 }
 
-/** Retained packs with a source archive and no native.json yet, in index order (newest first). */
+const NATIVE_CMAKE = ['-S', 'vendor/simc', '-B', 'build/native', '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', '-DBUILD_GUI=OFF',
+  '-DBUILD_TESTING=OFF', '-DSC_NO_NETWORKING=ON', '-DCMAKE_CXX_FLAGS=-DSC_USE_PTR=0'];
+
+/** Retained packs without a descriptor proving the selected channel/build/revision, newest first. */
 export function nativeTargets(output, packs) {
   return packs.filter(p => {
     const pack = join(output, 'engine/versions', p.id);
-    return existsSync(join(pack, 'source/simc.tar.gz')) && !existsSync(join(pack, 'native.json'));
+    if (!existsSync(join(pack, 'source/simc.tar.gz'))) return false;
+    try {
+      const native = json(join(pack, 'native.json')), manifest = json(join(pack, 'manifest.json'));
+      const channel = manifest.engineChannel ?? 'live';
+      return !(native.schemaVersion === 2 && native.engineChannel === channel
+        && native.key === `engines/${p.id}/simc-linux-x64.zst` && /^[a-f0-9]{64}$/.test(native.sha256)
+        && native.upstreamCommit === manifest.engine.upstreamCommit && native.clientDataVersion === manifest.wow.clientDataVersion
+        && /^[a-f0-9]{7,40}$/.test(native.gitRevision) && manifest.engine.upstreamCommit.startsWith(native.gitRevision)
+        && native.dbcVersionUsed === (channel === 'ptr' ? 'PTR' : 'Live')
+        && native.buildLevel === Number(manifest.wow.clientDataVersion.split('.').at(-1)));
+    } catch { return true; }
   });
 }
 
-/** One pack: build, smoke, zstd, upload binary then its .sha256 sibling, and write native.json last. */
+/** One pack: build, smoke, zstd, upload binary then its .sha256 sibling, and
+ *  write native.json last. */
 export async function buildNative(output, id, creds, { exec = run, fetchFn = fetch } = {}) {
   const pack = join(output, 'engine/versions', id);
-  const work = mkdtempSync(join(process.env.FROSTSIM_BUILD_TMP ?? tmpdir(), 'frostsim-native-'));
+  const manifest = json(join(pack, 'manifest.json'));
+  const channel = manifest.engineChannel ?? 'live';
+  assert(['live', 'ptr'].includes(channel));
+  const buildDir = `build/native${channel === 'ptr' ? '-ptr' : ''}`;
+  const work = mkdtempSync(join(process.env.FROSTSIM_BUILD_TMP ?? tmpdir(), `frostsim-native-${id}-`));
   try {
     mkdirSync(join(work, 'vendor/simc'), { recursive: true });
+    // Extracted here either way: the smoke below reads the pack's own profile.
     exec(work, 'tar', ['-xzf', join(pack, 'source/simc.tar.gz'), '-C', 'vendor/simc']);
-    // cloud/sim-bench/build-native.sh's flags. The threaded wasm build applies no patches, so neither does this.
-    // ccache (installed by install-engine-updater.sh, CCACHE_* set in the unit) turns each pack after the first, and every
-    // retry of a failed pack, into a changed-files build, as build-engine.sh does for the wasm.
-    exec(work, 'cmake', ['-S', 'vendor/simc', '-B', 'build/native', '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', '-DBUILD_GUI=OFF',
-      '-DBUILD_TESTING=OFF', '-DSC_NO_NETWORKING=ON', '-DCMAKE_CXX_FLAGS=-DSC_USE_PTR=0',
-      '-DCMAKE_CXX_COMPILER_LAUNCHER=ccache', '-DCMAKE_C_COMPILER_LAUNCHER=ccache']);
-    exec(work, 'cmake', ['--build', 'build/native']);
-    const binary = join(work, 'build/native/simc');
-    exec(work, binary, ['vendor/simc/profiles/MID2/MID2_Mage_Frost.simc', 'iterations=50', 'threads=2', 'json=native-smoke.json,version=2']);
-    assert(json(join(work, 'native-smoke.json')).sim.players[0].collected_data.dps.mean > 0, 'Native smoke produced no DPS');
+    {
+      assert(/^[a-f0-9]{40}$/.test(manifest.engine.upstreamCommit));
+      // Only provenance needed by upstream CMake; source remains the pack's pinned archive.
+      const metadata = join(work, 'vendor/simc/.git');
+      mkdirSync(join(metadata, 'objects'), { recursive: true });
+      mkdirSync(join(metadata, 'refs/heads'), { recursive: true });
+      writeFileSync(join(metadata, 'HEAD'), 'ref: refs/heads/midnight\n');
+      writeFileSync(join(metadata, 'refs/heads/midnight'), `${manifest.engine.upstreamCommit}\n`);
+    }
+    {
+      // cloud/sim-bench/build-native.sh's flags. The threaded wasm build applies no patches, so neither does this.
+      // ccache (installed by install-engine-updater.sh, CCACHE_* set in the unit) turns each pack after the first, and every
+      // retry of a failed pack, into a changed-files build, as build-engine.sh does for the wasm.
+      exec(work, 'cmake', [...NATIVE_CMAKE.map(s => s.replace('build/native', buildDir).replace('-DSC_USE_PTR=0', `-DSC_USE_PTR=${channel === 'ptr' ? 1 : 0}`)), '-DCMAKE_CXX_COMPILER_LAUNCHER=ccache', '-DCMAKE_C_COMPILER_LAUNCHER=ccache']);
+      exec(work, 'cmake', ['--build', buildDir]);
+    }
+    const binary = join(work, buildDir, 'simc');
+    exec(work, binary, [`ptr=${channel === 'ptr' ? 1 : 0}`, 'vendor/simc/profiles/MID2/MID2_Mage_Frost.simc', 'iterations=50', 'threads=2', 'json=native-smoke.json,version=2']);
+    const report = json(join(work, 'native-smoke.json'));
+    assert(report.sim.players[0].collected_data.dps.mean > 0, 'Native smoke produced no DPS');
+    {
+      const label = channel === 'ptr' ? 'PTR' : 'Live';
+      assert.equal(report.sim.options.dbc.version_used, label);
+      assert.equal(report.sim.options.dbc[label].wow_version, manifest.wow.clientDataVersion);
+      assert.equal(report.sim.options.dbc[label].build_level, Number(manifest.wow.clientDataVersion.split('.').at(-1)));
+      assert(/^[a-f0-9]{7,40}$/.test(report.git_revision) && manifest.engine.upstreamCommit.startsWith(report.git_revision));
+    }
     const zst = zstdCompressSync(readFileSync(binary));
-    const native = { key: `engines/${id}/simc-linux-x64.zst`, sha256: sha256(zst), bytes: zst.length, builtAt: new Date().toISOString() };
+    const dbc = report.sim.options.dbc, selected = dbc[channel === 'ptr' ? 'PTR' : 'Live'];
+    const native = { schemaVersion: 2, engineChannel: channel, upstreamCommit: manifest.engine.upstreamCommit,
+      clientDataVersion: selected.wow_version, gitRevision: report.git_revision, dbcVersionUsed: dbc.version_used, buildLevel: selected.build_level,
+      key: `engines/${id}/simc-linux-x64.zst`, sha256: sha256(zst), bytes: zst.length, builtAt: new Date().toISOString() };
     await r2Put(creds, native.key, zst, { 'content-type': 'application/zstd', 'x-amz-meta-sha256': native.sha256 }, fetchFn);
     await r2Put(creds, `${native.key}.sha256`, Buffer.from(native.sha256), { 'content-type': 'text/plain' }, fetchFn);
     writeJson(join(pack, 'native.json'), native);
@@ -421,29 +588,36 @@ export async function buildNative(output, id, creds, { exec = run, fetchFn = fet
  * `.previous`; writing through writeIndex again would overwrite that rollback copy, and would revert an operator's rollback made
  * while the (hours-long, on the first run) native phase ran.
  */
-export function writeNativeStatus(indexPath, status) {
+export function writeNativeStatus(indexPath, status, channel = 'live') {
   const index = json(indexPath);
-  index.nativeStatus = status;
+  if (index.schemaVersion === 3) index.nativeStatusByChannel = { ...index.nativeStatusByChannel, [channel]: status };
+  else index.nativeStatus = status;
   writeJson(`${indexPath}.tmp`, index);
   renameSync(`${indexPath}.tmp`, indexPath);
+  if (index.schemaVersion === 3 && channel === 'live') {
+    const legacy = join(dirname(indexPath), 'engine-versions.json');
+    writeJson(`${legacy}.tmp`, liveIndex(index));
+    renameSync(`${legacy}.tmp`, legacy);
+  }
 }
 
 /** Never fails the pack or the run: failures go to their own alert issue and `nativeStatus` in the index. */
-async function nativeBuilds(output, index, indexPath) {
-  const status = { checkedAt: new Date().toISOString(), state: 'current', reason: null, upstreamHead: index.status?.upstreamHead ?? null };
+async function nativeBuilds(output, index, indexPath, channel) {
+  const status = { checkedAt: new Date().toISOString(), engineChannel: channel, state: 'current', reason: null, upstreamHead: index.statusByChannel[channel]?.upstreamHead ?? null };
   try {
     const creds = r2Credentials();
     if (!creds) { console.log('Native builds disabled: no R2 credential file'); return; }
     const failures = [];
-    for (const pack of nativeTargets(output, index.packs)) {
+    const targets = nativeTargets(output, index.packs.filter(p => p.engineChannel === channel));
+    for (const pack of targets) {
       try { console.log(`Native ${pack.id}: ${(await buildNative(output, pack.id, creds)).key}`); }
       catch (err) { failures.push(`${pack.id}: ${err.message}`); console.error(err.stack ?? err.message); }
     }
     if (failures.length) Object.assign(status, { state: 'failed', reason: `Native build failed for ${failures.join('; ')}` });
   } catch (err) { Object.assign(status, { state: 'failed', reason: `Native builds: ${err.message}` }); }
-  try { await notify(index.nativeStatus ?? null, status, NATIVE_ALERT_LABEL); }
+  try { await notify(index.nativeStatusByChannel?.[channel] ?? null, status, `${NATIVE_ALERT_LABEL}${channel === 'ptr' ? '-ptr' : ''}`); }
   catch (err) { console.error(`Native alert failed: ${err.message}`); }
-  try { writeNativeStatus(indexPath, status); }
+  try { writeNativeStatus(indexPath, status, channel); }
   catch (err) { console.error(`Native status not recorded: ${err.message}`); }
 }
 
@@ -451,44 +625,67 @@ async function main() {
   const args = process.argv.slice(2);
   const option = name => { const i = args.indexOf(name); return i === -1 ? undefined : args[i + 1]; };
   const output = resolve(option('--output') ?? 'public');
-  const indexPath = join(output, 'engine-versions.json');
-  const index = readIndex(existsSync(indexPath) ? json(indexPath) : null);
-  const previous = index.status;
+  const channel = option('--channel') ?? 'live';
+  if (args.includes('--channel') && option('--channel') === undefined) throw new Error('--channel requires live or ptr');
+  if (!['live', 'ptr'].includes(channel)) throw new Error('--channel requires live or ptr');
+  const indexPath = join(output, 'engine-channels.json');
+  const legacyPath = join(output, 'engine-versions.json');
+  const index = readChannelIndex(existsSync(indexPath) ? json(indexPath) : existsSync(legacyPath) ? json(legacyPath) : null);
+  const previous = index.statusByChannel[channel];
+  const alertLabel = `${ALERT_LABEL}${channel === 'ptr' ? '-ptr' : ''}`;
 
   // OnFailure hook: report a crash only when the run did not get far enough to report itself.
   if (args.includes('--alert-crash')) {
-    if (previous && previous.state !== 'current' && Date.now() - Date.parse(previous.checkedAt) < 30 * 60_000) return;
-    await notify(previous, { checkedAt: new Date().toISOString(), state: 'failed', upstreamHead: previous?.upstreamHead,
-      reason: 'The updater exited before recording a result' });
+    const marker = join(output, '.engine-update-started-at');
+    const startedAt = existsSync(marker) ? Number(readFileSync(marker, 'utf8')) : undefined;
+    if (!crashAlertNeeded(previous, Number.isFinite(startedAt) ? startedAt : undefined)) return;
+    await notify(previous, { checkedAt: new Date().toISOString(), engineChannel: channel, state: 'failed', upstreamHead: previous?.upstreamHead,
+      reason: 'The updater exited before recording a result' }, alertLabel);
     return;
   }
   if (!args.includes('--output') && !args.includes('--discover')) throw new Error('Pass --output <persistent public directory> or --discover');
+  if (args.includes('--native-only')) {
+    await nativeBuilds(output, index, indexPath, channel);
+    return;
+  }
 
   const compat = engineCompat(root);
   const lock = json(join(root, 'engine.lock.json'));
-  const status = { checkedAt: new Date().toISOString(), upstreamHead: null, upstreamDate: null, upstreamCiUrl: null, state: 'current', reason: null, issueUrl: null };
+  const status = { checkedAt: new Date().toISOString(), engineChannel: channel, upstreamHead: null, upstreamDate: null, upstreamCiUrl: null, state: 'current', reason: null, issueUrl: null };
 
-  async function publish(candidate, commit) {
+  async function publish(candidate, commit, explicit) {
     const config = await sourceText(commit, 'engine/config.hpp');
     if (/^#define\s+SC_BETA\s+1\b/m.test(config)) throw new GateError('Upstream midnight is marked beta (SC_BETA=1)');
     // The app sends game-version-specific options; an expansion change needs an app update.
     const major = define(config, 'SC_MAJOR_VERSION'), supported = lock.expected.simcVersion.split('-')[0];
     if (major !== supported) throw new GateError(`Upstream moved to SimulationCraft ${major}; Frostsim supports ${supported}`);
 
-    const id = `${commit.slice(0, 12)}-${compat}`;
+    const id = `${channel}-${commit.slice(0, 12)}-${compat}`;
     if (index.packs.some(p => p.id === id)) return;
+    // Pure PTR table changes do not create Live packs; uncertain/shared changes always build.
+    const base = newestPackFor(index.packs, compat, channel);
+    let range = null;
+    if (!explicit && base) {
+      range = await compareRange(base.upstreamCommit, commit).catch(() => null);
+      if (Date.now() - Date.parse(base.publishedAt) <= 7 * 86400_000 && range?.status === 'ahead' && range.files.length < 300
+          && pathVerdict(range.files.flatMap(f => [f.filename, f.previous_filename].filter(Boolean)), patchedFiles(), channel).verdict === 'skip') {
+        status.noRebuild = true;
+        return;
+      }
+    }
     mkdirSync(join(output, 'engine/versions'), { recursive: true });
-    writeIndex(indexPath, { ...index, status: { ...status, state: 'building' } });
+    writeIndex(indexPath, { ...index, statusByChannel: { ...index.statusByChannel, [channel]: { ...status, state: 'building' } } });
     const pack = join(output, 'engine/versions', id);
     let expected;
     if (existsSync(pack)) {
-      verifyPack(pack, commit);
+      verifyPack(pack, commit, channel);
       const manifest = json(join(pack, 'manifest.json'));
       expected = { simcVersion: manifest.engine.simcVersion, clientDataWowVersion: manifest.wow.clientDataVersion };
-    } else expected = await build(candidate, commit, output, id);
-    index.packs.push({ id, baseUrl: `/engine/versions/${id}/`, compat, upstreamCommit: commit, commitDate: candidate.date,
+    } else expected = await build(candidate, commit, output, id, channel);
+    const notes = releaseNotes({ range, channel });
+    index.packs.push({ id, engineChannel: channel, baseUrl: `/engine/versions/${id}/`, compat, upstreamCommit: commit, commitDate: candidate.date,
       publishedAt: new Date().toISOString(), ciUrl: candidate.ciUrl ?? null,
-      simcVersion: expected.simcVersion, clientDataVersion: expected.clientDataWowVersion });
+      simcVersion: expected.simcVersion, clientDataVersion: expected.clientDataWowVersion, ...(notes ? { notes } : {}) });
     console.log(`Published ${id}`);
   }
 
@@ -496,19 +693,26 @@ async function main() {
     const ref = option('--ref');
     if (ref !== undefined && !/^[a-f0-9]{40}$/.test(ref)) throw new Error('--ref requires a full immutable source commit');
     // Never move backwards: not past the app's own pin, not past what is already published.
-    const floor = [lock.upstream.commitDate, ...index.packs.filter(p => p.compat === compat).map(p => p.commitDate)]
+    const floor = [lock.upstream.commitDate, ...index.packs.filter(p => p.engineChannel === channel).map(p => p.commitDate)]
       .filter(Boolean).map(Date.parse).reduce((a, b) => Math.max(a, b), 0);
-    const candidate = ref ? { ref } : await discover(floor);
+    let candidate;
+    if (ref) {
+      const ci = await github(`/actions/workflows/main.yml/runs?branch=midnight&event=push&head_sha=${ref}&per_page=50`);
+      const tested = pickGreenRun((ci.workflow_runs ?? []).filter(run => run.head_sha === ref));
+      if (!tested) throw new GateError('--ref has no successful upstream midnight main.yml push run');
+      candidate = { ref, ciUrl: tested.html_url };
+    } else candidate = await discover(floor);
     const revision = await github(`/commits/${candidate.ref}`);
     const commit = revision.sha;
     if (!/^[a-f0-9]{40}$/.test(commit)) throw new Error('Invalid upstream commit');
     candidate.date = revision.commit.committer.date;
     console.log(`midnight @ ${commit} (${candidate.date}), compat ${compat}`);
-    if (!ref && Date.parse(candidate.date) < floor) {
+    if (ref && Date.parse(candidate.date) < floor) throw new GateError('--ref is older than the locked source or the newest validated pack for this channel');
+    if (Date.parse(candidate.date) < floor) {
       console.log(`Upstream listing returned ${commit.slice(0, 7)}, older than what this app already has; nothing to do`);
     } else {
       Object.assign(status, { upstreamHead: commit, upstreamDate: candidate.date, upstreamCiUrl: candidate.ciUrl ?? null });
-      if (!args.includes('--discover')) await publish(candidate, commit);
+      if (!args.includes('--discover')) await publish(candidate, commit, ref !== undefined);
     }
   } catch (err) {
     Object.assign(status, { state: err instanceof GateError ? 'blocked' : 'failed', reason: err.message });
@@ -517,14 +721,14 @@ async function main() {
   if (args.includes('--discover')) return;
 
   index.packs = retainedPacks(index.packs);
-  try { await notify(previous, status); }
+  try { await notify(previous, status, alertLabel); }
   catch (err) { console.error(`Alert failed: ${err.message}`); process.exitCode = 1; }
-  index.status = status;
+  index.statusByChannel[channel] = status;
   writeIndex(indexPath, index);
   prune(output, index);
-  console.log(`Engine check ${status.state}; newest for compat ${compat}: ${index.packs.find(p => p.compat === compat)?.id ?? 'none'}`);
+  console.log(`${channel} engine check ${status.state}; newest for compat ${compat}: ${newestPackFor(index.packs, compat, channel)?.id ?? 'none'}`);
   // After the index is live, so a slow native build never delays a pack reaching browsers.
-  await nativeBuilds(output, index, indexPath);
+  if (!args.includes('--skip-native')) await nativeBuilds(output, index, indexPath, channel);
   if (status.state === 'failed') process.exitCode = 1;
 }
 

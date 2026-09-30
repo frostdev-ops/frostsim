@@ -6,7 +6,18 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 VARIANT=threaded
-[ "${1:-}" = "--fallback" ] && VARIANT=fallback
+CHANNEL=live
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --fallback) VARIANT=fallback; shift ;;
+    --channel) CHANNEL="${2:?--channel requires live or ptr}"; shift 2 ;;
+    *) echo "Unknown build option: $1" >&2; exit 1 ;;
+  esac
+done
+case "$CHANNEL" in live) USE_PTR=0; SUFFIX= ;; ptr) USE_PTR=1; SUFFIX=-ptr ;; *) echo '--channel requires live or ptr' >&2; exit 1 ;; esac
+# Preserve the existing allocation; only a measured PTR linker minimum may raise it.
+INITIAL_MEMORY=134217728
+ENGINE_ROOT="${FROSTSIM_ENGINE_DIR:-public/engine${SUFFIX:+/ptr}}"
 
 command -v emcmake >/dev/null || { echo "emcmake not found. Run: source ~/emsdk/emsdk_env.sh"; exit 1; }
 
@@ -80,7 +91,7 @@ stage_source() {
   echo "$stamp" > "$stamp_file"
 }
 
-COMMON_LINK="-fwasm-exceptions -sINITIAL_MEMORY=134217728 -sALLOW_MEMORY_GROWTH=1 \
+COMMON_LINK="-fwasm-exceptions -sINITIAL_MEMORY=$INITIAL_MEMORY -sALLOW_MEMORY_GROWTH=1 \
   -sMAXIMUM_MEMORY=4gb -sMODULARIZE=1 -sEXPORT_NAME=createSimc -sENVIRONMENT=worker \
   -sINVOKE_RUN=0 -sEXIT_RUNTIME=0 -sEXPORTED_RUNTIME_METHODS=callMain,FS -sSTACK_SIZE=4mb"
 
@@ -88,16 +99,16 @@ COMMON_LINK="-fwasm-exceptions -sINITIAL_MEMORY=134217728 -sALLOW_MEMORY_GROWTH=
 # mimalloc removes dlmalloc's global lock, 12-31% faster with threads (most on profilesets), same DPS.
 # The single-thread fallback has no lock to remove, so it keeps the default allocator.
 if [ "$VARIANT" = threaded ]; then
-  BUILD_DIR=build/wasm
-  ENGINE_DIR=public/engine
+  BUILD_DIR=build/wasm$SUFFIX
+  ENGINE_DIR=$ENGINE_ROOT
   THREAD_CMAKE=-DSC_NO_THREADING=OFF
-  CXX_FLAGS="-DSC_USE_PTR=0 -pthread -fwasm-exceptions -flto"
+  CXX_FLAGS="-DSC_USE_PTR=$USE_PTR -pthread -fwasm-exceptions -flto"
   LINK_FLAGS="-pthread -sPTHREAD_POOL_SIZE=16 -flto -sMALLOC=mimalloc $COMMON_LINK"
 else
-  BUILD_DIR=build/wasm-fallback
-  ENGINE_DIR=public/engine/fallback
+  BUILD_DIR=build/wasm$SUFFIX-fallback
+  ENGINE_DIR=$ENGINE_ROOT/fallback
   THREAD_CMAKE=-DSC_NO_THREADING=ON
-  CXX_FLAGS="-DSC_USE_PTR=0 -fwasm-exceptions -flto"
+  CXX_FLAGS="-DSC_USE_PTR=$USE_PTR -fwasm-exceptions -flto"
   LINK_FLAGS="-flto $COMMON_LINK"
 fi
 
@@ -105,7 +116,7 @@ fi
 SOURCE_DIR=vendor/simc
 PATCH_ARGS=()
 if [ "$VARIANT" = fallback ]; then
-  SOURCE_DIR=build/engine-src-fallback
+  SOURCE_DIR=build/engine-src$SUFFIX-fallback
   stage_source "$SOURCE_DIR"
   for patch in patches/*.patch; do
     [ -e "$patch" ] || break
@@ -131,7 +142,8 @@ cmake --build "$BUILD_DIR"
 
 mkdir -p "$ENGINE_DIR"
 cp "$BUILD_DIR/simc.js" "$BUILD_DIR/simc.wasm" "$ENGINE_DIR/"
+[ "$CHANNEL" != ptr ] || [ "$ENGINE_ROOT" = public/engine ] || cp public/engine/sim-worker.js "$ENGINE_ROOT/"
 
 # Manifest: identity, capabilities, hashes, sizes (binaries gitignored; manifest committed and validated by app).
-node scripts/engine-manifest.mjs --build-dir "$BUILD_DIR" --engine-dir "$ENGINE_DIR" \
+node scripts/engine-manifest.mjs --channel "$CHANNEL" --build-dir "$BUILD_DIR" --engine-dir "$ENGINE_DIR" \
   --source-tree "$SOURCE_DIR" ${PATCH_ARGS[@]+"${PATCH_ARGS[@]}"}

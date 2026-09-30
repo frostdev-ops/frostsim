@@ -7,7 +7,9 @@ import {
   type ValidationIssue,
 } from './options'
 import { assembleRun, validateRequest, type JobLimits, type SimRequest } from './assemble'
-import { parseEngineNotice, profilesetStatus, type ReportLog, type SimReport } from './report'
+import { parseEngineNotice, profilesetStatus, verifyReportIdentity, type ReportLog, type SimReport } from './report'
+import { activeEngineChannel } from './versions'
+import { resolveEngineChannel } from './channel'
 import {
   detectEngineCapability,
   engineIdentity,
@@ -18,6 +20,8 @@ import type { ReportWorkerRequest, ReportWorkerResponse } from './report-worker'
 import type { PlayerDetail } from './detail'
 import { candidatesDone, latestProgress, type EngineProgress } from './progress'
 import { acquireEngineSlot, type EngineSlot } from '../engine-budget'
+import { rulesMatch, type SeasonRules } from '../catalog/rules'
+import type { CatalogManifest } from '../catalog/types'
 
 /** Engine worker message protocol; bump it and public/engine/sim-worker.js together. */
 export const WORKER_PROTOCOL = 1
@@ -540,7 +544,7 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
 
   const snapshot = (() => {
     try {
-      return freeze({ ...request, jobId })
+      return freeze({ ...request, engineChannel: request.engineChannel ?? activeEngineChannel, jobId })
     } catch (err) {
       fail(new SimValidationError([{ field: 'request', message: `request is not cloneable: ${err}` }]))
       return null
@@ -576,6 +580,10 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
       if (!capability.ok) {
         throw new SimEngineError(capability.reason, capability.detail)
       }
+      if (resolveEngineChannel(req.engineChannel) !== activeEngineChannel ||
+          resolveEngineChannel(capability.manifest.engineChannel) !== activeEngineChannel) {
+        throw new SimEngineError('engine-channel-mismatch', 'This run does not match the engine channel selected when the page opened. Reload with the intended channel.')
+      }
 
       threadedArtifact = capability.artifact === 'threaded' && capability.manifest.capabilities.threads === true
 
@@ -584,6 +592,8 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
 
       const issues = validateRequest(req, capability.maxThreads)
       if (issues.length) throw new SimValidationError(issues)
+      const rules = deps.capability ? undefined : await loadRules(capability)
+      if (settled) return
 
       const requestedIds = (req.profilesets ?? []).map((p) => p.id)
       // A cloud run has profilesets; remote.ts refuses them itself if it has to replay on this build.
@@ -595,7 +605,7 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
       }
 
       // Pool ceiling from artifact not request; warnings in one synchronous loop keep the old event order.
-      const { profile: profileText, args, warnings, threads } = assembleRun(req, capability.maxThreads)
+      const { profile: profileText, args, warnings, threads } = assembleRun(req, capability.maxThreads, rules)
       inputWarnings = warnings
       // assembleRun puts the clamp first.
       if (threads !== req.settings.threads) clampWarning = warnings[0]
@@ -627,6 +637,9 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
       heartbeat()
       engineWorker.postMessage({
         protocol: WORKER_PROTOCOL,
+        engineChannel: activeEngineChannel,
+        engineManifest: capability.manifest,
+        seasonRules: rules,
         jobId,
         profile: profileText,
         args,
@@ -657,7 +670,22 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
   async function resolveCapability(): Promise<EngineCapability> {
     if (typeof deps.capability === 'function') return deps.capability()
     if (deps.capability) return deps.capability
-    return detectEngineCapability()
+    return detectEngineCapability({ engineChannel: activeEngineChannel })
+  }
+
+  async function loadRules(capability: Extract<EngineCapability, { ok: true }>): Promise<SeasonRules | null | undefined> {
+    const base = capability.engineDir.replace(/fallback\/$/, '')
+    const manifest = capability.manifest
+    const rulesUrl = base === '/engine/'
+      ? `/catalogs/${manifest.engineChannel ? 'live-' : ''}${manifest.wow.clientDataVersion}-${manifest.wow.hotfixHash?.slice(0, 12)}-${manifest.engine.upstreamCommit.slice(0, 7)}/rules.json`
+      : `${base}catalog/rules.json`
+    try {
+      const response = await fetch(rulesUrl, { signal: AbortSignal.timeout(15_000) })
+      if (!response.ok) return null
+      const rules: SeasonRules = await response.json()
+      return rulesMatch(rules, { engineChannel: activeEngineChannel,
+        engine: { upstreamCommit: capability.manifest.engine.upstreamCommit, clientDataVersion: capability.manifest.wow.clientDataVersion } } as CatalogManifest) ? rules : null
+    } catch { return null }
   }
 
   function wireEngineWorker(
@@ -850,6 +878,8 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
     }
 
     const raw = parsed.bytes
+    try { verifyReportIdentity(parsed.report, capability.manifest) }
+    catch (err) { fail(new SimEngineError('engine-identity-mismatch', err instanceof Error ? err.message : String(err))); return }
     // Kept for dev hook so stderr-reachability question can be asked from console.
     lastNotices = engineNotices
     succeed({

@@ -11,10 +11,9 @@
     planItemLevels, planLines, planMoney, planTargetError, planTotals, preferredPlan, solveKnapsack,
     stepCandidate, type CrestPlan, type CrestStep,
   } from '../lib/optimization/crestsim'
-  import {
-    applyHighWatermark, costUnavailable, crestCurrencies, crestSeason, characterCrests,
-    seasonStartsAt, seasonWeekIndex, upgradeStepCost, watermarkSlotForGear, weeklyCrestCap,
-  } from '../lib/catalog/upgradeCosts'
+  import * as costs from '../lib/catalog/upgradeCosts'
+  import type { Cost, SlotWatermarks, CrestCurrency } from '../lib/catalog/upgradeCosts'
+  import { rulesUnavailable } from '../lib/catalog/rules'
   import type { Candidate, CandidateMeasurement, OptimizationProgress } from '../lib/optimization/types'
   import {
     activeCharacter, activeStored, app, engineIdentityString, isBusy, maxThreads, pollEngineSlot, profilesetsSupported, runCharacter, saveReport,
@@ -36,10 +35,18 @@
   const stored = $derived(activeStored())
   const busy = $derived(isBusy())
 
-  const currencies = crestCurrencies()
+  const currencies = $derived(costs.crestCurrencies(app.catalogRules))
+  const costUnavailable = $derived(app.catalogRules?.costs?.unavailable ?? [rulesUnavailable(app.catalogRules, 'costs')!])
+  const crestSeason = $derived(app.catalogRules?.costs?.season ?? { id: 0, name: 'Crest data unavailable' })
+  const seasonStartsAt = $derived(app.catalogRules?.costs?.season.startsAt ?? null)
+  const characterCrests = (character: Parameters<typeof costs.characterCrests>[0]) => costs.characterCrests(character, app.catalogRules)
+  const watermarkSlotForGear = (slot: GearSlot) => costs.watermarkSlotForGear(slot, app.catalogRules)
+  const upgradeStepCost = (track: number, from: number, to: number) => costs.upgradeStepCost(track, from, to, app.catalogRules)
+  const applyHighWatermark = (cost: Cost, at: SlotWatermarks, track: number, to: number) => costs.applyHighWatermark(cost, at, track, to, app.catalogRules)
+  const weeklyCrestCap = (currency: CrestCurrency, week: number, opts?: Parameters<typeof costs.weeklyCrestCap>[2]) => costs.weeklyCrestCap(currency, week, opts, app.catalogRules)
   /** 0-based per catalog; null when build carries no season start. */
-  const currentWeek = seasonWeekIndex()
-  if (currentWeek !== null && crestPlanning.week < currentWeek) crestPlanning.week = currentWeek
+  const currentWeek = $derived(costs.seasonWeekIndex(Date.now(), app.catalogRules))
+  $effect(() => { if (currentWeek !== null && crestPlanning.week < currentWeek) crestPlanning.week = currentWeek })
 
   // --- budget ---------------------------------------------------------------
   /** True when export carried upgrade_currencies block. */
@@ -71,6 +78,7 @@
       .map((item) => ({ slot: item.slot, item })),
   )
   const space = $derived(crestCandidates(equipped, {
+    rules: app.catalogRules,
     costs: { upgradeStepCost, applyHighWatermark },
     watermarks: character?.highWatermarks,
     // Enum.ItemRedundancySlot has no entry for weapon slots this layer can resolve, so they keep full price.
@@ -146,7 +154,7 @@
   }
 
   const canRun = $derived(
-    !!character && !busy && profilesetsSupported() && hasBudget && affordableSteps.length > 0,
+    !!character && !busy && !!app.catalogRules?.costs && !!app.catalogRules?.upgrades && profilesetsSupported() && hasBudget && affordableSteps.length > 0,
   )
 
   async function go(): Promise<void> {
@@ -496,6 +504,9 @@
           {/if}
         </div>
       </header>
+      {#if !app.catalogRules?.costs || !app.catalogRules?.upgrades}
+        <Banner kind="warn" title="Crest planning data unavailable"><p>{rulesUnavailable(app.catalogRules, 'costs')} Other simulations remain available.</p></Banner>
+      {/if}
 
       {#if !profilesetsSupported() && app.capabilityChecked}
         <Banner kind="warn" title="This engine build cannot run variants in one pass">

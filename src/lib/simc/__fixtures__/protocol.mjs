@@ -23,7 +23,7 @@ export function validate(data) {
     if (typeof arg !== 'string' || !arg.length) return 'every arg must be a non-empty string'
     if (/[\0\n\r]/.test(arg)) return 'an arg contains a control character'
   }
-  if (data.args[0] !== data.profilePath) return 'args[0] must be the profile path'
+  if (!['ptr=0', 'ptr=1'].includes(data.args[0]) || data.args[1] !== data.profilePath) return 'args must start with ptr=0 or ptr=1 and the profile path'
   if (data.engine !== undefined) {
     if (typeof data.engine.wasmUrl !== 'string' || !data.engine.wasmUrl.endsWith('.wasm')) {
       return 'engine.wasmUrl must be a .wasm'

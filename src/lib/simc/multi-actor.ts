@@ -6,6 +6,7 @@ import { CLASS_LABELS, type ImportedCharacter } from '../import/character'
 import { buildProfile, type ProfileOverrides } from '../import/serialize'
 import { declaresActor } from './options'
 import { applyWeeklyDefaults } from './weekly-defaults'
+import type { SeasonRules } from '../catalog/rules'
 
 export interface Member { character: ImportedCharacter; overrides?: ProfileOverrides }
 
@@ -18,7 +19,7 @@ function renamed(profile: string, name: string): string {
 }
 
 /** The combined profile and the lines that follow it. With one member this is buildProfile plus the lines unchanged. */
-export function multiActorParts(members: readonly Member[], extraLines: readonly string[]): { profile: string; extraProfileLines: string[]; names: string[] } {
+export function multiActorParts(members: readonly Member[], extraLines: readonly string[], rules?: SeasonRules | null): { profile: string; extraProfileLines: string[]; names: string[] } {
   if (members.length < 2) {
     const m = members[0]
     return { profile: m ? buildProfile(m.character, m.overrides) : '', extraProfileLines: [...extraLines], names: m ? [m.character.name] : [] }
@@ -33,8 +34,25 @@ export function multiActorParts(members: readonly Member[], extraLines: readonly
     for (let n = 2; used.has(name.toLowerCase()); n++) name = `${character.name}_${n}`
     used.add(name.toLowerCase())
     names.push(name)
-    const own = applyWeeklyDefaults(buildProfile(character, { ...overrides, append: [...(overrides?.append ?? []), ...perActor] }))
+    const own = applyWeeklyDefaults(buildProfile(character, { ...overrides, append: [...(overrides?.append ?? []), ...perActor] }), rules)
     return name === character.name ? own : renamed(own, name)
   })
   return { profile: profiles.join('\n'), extraProfileLines: shared, names }
+}
+
+const CLASS_LINE = /^\s*(\w+)\s*=\s*"?([^"\r\n]*)"?\s*$/
+
+/** Actor blocks keep guided defaults scoped to each character. */
+export function characterBlocks(profile: string): { name: string; text: string }[] {
+  const blocks: { name: string; lines: string[] }[] = []
+  let lead: string[] = []
+  for (const line of profile.split('\n')) {
+    const m = CLASS_LINE.exec(line)
+    if (m && Object.hasOwn(CLASS_LABELS, m[1].toLowerCase())) {
+      blocks.push({ name: m[2] || m[1], lines: [...lead, line] })
+      lead = []
+    } else if (blocks.length) blocks[blocks.length - 1].lines.push(line)
+    else lead.push(line)
+  }
+  return blocks.map((b) => ({ name: b.name, text: b.lines.join('\n') }))
 }

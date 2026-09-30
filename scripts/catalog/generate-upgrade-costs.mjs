@@ -10,9 +10,12 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { parseCsv } from './sources/db2-loot.mjs';
+import { selectedChannel, clientBuild } from './channel.mjs';
+const engineChannel = selectedChannel();
+if (engineChannel === 'ptr') throw Error('Verified PTR upgrade costs and currency policy are unavailable; crest planning is disabled for PTR.');
 
 const lock = JSON.parse(readFileSync('engine.lock.json', 'utf8'));
-const build = lock.expected.clientDataWowVersion;
+const build = clientBuild(engineChannel);
 const arg = process.argv.indexOf('--cache');
 const cache = arg < 0 ? `build/upgrade-data-${build}` : process.argv[arg + 1];
 const offline = process.argv.includes('--offline');
@@ -40,7 +43,7 @@ const entries = await csv('ItemBonusListGroupEntry');
 const costs = new Map((await csv('ItemExtendedCost')).map(row => [row.ID, row]));
 const currencyTypes = new Map((await csv('CurrencyTypes')).map(row => [row.ID, row]));
 
-const catalogDir = readdirSync('public/catalogs').find(dir => dir.startsWith(build + '-'));
+const catalogDir = readdirSync('public/catalogs').find(dir => dir.startsWith(engineChannel + '-' + build + '-') || dir.startsWith(build + '-'));
 if (!catalogDir) throw Error('Build the engine-pinned catalog first');
 const loot = JSON.parse(readFileSync(`public/catalogs/${catalogDir}/loot.json`, 'utf8'));
 const upgrades = JSON.parse(readFileSync('src/lib/catalog/generated/upgrades.json', 'utf8'));
@@ -286,7 +289,7 @@ if (!otherCurrencies.length) {
 
 const output = {
   schemaVersion: 1,
-  build, engineCommit: lock.upstream.commit,
+  engineChannel, build, engineCommit: lock.upstream.commit,
   season: { ...loot.season, startsAt, region },
   // Published-source cap statement. NOT DB2. Null means no official article states it.
   seasonCapSource, capSearch,

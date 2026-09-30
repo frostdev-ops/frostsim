@@ -30,6 +30,8 @@
   import type { ImportedCharacter } from './lib/import/character'
   import Banner from './lib/ui/Banner.svelte'
   import EngineStatus from './lib/ui/EngineStatus.svelte'
+  import { activeEngineChannel } from './lib/simc/versions'
+  import { engineChannelLabel } from './lib/simc/channel'
   import Dialog from './lib/ui/Dialog.svelte'
   import SiteLegal from './lib/ui/SiteLegal.svelte'
   import Backdrop from './lib/fx/Backdrop.svelte'
@@ -331,6 +333,7 @@
     </nav>
 
     <div class="row-tight trailing">
+      <EngineStatus header />
       {#if app.job && busy}
         <a class="job-chip" href={href(app.job.tool === 'quick' ? 'quick' : app.job.tool)}>
           <span class="pulse" aria-hidden="true"></span>
@@ -735,6 +738,7 @@
       <fieldset class="stack-sm">
         <legend class="small">Engine</legend>
         <dl class="kv xs">
+          <dt>Game version</dt><dd>{engineChannelLabel(activeEngineChannel)}</dd>
           <dt>Build</dt>
           <dd>{app.capability.manifest.engine.simcVersion}
             ({app.capability.manifest.engine.upstreamCommit.slice(0, 7)})</dd>
@@ -1249,7 +1253,7 @@
     .flyout-item { padding: 0.45rem 0.5rem; }
     .flyout-icon { width: 1.9rem; height: 1.9rem; }
     .flyout-text span { display: none; }
-    .trailing { margin-left: auto; }
+    .trailing { margin-left: auto; flex-wrap: wrap; justify-content: flex-end; flex-shrink: 1; }
     .bar { flex-wrap: wrap; padding-block: var(--s2); gap: var(--s2); }
     @keyframes drop { from { opacity: 0; transform: translateY(-6px); } }
   }

@@ -2,7 +2,8 @@
 
 import { bonusTables, buildItem, scaledStat, ScalingTables, type BaseItem, type BonusTables, type BuiltItem } from './item-build';
 import { ITEM_CLASS, ITEM_FLAG, ITEM_MOD, QUALITY_LABEL, STAT_LABEL, eligibleSlots } from './enums';
-import { itemUpgradeTrack, seasonBuildOf, upgradeBuild, upgradeSeason } from './upgrades';
+import { itemUpgradeTrack } from './upgrades';
+import { liveRules, rulesMatch, type SeasonRules } from './rules';
 import type {
   BonusPayload, CatalogManifest, Consumable, EnchantOption, EnchantsPayload, GearSlot,
   GemsPayload, ItemColumns, ItemInstance, LootCatalog, LootProvenance, LootSource,
@@ -10,6 +11,7 @@ import type {
 } from './types';
 
 export interface CatalogPayloads {
+  rules?: SeasonRules | null;
   manifest: CatalogManifest;
   items: ItemColumns;
   bonus: BonusPayload;
@@ -47,6 +49,7 @@ export interface SearchQuery {
 }
 
 export class Catalog {
+  readonly rules: SeasonRules | null;
   readonly manifest: CatalogManifest;
   readonly bonus: BonusTables;
   readonly scaling: ScalingTables;
@@ -63,6 +66,9 @@ export class Catalog {
 
   constructor(private readonly payloads: CatalogPayloads) {
     this.manifest = payloads.manifest;
+    // Direct legacy Live constructors retain existing test/local behavior. Loaders explicitly pass null on absent pack data.
+    this.rules = payloads.rules === undefined ? ((this.manifest.engineChannel ?? this.manifest.engine.engineChannel ?? 'live') === 'live' ? liveRules : null)
+      : payloads.rules && rulesMatch(payloads.rules, this.manifest) ? payloads.rules : null;
     this.items = payloads.items;
     this.bonus = bonusTables(payloads.bonus);
     this.scaling = new ScalingTables(payloads.scaling);
@@ -144,7 +150,7 @@ export class Catalog {
   }
 
   private present(base: BaseItem, built: BuiltItem, instance: ItemInstance, unresolved: string[]): ResolvedItem {
-    const upgrade = seasonBuildOf(this.manifest) === upgradeBuild ? itemUpgradeTrack(instance) : null;
+    const upgrade = this.rules ? itemUpgradeTrack(instance, this.rules) : null;
     const descriptors = built.descriptionIds
       .map((id) => this.bonus.description(id))
       .filter((d): d is string => typeof d === 'string');
@@ -194,7 +200,7 @@ export class Catalog {
       stats,
       descriptors,
       track: upgrade ? { id: upgrade.track.id, label: upgrade.track.label, step: upgrade.rank.rank, max: upgrade.track.max,
-        seasonId: upgrade.track.seasonId, currentSeason: upgrade.track.seasonId === upgradeSeason.id,
+        seasonId: upgrade.track.seasonId, currentSeason: upgrade.track.seasonId === this.rules?.upgrades?.season.id,
         extended: upgrade.rank.extended, hypothetical: instance.upgradeTrackHypothetical === true }
         : { label: null, step: null, max: null },
       bonusIds: instance.bonusIds ?? [],

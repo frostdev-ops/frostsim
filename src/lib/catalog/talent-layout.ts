@@ -12,15 +12,17 @@ export function visibleTalentEdges(layout: TalentLayout | undefined, visibleIds:
 export async function withTalentLayout(tree: TalentTree, capability: EngineCapability | null): Promise<TalentTree> {
   if (!capability?.ok) throw Error('The selected engine is unavailable.')
   const engine = capability.manifest
+  const channel = engine.engineChannel ?? 'live'
   const base = capability.engineDir.startsWith('/engine/versions/')
-    ? `${capability.engineDir.replace(/fallback\/$/, '')}talent-layout/` : '/talent-layout/'
-  const key = `${base}:${engine.engine.upstreamCommit}:${tree.classId}`
+    ? `${capability.engineDir.replace(/fallback\/$/, '')}talent-layout/` : channel === 'ptr' ? '/engine/ptr/talent-layout/' : '/talent-layout/'
+  const key = `${channel}:${base}:${engine.engine.upstreamCommit}:${tree.classId}`
   let request = pending.get(key)
   if (!request) {
     request = fetch(base + 'class-' + tree.classId + '.json').then(async (response) => {
       if (!response.ok) throw Error('Talent presentation data is unavailable.')
       const data = await response.json() as TalentLayout
       if (data.schemaVersion !== 1 || data.classId !== tree.classId || data.engineCommit !== engine.engine.upstreamCommit ||
+        (data.engineChannel ?? 'live') !== channel ||
         data.build !== engine.wow.clientDataVersion || !Number.isFinite(Date.parse(data.expiresAt)) ||
         !data.nodes || !data.descriptions || !Array.isArray(data.edges) || !data.budgetSources) throw Error('Talent data needs to be refreshed.')
       const ids = new Set(tree.nodes.map(n => n.nodeId))
@@ -35,7 +37,7 @@ export async function withTalentLayout(tree: TalentTree, capability: EngineCapab
           data.budgetSources[key].some(row => !Number.isInteger(row.level) || !Number.isInteger(row.amount) || row.amount < 0)) throw Error('Invalid talent point budgets.')
       }
       // Graph, grants, budgets from pinned tables. Only live Blizzard descriptions/shapes expire; expiry doesn't disable old engines.
-      if (Date.parse(data.expiresAt) <= Date.now()) return { ...data, descriptions: {},
+      if (channel === 'ptr' && data.descriptionsChannel !== 'ptr' || Date.parse(data.expiresAt) <= Date.now()) return { ...data, descriptions: {},
         nodes: Object.fromEntries(Object.entries(data.nodes).map(([id, node]) =>
           [id, { ...node, shape: node.entryType === 2 ? 'PASSIVE' : 'ACTIVE' }])) }
       return data

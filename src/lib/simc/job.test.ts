@@ -49,6 +49,7 @@ const capability: EngineCapability = {
 }
 
 const minimalReport = {
+  git_revision: manifest.engine.upstreamCommit,
   version: '1210-01',
   report_version: '2.0.0',
   sim: {
@@ -233,7 +234,7 @@ describe('runJob happy path', () => {
     expect(msg.protocol).toBe(WORKER_PROTOCOL)
     expect(msg.profilePath).toBe('/profile.simc')
     expect(msg.reportPath).toBe('/out.json')
-    expect((msg.args as string[])[0]).toBe('/profile.simc')
+    expect((msg.args as string[]).slice(0, 2)).toEqual(['ptr=0', '/profile.simc'])
     expect(msg.args).toContain('target_error=0')
   })
 

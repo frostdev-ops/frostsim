@@ -2,6 +2,8 @@
   import type { SimOutcome } from '../simc/job'
   import type { ItemInstance } from '../import/character'
   import { titleCase } from '../format'
+  import { reportEngineChannel } from '../simc/report'
+  import { engineChannelLabel } from '../simc/channel'
   import GearStrip from './GearStrip.svelte'
   import Metric from './Metric.svelte'
   import { Swords } from '@lucide/svelte'
@@ -9,9 +11,11 @@
   let { outcome, characterLabel, onrerun, gear = [], compact = false }: Props = $props()
   const report = $derived(outcome.report)
   const player = $derived(report.players[0])
+  const channel = $derived(reportEngineChannel(report))
 </script>
 <section class="panel result-header" data-class={outcome.request.characterSnapshot?.className} class:compact>
   <div class="headline"><div class="row"><Swords size={22} /><h1>{compact ? 'Baseline' : outcome.report.profilesets.length ? 'Comparison' : outcome.report.scaling?.calculateScaleFactors ? 'Stat Weights' : 'Quick Sim'}</h1></div><Metric value={player?.dps.mean} confidence={player?.dpsConfidence} /></div>
+  <span class="xs muted">{channel ? engineChannelLabel(channel) : 'Channel not recorded'} · SimC {report.engine.simcVersion}{#if report.gameData} · WoW {report.gameData.wowVersion}{/if}</span>
   <div class="spread"><div><h2>{player?.name ?? characterLabel}</h2><span class="small muted">{titleCase(player?.specialization ?? '')}</span></div>{#if onrerun}<button onclick={onrerun}>Run again</button>{/if}</div>
   {#if gear.length}<GearStrip items={gear} size={40} />{/if}
   {#if player?.validFightStyle === false}<p class="error" role="alert">This specialization does not support {report.options.fightStyle}.</p>

@@ -3,10 +3,13 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { parseCsv } from './sources/db2-loot.mjs';
+import { selectedChannel, clientBuild } from './channel.mjs';
+const engineChannel = selectedChannel();
+if (engineChannel === 'ptr') throw Error('Verified PTR raid reward levels are unavailable; automatic raid reward levels are disabled for PTR.');
 
 const lock = JSON.parse(readFileSync('engine.lock.json', 'utf8'));
 const upgrades = JSON.parse(readFileSync('src/lib/catalog/generated/upgrades.json', 'utf8'));
-const build = lock.expected.clientDataWowVersion;
+const build = clientBuild(engineChannel);
 if (upgrades.build !== build || upgrades.engineCommit !== lock.upstream.commit) throw Error('Regenerate upgrades for the pinned engine first');
 const cache = `build/upgrade-data-${build}`;
 mkdirSync(cache, { recursive: true });
@@ -84,5 +87,5 @@ const rewards = encounters.map(boss => {
   ]));
   return { id: `blizzard-journal:encounter:${boss.ID}`, name: boss.Name_lang, instanceId: instance.ID, ignoredItemIds, byDifficulty };
 });
-writeFileSync('src/lib/catalog/generated/raid-rewards.json', JSON.stringify({ build, seasonId: policy.seasonId, policy, sources, rewards }, null, 2) + '\n');
+writeFileSync('src/lib/catalog/generated/raid-rewards.json', JSON.stringify({ engineChannel, build, seasonId: policy.seasonId, policy, sources, rewards }, null, 2) + '\n');
 console.log(`Generated ${rewards.length} bosses with per-item rewards for ${build}`);
