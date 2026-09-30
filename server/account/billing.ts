@@ -117,7 +117,7 @@ export async function adConfig(ctx: RequestCtx): Promise<Response> {
     return json({ enabled: false });
   }
   const session = await getSession(ctx, ctx.request);
-  if (!session && readCookie(ctx.request, SESSION_COOKIE)) return json({ enabled: false });
+  if (!session && readCookie(ctx.request, SESSION_COOKIE) !== null) return json({ enabled: false });
   if (session) {
     const ent = await loadEntitlements(ctx.sql, { userId: session.userId }, ctx.now());
     if (ent.adFree) return json({ enabled: false });
