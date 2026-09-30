@@ -107,7 +107,7 @@ export function buildScenarios(sources: DropSource[], opts: DroptimizerOptions):
       for (const slot of slots) {
         const gear = new Map<GearSlot, ItemInstance | null>();
         const unchecked: string[] = [];
-        gear.set(slot, dress({ ...candidateItem, slot }, resolved, slot, opts, unchecked));
+        gear.set(slot, dress({ ...candidateItem, slot, addonName: resolved.name }, resolved, slot, opts, unchecked));
 
         // A two-hander clears the off hand; pairing companion weapon is user's choice.
         const twoHanded = resolved.inventoryType === 17;

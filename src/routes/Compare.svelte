@@ -4,7 +4,7 @@
     buildCandidate, canFill, nextCandidateId, rankCandidates,
     type Candidate, type RankedCandidate,
   } from '../lib/candidates'
-  import { GEAR_SLOTS, SLOT_LABELS, type GearSlot, type ItemInstance } from '../lib/import/character'
+  import { GEAR_SLOTS, SLOT_LABELS, type GearSlot, type ItemInstance, type ImportedCharacter } from '../lib/import/character'
   import { buildProfile, overrideLines } from '../lib/import/serialize'
   import {
     activeCharacter, activeStored, app, constraintsFor, isBusy, maxThreads,
@@ -52,6 +52,7 @@
   let renameValue = $state('')
   /** Cancelled run still shows what completed (P07.7). */
   let lastRunCandidates = $state<Candidate[]>([])
+  let resultCharacter = $state<ImportedCharacter | null>(null)
 
   const runnable = $derived(candidates.filter((c) => !c.issues.length))
   const level = $derived(character?.level ?? 0)
@@ -121,6 +122,15 @@
       // Exact instances variant equipped (row shows the swap).
       icons: r.candidate.changes.map((ch) => ch.to).filter((i): i is ItemInstance => !!i),
       changedSlots: r.candidate.changes.map((ch) => ch.slot).filter((s): s is GearSlot => !!s),
+      changes: r.candidate.changes.map((ch) => {
+        if (!ch.slot) return { slot: 'Talents', name: ch.talents?.name ?? 'Custom build' }
+        const worn = resultCharacter?.equipped.find((item) => item.slot === ch.slot)
+        return {
+          slot: SLOT_LABELS[ch.slot],
+          name: ch.to ? display(ch.to, app.resolved).name : 'empty',
+          replaces: worn ? display(worn, app.resolved).name : 'nothing',
+        }
+      }),
     })),
   )
 
@@ -201,14 +211,17 @@
 
   async function go(): Promise<void> {
     if (!character || !runnable.length) return
-    const snapshot = runnable.map((c) => ({ ...c }))
+    const snapshot = $state.snapshot(runnable)
+    const characterSnapshot = $state.snapshot(character)
     lastRunCandidates = snapshot
+    resultCharacter = characterSnapshot
     await startRun({
       tool: 'compare',
       title: `${stored?.label ?? character.name} — Compare (${snapshot.length})`,
       request: {
         schemaVersion: 1,
-        profile: buildProfile(character),
+        profile: buildProfile(characterSnapshot),
+        characterSnapshot,
         settings: {
           fightStyle: compareSettings.fightStyle,
           maxTime: compareSettings.maxTime,
@@ -237,7 +250,7 @@
 
   function exportCandidate(r: RankedCandidate): void {
     if (!character) return
-    const text = buildProfile(character, r.candidate.overrides)
+    const text = buildProfile(resultCharacter ?? character, r.candidate.overrides)
     const url = URL.createObjectURL(new Blob([text], { type: 'text/plain' }))
     const a = document.createElement('a')
     a.href = url
@@ -476,7 +489,7 @@
             mean: outcome.report.players[0]?.dps.mean ?? 0,
             margin: outcome.report.players[0]?.dpsConfidence?.margin,
           }}
-          baselineGear={character.equipped}
+          baselineGear={resultCharacter?.equipped ?? []}
           caption="Variants ranked against the baseline"
           onselect={(row) => {
             const r = ranked.find((x) => x.candidate.id === row.id)
