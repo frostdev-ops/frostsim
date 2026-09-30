@@ -21,7 +21,7 @@
   import { INVTYPE } from '../lib/catalog/enums'
   import type { GenerationReport } from '../lib/optimization/candidates'
   import {
-    activeCharacter, activeStored, app, catalogClient, constraintsFor, DRAFT, engineIdentityString, ensureCatalog, isBusy, maxThreads, openDraft, planOptions, pollEngineSlot, profilesetsSupported, runCharacter, saveReport, toast,
+    activeCharacter, activeStored, app, catalogClient, candidateComparisonsSupported, constraintsFor, DRAFT, engineIdentityString, ensureCatalog, isBusy, maxThreads, openDraft, planOptions, pollEngineSlot, runCharacter, saveReport, toast,
   } from '../lib/app.svelte'
   import { makeRunBatch } from '../lib/runBatch'
   import type { SimOutcome } from '../lib/simc/job'
@@ -1148,7 +1148,7 @@
             <button
               class="primary"
               onclick={() => go()}
-              disabled={busy || !selectedCount || !profilesetsSupported()
+              disabled={busy || !selectedCount || !candidateComparisonsSupported()
                 || app.catalogState !== 'ready' || !estimate || estimate.exceedsCap}
             >
               Find Top Gear
@@ -1165,11 +1165,11 @@
         {/each}
       </nav>
 
-      {#if !profilesetsSupported() && app.capabilityChecked}
-        <Banner kind="warn" title="This engine build cannot run a search">
+      {#if app.capability?.ok && app.capability.artifact === 'fallback' && !app.capability.profilesets}
+        <Banner kind="info" title="Gear combinations run one at a time">
           <p>
-            The single-threaded fallback compiles out the engine's variant support, so Top Gear
-            needs the threaded build. Quick Sim still works.
+            Top Gear runs each combination as an independent simulation on this engine.
+            Large searches take longer than on the threaded build.
           </p>
         </Banner>
       {/if}
@@ -1740,7 +1740,7 @@
   {#if !searching && (!result || setupOpen)}
   <div class="run-dock">
     <div class="stack-sm"><strong aria-live="polite">{searching ? progress ? `${progress.stageLabel} · Pass ${progress.stageIndex + 1} of up to ${progress.stageCount}` : 'Preparing your comparison…' : selectedCount ? estimate ? `${estimate.exact ? '' : 'Up to '}${fmtInt(estimate.combinations)} combinations` : 'Calculating combinations…' : 'Select alternatives to compare'}</strong><span class="xs muted">{settings.fightStyle} · {settings.targets} target{settings.targets === 1 ? '' : 's'} · {settings.maxTime}s · Runs on your device</span></div>
-    <button class="primary" onclick={() => go()} disabled={busy || !selectedCount || !profilesetsSupported() || app.catalogState !== 'ready' || !estimate || estimate.exceedsCap}>Find Top Gear</button>
+    <button class="primary" onclick={() => go()} disabled={busy || !selectedCount || !candidateComparisonsSupported() || app.catalogState !== 'ready' || !estimate || estimate.exceedsCap}>Find Top Gear</button>
   </div>
   {/if}
 {/if}

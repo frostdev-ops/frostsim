@@ -16,7 +16,7 @@
   import { rulesUnavailable } from '../lib/catalog/rules'
   import type { Candidate, CandidateMeasurement, OptimizationProgress } from '../lib/optimization/types'
   import {
-    activeCharacter, activeStored, app, engineIdentityString, isBusy, maxThreads, pollEngineSlot, profilesetsSupported, runCharacter, saveReport,
+    activeCharacter, activeStored, app, candidateComparisonsSupported, engineIdentityString, isBusy, maxThreads, pollEngineSlot, runCharacter, saveReport,
   } from '../lib/app.svelte'
   import { makeRunBatch } from '../lib/runBatch'
   import { markSettled, markStarted, teardownCancellation } from '../lib/job.svelte'
@@ -154,7 +154,7 @@
   }
 
   const canRun = $derived(
-    !!character && !busy && !!app.catalogRules?.costs && !!app.catalogRules?.upgrades && profilesetsSupported() && hasBudget && affordableSteps.length > 0,
+    !!character && !busy && !!app.catalogRules?.costs && !!app.catalogRules?.upgrades && candidateComparisonsSupported() && hasBudget && affordableSteps.length > 0,
   )
 
   async function go(): Promise<void> {
@@ -508,12 +508,11 @@
         <Banner kind="warn" title="Crest planning data unavailable"><p>{rulesUnavailable(app.catalogRules, 'costs')} Other simulations remain available.</p></Banner>
       {/if}
 
-      {#if !profilesetsSupported() && app.capabilityChecked}
-        <Banner kind="warn" title="This engine build cannot run variants in one pass">
+      {#if app.capability?.ok && app.capability.artifact === 'fallback' && !app.capability.profilesets}
+        <Banner kind="info" title="Upgrades run one at a time">
           <p>
-            The single-threaded fallback compiles out the engine's variant support, so Crest Sim
-            cannot measure upgrades against one another. Reload on a host that can send the
-            cross-origin isolation headers to get the threaded build.
+            Crest Sim runs each upgrade as an independent simulation on this engine.
+            Large searches take longer than on the threaded build.
           </p>
         </Banner>
       {/if}

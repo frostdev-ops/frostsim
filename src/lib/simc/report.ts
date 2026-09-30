@@ -1,5 +1,8 @@
 // simc JSON report (json=<path>,version=2) -> a compact typed result (P01.11). Fields read from vendor/simc report_json.cpp and validated against node relink.
 import type { EngineChannel } from './channel'
+import { LIMITS, PROFILESET_ID } from './options'
+
+export const SEQUENTIAL_COMPARISON_WARNING = 'Candidates ran one at a time on the single-thread engine. Engine options and timings describe the baseline run.'
 
 export class ReportFormatError extends Error {
   readonly path: string
@@ -192,6 +195,8 @@ export interface SimReport {
   scaling?: ScalingOptions
   players: PlayerResult[]
   profilesets: ProfilesetResult[]
+  /** Application-derived candidate results from independent engine runs. */
+  comparisonStrategy?: 'sequential'
   profilesetMetric?: string
   raidDps?: Distribution
   timings: ReportTimings
@@ -404,6 +409,58 @@ function parseProfilesets(raw: unknown): ProfilesetResult[] {
   })
 }
 
+/** A bounded application envelope; the native baseline JSON remains unchanged. */
+export function withSequentialComparison(report: SimReport, raw: unknown): SimReport {
+  const path = 'frostsim_comparison'
+  const envelope = obj(raw, path)
+  const allowed = new Set(['schemaVersion', 'strategy', 'results', 'warnings', 'problems', 'targetReached', 'worstRelativeErrorPct'])
+  if (envelope.schemaVersion !== 1 || envelope.strategy !== 'sequential' || Object.keys(envelope).some(key => !allowed.has(key)) || report.profilesets.length) {
+    throw new ReportFormatError(path, 'invalid or conflicting sequential comparison envelope')
+  }
+  if (!Array.isArray(envelope.results)) throw new ReportFormatError(`${path}.results`, 'expected an array')
+  const rows = envelope.results
+  if (rows.length > LIMITS.profilesets) throw new ReportFormatError(path, 'too many sequential candidates')
+  const rowKeys = new Set(['name', 'mean', 'min', 'max', 'iterations', 'stddev', 'mean_stddev', 'mean_error'])
+  for (const rawRow of rows) {
+    const row = obj(rawRow, `${path}.results`)
+    if (Object.keys(row).some(key => !rowKeys.has(key))) throw new ReportFormatError(path, 'unknown sequential distribution field')
+    for (const key of ['stddev', 'mean_stddev', 'mean_error']) if (key in row) reqNum(row[key], `${path}.results.${key}`)
+  }
+  const results = parseProfilesets({ results: rows })
+  const ids = new Set<string>()
+  for (const result of results) {
+    if (!PROFILESET_ID.test(result.name) || ids.has(result.name) || result.min > result.max ||
+        !Number.isInteger(result.iterations) || result.iterations < 0 ||
+        [result.mean, result.min, result.max, result.stdDev, result.meanStdDev, result.meanError].some(value => value !== undefined && value < 0)) {
+      throw new ReportFormatError(path, 'invalid sequential candidate distribution')
+    }
+    ids.add(result.name)
+  }
+  const messages = (value: unknown, field: string): string[] => {
+    if (!Array.isArray(value)) throw new ReportFormatError(`${path}.${field}`, 'expected an array')
+    const lines = arr(value, `${path}.${field}`)
+    if (lines.length > LIMITS.extraOptions || lines.some(line => typeof line !== 'string' || line.length > LIMITS.optionLineChars)) {
+      throw new ReportFormatError(`${path}.${field}`, 'expected bounded messages')
+    }
+    return lines as string[]
+  }
+  if (typeof envelope.targetReached !== 'boolean') throw new ReportFormatError(`${path}.targetReached`, 'expected a boolean')
+  const worst = envelope.worstRelativeErrorPct === undefined ? undefined : reqNum(envelope.worstRelativeErrorPct, `${path}.worstRelativeErrorPct`)
+  if (worst !== undefined && worst < 0) throw new ReportFormatError(path, 'invalid relative error')
+  return {
+    ...report,
+    profilesets: results,
+    profilesetMetric: 'Damage per Second',
+    comparisonStrategy: 'sequential',
+    targetReached: envelope.targetReached,
+    worstRelativeErrorPct: worst,
+    // Rehydrated reports and hosted snapshots carry logs, so the execution method survives either path.
+    logs: [...report.logs, { level: 'frostsim', kind: 'note', message: SEQUENTIAL_COMPARISON_WARNING }],
+    warnings: [...new Set([...report.warnings, SEQUENTIAL_COMPARISON_WARNING, ...messages(envelope.warnings, 'warnings')])],
+    problems: [...new Set([...report.problems, ...messages(envelope.problems, 'problems')])],
+  }
+}
+
 function parseLogs(raw: unknown): ReportLog[] {
   return arr(raw, 'logs').flatMap((entry) => {
     const log = optObj(entry)
@@ -451,7 +508,7 @@ export function parseReport(raw: unknown): SimReport {
     .filter((v): v is number => v !== undefined)
   const worstRelativeErrorPct = relativeErrors.length ? Math.max(...relativeErrors) : undefined
 
-  return {
+  const report: SimReport = {
     engine: {
       engineChannel: versionUsed === 'Live' ? 'live' : versionUsed === 'PTR' ? 'ptr' : undefined,
       simcVersion: reqStr(root.version, 'version'),
@@ -487,6 +544,7 @@ export function parseReport(raw: unknown): SimReport {
       (worstRelativeErrorPct !== undefined && worstRelativeErrorPct < options.targetError),
     worstRelativeErrorPct,
   }
+  return root.frostsim_comparison === undefined ? report : withSequentialComparison(report, root.frostsim_comparison)
 }
 
 /** Never infer historical active identity from ptrEnabled, which says only what was compiled in. */

@@ -12,7 +12,7 @@
   import type { LootProvenance, LootSource, ResolvedItem } from '../lib/catalog/types'
   import type { OptimizationProgress, OptimizationResult } from '../lib/optimization/types'
   import {
-    activeCharacter, activeStored, app, catalogClient, constraintsFor, engineIdentityString, ensureCatalog, isBusy, maxThreads, planOptions, pollEngineSlot, profilesetsSupported, runCharacter, saveReport, toast,
+    activeCharacter, activeStored, app, catalogClient, candidateComparisonsSupported, constraintsFor, engineIdentityString, ensureCatalog, isBusy, maxThreads, planOptions, pollEngineSlot, runCharacter, saveReport, toast,
   } from '../lib/app.svelte'
   import { makeRunBatch } from '../lib/runBatch'
   import type { SimOutcome } from '../lib/simc/job'
@@ -677,7 +677,7 @@
               class="primary"
               onclick={go}
               aria-describedby={nextStep ? 'drop-next-step' : undefined}
-              disabled={!canRun || !plannedCount || !profilesetsSupported() || app.catalogState !== 'ready' || busy}
+              disabled={!canRun || !plannedCount || !candidateComparisonsSupported() || app.catalogState !== 'ready' || busy}
             >
               Evaluate{#if previewItems.length} {fmtInt(previewItems.length)} items{/if}
             </button>

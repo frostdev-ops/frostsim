@@ -8,7 +8,7 @@
   import { buildProfile, overrideLines } from '../lib/import/serialize'
   import {
     activeCharacter, activeStored, app, constraintsFor, isBusy, maxThreads,
-    profilesetsSupported, toast,
+    candidateComparisonsSupported, toast,
   } from '../lib/app.svelte'
   import { checkItemForSlot } from '../lib/catalog/legality'
   import { display, resolveItem } from '../lib/items'
@@ -265,7 +265,7 @@
   $effect(() =>
     registerShortcuts({
       run: () => {
-        if (busy || !runnable.length || !profilesetsSupported()) return false
+        if (busy || !runnable.length || !candidateComparisonsSupported()) return false
         void go()
       },
     }),
@@ -298,17 +298,17 @@
               {setupOpen ? 'Hide setup' : 'Setup'}
             </button>
           {/if}
-          <button class="primary" onclick={go} disabled={busy || !runnable.length || !profilesetsSupported()}>
+          <button class="primary" onclick={go} disabled={busy || !runnable.length || !candidateComparisonsSupported()}>
             {busy ? 'Running…' : `Run ${runnable.length} variant${runnable.length === 1 ? '' : 's'}`}
           </button>
         </div>
       </header>
 
-      {#if !profilesetsSupported() && app.capabilityChecked}
-        <Banner kind="warn" title="This engine build cannot run variants in one pass">
+      {#if app.capability?.ok && app.capability.artifact === 'fallback' && !app.capability.profilesets}
+        <Banner kind="info" title="Variants run one at a time">
           <p>
-            The single-threaded fallback compiles out the engine's variant support, so Compare
-            needs the threaded build. Quick Sim still works.
+            Compare runs each variant as an independent simulation on this engine.
+            Comparing many variants takes longer than on the threaded build.
           </p>
         </Banner>
       {/if}

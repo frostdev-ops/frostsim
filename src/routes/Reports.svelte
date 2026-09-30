@@ -20,7 +20,7 @@
   import { quickSettings } from '../lib/settings.svelte'
   import { run, startRun } from '../lib/job.svelte'
   import { activeEngineChannel } from '../lib/simc/versions'
-  import { reportEngineChannel } from '../lib/simc/report'
+  import { profilesetStatus, reportEngineChannel } from '../lib/simc/report'
   import { engineChannelLabel } from '../lib/simc/channel'
   let savedOutcome = $state<SimOutcome | null>(null)
   let reportError = $state('')
@@ -90,7 +90,7 @@
         if (detail?.id !== r.id) return
         const channel = reportEngineChannel(report)
         if (channel) detail = { ...r, engine: { ...r.engine, engineChannel: channel } }
-        savedOutcome = { jobId: r.id, request, report, profilesetStatus: { completed: report.profilesets.map(p => p.name), missing: [] }, inputWarnings: [], appElapsedSeconds: r.summary.elapsedSeconds ?? report.timings.engineElapsedSeconds, engineIdentity: r.engine.upstreamCommit ?? '', engineNotices: [], effectiveProfile: '', effectiveArgs: [], getRawJson: () => blob, getHtmlReport: () => null }
+        savedOutcome = { jobId: r.id, request, report, profilesetStatus: profilesetStatus((request.profilesets ?? []).map(p => p.id), report), inputWarnings: [], appElapsedSeconds: r.summary.elapsedSeconds ?? report.timings.engineElapsedSeconds, engineIdentity: r.engine.upstreamCommit ?? '', engineNotices: [], effectiveProfile: '', effectiveArgs: [], getRawJson: () => blob, getHtmlReport: () => null }
       } catch { reportError = 'The saved detail could not be read.' }
     }
   }
