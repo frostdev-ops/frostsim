@@ -48,7 +48,7 @@ const journalItems = Map.groupBy(await csv('JournalEncounterItem'), row => row.J
 const roots = Map.groupBy(await csv('ItemXBonusTree'), row => row.ItemID);
 const nodes = Map.groupBy(await csv('ItemBonusTreeNode'), row => row.ParentItemBonusTreeID);
 const itemContexts = Map.groupBy(await csv('ItemCreationContext'), row => row.ItemCreationContextGroupID);
-const catalogId = `${build}-${lock.expected.clientDataHotfixHash.slice(0, 12)}-${lock.upstream.commit.slice(0, 7)}`;
+const catalogId = `${engineChannel}-${build}-${lock.expected.clientDataHotfixHash.slice(0, 12)}-${lock.upstream.commit.slice(0, 7)}`;
 const items = JSON.parse(readFileSync(`public/catalogs/${catalogId}/items.json`, 'utf8'));
 const equipmentById = new Map(items.id.map((id, i) => [id, [2, 4].includes(items.itemClass[i]) && items.invType[i] > 0]));
 const difficulties = { lfr: 4, normal: 3, heroic: 5, mythic: 6 };

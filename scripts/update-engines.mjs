@@ -27,7 +27,7 @@ export class GateError extends Error {}
 
 async function github(path) {
   const response = await fetch(`${api}${path}`, {
-    headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'frostsim-engine-updater' },
+    headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'frostsim-engine-updater', 'Cache-Control': 'no-cache' },
     signal: AbortSignal.timeout(30_000),
   });
   if (!response.ok) throw new Error(`GitHub ${path}: HTTP ${response.status}`);
@@ -46,16 +46,22 @@ export function pickGreenRun(runs = []) {
 }
 
 /**
- * The listing is intermittently stale (it has served runs from weeks back, 2026-09-23), so a pick
- * older than `floor` is retried before the run concludes there is nothing new.
+ * A changing, documented date range avoids the stale unbounded listing cache. Read bounded pages
+ * and refuse an older response: a first channel pack must never silently skip a stale CI feed.
  */
-export async function discover(floor = 0, attempts = 3) {
+export async function discover(floor = 0, attempts = 3, gh = github, sleep = ms => new Promise(resolve => setTimeout(resolve, ms))) {
   for (let attempt = 1; ; attempt++) {
-    const ci = await github('/actions/workflows/main.yml/runs?branch=midnight&event=push&per_page=50');
-    const tested = pickGreenRun(ci.workflow_runs);
-    if (!tested) throw new Error('No successful upstream midnight CI run was available');
-    if (Date.parse(tested.created_at) >= floor || attempt >= attempts) return { ref: tested.head_sha, ciUrl: tested.html_url };
-    await new Promise(resolve => setTimeout(resolve, 20_000));
+    const created = encodeURIComponent(`${new Date(floor).toISOString()}..${new Date().toISOString()}`);
+    const runs = [];
+    for (let page = 1; page <= 3; page++) {
+      const ci = await gh(`/actions/workflows/main.yml/runs?branch=midnight&event=push&status=success&per_page=100&page=${page}&created=${created}`);
+      runs.push(...(ci.workflow_runs ?? []));
+      if ((ci.workflow_runs ?? []).length < 100) break;
+    }
+    const tested = pickGreenRun(runs.filter(run => Date.parse(run.created_at) >= floor));
+    if (tested) return { ref: tested.head_sha, ciUrl: tested.html_url };
+    if (attempt >= attempts) throw new Error('No successful upstream midnight CI run at or after the locked/published source was available');
+    await sleep(20_000);
   }
 }
 
