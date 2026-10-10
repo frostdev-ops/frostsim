@@ -24,6 +24,7 @@
   import { parseAddonExport } from '../lib/import/character'
   import type { PlayerDetail as Detail } from '../lib/simc/detail'
   import { withPlayerScopedLines } from '../lib/simc/options'
+  import { presetForProfileLines, withoutPresetLines } from '../lib/simc/presets'
 
   const character = $derived(activeCharacter())
   const stored = $derived(activeStored())
@@ -86,7 +87,7 @@
       ...(setup ? { items: setup.items, talents: setup.talents ?? character.talents } : {}),
     }
     const lines = withPlayerScopedLines(
-      [...(setup?.extraProfileLines ?? []), ...(quickSettings.extraProfileLines() ?? [])],
+      [...withoutPresetLines(setup?.extraProfileLines ?? []), ...(quickSettings.extraProfileLines() ?? [])],
       Object.entries(setup?.consumables ?? {}).map(([key, value]) => `${key}=${value}`),
     )
     // One character: exactly the single-actor request as before. More: one block each (multi-actor.ts).
@@ -132,7 +133,8 @@
     if (!outcome || !resultCharacter) return
     openDraft(resultCharacter, 'quick')
     const opts = outcome.report.options
-    quickSettings.apply({ fightStyle: opts.fightStyle as typeof quickSettings.fightStyle, maxTime: opts.maxTime, targets: opts.desiredTargets })
+    const fightStyle = opts.fightStyle as typeof quickSettings.fightStyle
+    quickSettings.apply({ fightStyle, presetId: presetForProfileLines(fightStyle, outcome.request.extraProfileLines)?.id, maxTime: opts.maxTime, targets: opts.desiredTargets })
     setup = { characterId: stored?.id ?? null, label: 'Previous result', items: Object.fromEntries(resultCharacter.equipped.map((item) => [item.slot, item])), talents: resultCharacter.talents, extraProfileLines: outcome.request.extraProfileLines }
     settingsOpen = true
   }

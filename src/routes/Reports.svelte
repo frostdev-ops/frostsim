@@ -26,6 +26,7 @@
   import { activeEngineChannel } from '../lib/simc/versions'
   import { profilesetStatus, reportEngineChannel } from '../lib/simc/report'
   import { engineChannelLabel } from '../lib/simc/channel'
+  import { presetForProfileLines } from '../lib/simc/presets'
   let savedOutcome = $state<SimOutcome | null>(null)
   let reportError = $state('')
   function editSaved(): void {
@@ -34,7 +35,7 @@
     const character = request.characterSnapshot ?? parseAddonExport(request.profile)
     openDraft(character, 'quick')
     quickSettings.restoreDefaults()
-    quickSettings.apply({ ...request.settings, accuracyMode: request.accuracy.mode === 'targetError' ? 'targetError' : request.accuracy.mode === 'iterations' ? 'iterations' : 'script', ...request.accuracy })
+    quickSettings.apply({ ...request.settings, presetId: presetForProfileLines(request.settings.fightStyle, request.extraProfileLines)?.id, accuracyMode: request.accuracy.mode === 'targetError' ? 'targetError' : request.accuracy.mode === 'iterations' ? 'iterations' : 'script', ...request.accuracy })
     sendSetup({ characterId: null, label: detail?.title ?? 'Saved setup', items: Object.fromEntries(character.equipped.map(item => [item.slot, item])), talents: character.talents, extraProfileLines: request.extraProfileLines, settings: quickSettings.snapshot() })
     run.outcome = null
     navigate('quick')
