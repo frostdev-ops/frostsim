@@ -141,9 +141,18 @@ export type PortableCheck =
   | { ok: true; file: PortableFile }
   | { ok: false; reason: string }
 
+export function serializePortable(file: PortableFile): string {
+  const text = JSON.stringify(file, null, 2)
+  // shortcut: portable files are bounded to 8 MiB; larger libraries need a multipart format.
+  if (new TextEncoder().encode(text).byteLength > MAX_PORTABLE_BYTES) {
+    throw Error('This export exceeds the 8 MB portable-file limit. Export reports separately, or download their original JSON from report details. Your saved work is unchanged.')
+  }
+  return text
+}
+
 /** Validates untrusted portable file; rejects before touching payload so oversized/foreign file cannot cost anything (P11.4). */
 export function readPortable(text: string): PortableCheck {
-  if (text.length > MAX_PORTABLE_BYTES) {
+  if (text.length > MAX_PORTABLE_BYTES || new TextEncoder().encode(text).byteLength > MAX_PORTABLE_BYTES) {
     const mb = Math.round(MAX_PORTABLE_BYTES / 1024 / 1024)
     return { ok: false, reason: `File is larger than the ${mb} MB import limit.` }
   }

@@ -7,8 +7,8 @@
   import { fmtBytes, fmtDateTime, fmtInt, fmtPct, fmtRelative, titleCase } from '../lib/format'
   import { href, navigate, router } from '../lib/router.svelte'
   import {
-    engineCompatibility, makePortable, MAX_PORTABLE_BYTES, readPortable, readPortableCharacter, redactReport, TOOL_LABELS,
-    type StoredReport, type StoredSetup, type ToolId,
+    engineCompatibility, makePortable, MAX_PORTABLE_BYTES, readPortable, readPortableCharacter, redactReport, serializePortable, TOOL_LABELS,
+    type PortableFile, type StoredReport, type StoredSetup, type ToolId,
   } from '../lib/store/records'
   import * as db from '../lib/store/db'
   import { readLibraryImport, type LibraryImport } from '../lib/store/history-import'
@@ -170,15 +170,23 @@
   async function exportOne(r: StoredReport, anonymous = false): Promise<void> {
     const record = anonymous ? redactReport(r) : r
     const raw = record.hasRaw ? await loadRaw(record.id) : null
-    download(
+    if (record.hasRaw && raw === null) { toast('bad', 'The raw report could not be read. Export an anonymous summary instead; your saved work is unchanged.'); return }
+    downloadPortable(
       `${record.title.replace(/[^\w-]+/g, '-').toLowerCase()}.frostsim.json`,
-      JSON.stringify(makePortable('report', { record, rawReport: raw }, record.engine, anonymous), null, 2),
+      makePortable('report', { record, rawReport: raw }, record.engine, anonymous),
     )
+  }
+
+  function downloadPortable(name: string, file: PortableFile): void {
+    try { download(name, serializePortable(file)) }
+    catch (error) { toast('bad', error instanceof Error ? error.message : 'The export could not be created.') }
   }
 
   async function duplicate(r: StoredReport): Promise<void> {
     try {
-      const library = readLibraryImport(makePortable('report', { record: { ...$state.snapshot(r), title: `${r.title} (copy)`, pinned: false }, rawReport: r.hasRaw ? await loadRaw(r.id) : null }))
+      const rawReport = r.hasRaw ? await loadRaw(r.id) : null
+      if (r.hasRaw && rawReport === null) throw Error('The raw report could not be read. Export an anonymous summary instead; your saved work is unchanged.')
+      const library = readLibraryImport(makePortable('report', { record: { ...$state.snapshot(r), title: `${r.title} (copy)`, pinned: false }, rawReport }))
       const out = await db.importLibrary(library)
       if (!out.ok) { toast('bad', storageMessage(out.failure)); return }
       await loadLibrary()
@@ -193,7 +201,10 @@
 
   // One export path, shared with the reload-required banner: a user in that
   // state must be able to keep their work, and two implementations would drift.
-  const exportAll = exportEverything
+  async function exportAll(): Promise<void> {
+    const result = await exportEverything()
+    if (!result.ok) toast('bad', result.reason)
+  }
 
   async function onImport(event: Event): Promise<void> {
     const input = event.target as HTMLInputElement
@@ -310,7 +321,7 @@
   {#if ordinarySetups.length}
     <section class="panel stack-sm">
       <h2>Saved setups</h2>
-      <ul class="plain">{#each ordinarySetups as setup (setup.id)}<li class="row"><span class="grow">{setup.label} · {TOOL_LABELS[setup.tool]}</span><button class="sm" onclick={() => setupOffer = setup}>Open</button><button class="ghost sm" onclick={() => download('frostsim-setup.json', JSON.stringify(makePortable('setup', setup), null, 2))}>Export</button></li>{/each}</ul>
+      <ul class="plain">{#each ordinarySetups as setup (setup.id)}<li class="row"><span class="grow">{setup.label} · {TOOL_LABELS[setup.tool]}</span><button class="sm" onclick={() => setupOffer = setup}>Open</button><button class="ghost sm" onclick={() => downloadPortable('frostsim-setup.json', makePortable('setup', setup))}>Export</button></li>{/each}</ul>
     </section>
   {/if}
 

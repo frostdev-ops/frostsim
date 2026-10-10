@@ -12,7 +12,7 @@
   } from '../lib/app.svelte'
   import { fmtDateTime } from '../lib/format'
   import { href, navigate, router } from '../lib/router.svelte'
-  import { makePortable, readPortable, readPortableCharacter, redactCharacter } from '../lib/store/records'
+  import { makePortable, readPortable, readPortableCharacter, redactCharacter, serializePortable } from '../lib/store/records'
   import { encodeShare } from '../lib/store/share'
   import Banner from '../lib/ui/Banner.svelte'
   import CatalogStatus from '../lib/ui/CatalogStatus.svelte'
@@ -182,10 +182,10 @@
   function exportCharacter(redact: boolean): void {
     if (!character) return
     const payload = redact ? redactCharacter(character) : character
-    download(
+    try { download(
       `${(payload.name || 'character').toLowerCase()}.frostsim.json`,
-      JSON.stringify(makePortable('character', payload, undefined, redact), null, 2),
-    )
+      serializePortable(makePortable('character', payload, undefined, redact)),
+    ) } catch (error) { toast('bad', error instanceof Error ? error.message : 'The export could not be created.') }
   }
 
   async function shareLink(): Promise<void> {
