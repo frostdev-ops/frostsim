@@ -28,6 +28,7 @@
 {:else if app.catalogState === 'failed'}
   <Banner kind="warn" title="Game data is not available">
     <p>{app.catalogError}</p>
+    <button class="sm" onclick={() => ensureCatalog(true)}>Retry game data</button>
     <p>
       Items show the addon's own labels instead of resolved names and item levels, equipment
       legality cannot be checked before a run, and catalog item search is unavailable. Simulation

@@ -170,7 +170,7 @@ export default defineConfig({
     headers: csp ? { ...crossOriginIsolation, 'Content-Security-Policy': csp } : crossOriginIsolation,
   },
   test: {
-    // release/ has tests with repo-root imports; keep source tests, exclude release.
-    exclude: [...configDefaults.exclude, 'release/**', 'vendor/**'],
+    // Generated release and validation archives contain copies of the source tests.
+    exclude: [...configDefaults.exclude, 'release/**', 'build/**', 'vendor/**'],
   },
 })
