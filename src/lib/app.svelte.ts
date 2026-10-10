@@ -413,9 +413,10 @@ export function catalogClient(): SafeCatalog | null {
   } as SafeCatalog
 }
 
-export async function ensureCatalog(): Promise<SafeCatalog | null> {
+export async function ensureCatalog(retry = false): Promise<SafeCatalog | null> {
   if (app.catalogState === 'ready') return catalogClient()
   if (loading) return loading
+  if (app.catalogState === 'failed' && !retry) return null
 
   const baseUrl = catalogBaseUrl()
   if (!baseUrl) {
@@ -424,6 +425,7 @@ export async function ensureCatalog(): Promise<SafeCatalog | null> {
     return null
   }
   app.catalogState = 'loading'
+  app.catalogError = ''
 
   loading = (async (): Promise<SafeCatalog | null> => {
     const c = CatalogClient.create()

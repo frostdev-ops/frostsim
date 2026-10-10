@@ -43,7 +43,7 @@
     const id = stored?.id ?? null
     let cancelled = false
     tree = null; model = null; selection = null; specs = []; loadError = ''; pasteError = ''
-    if (!c) return
+    if (!c || !app.capabilityChecked) return
     const cid = classId(c)
     if (!cid) { loadError = 'The character’s class could not be identified.'; return }
     loading = true

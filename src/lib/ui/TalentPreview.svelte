@@ -13,6 +13,7 @@
   $effect(() => {
     const c = character, text = talents
     let cancelled = false
+    if (!app.capabilityChecked) return
     void (async () => {
       try {
         const client = await ensureCatalog()
