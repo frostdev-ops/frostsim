@@ -647,7 +647,7 @@
 
     let setup: NonNullable<typeof lastSearch>
     try {
-      setup = repeat && lastSearch ? lastSearch : $state.snapshot({
+      setup = repeat && lastSearch ? $state.snapshot(lastSearch) : $state.snapshot({
         selection: effectiveSelection,
         options: opts,
         plan: stagePlan,
