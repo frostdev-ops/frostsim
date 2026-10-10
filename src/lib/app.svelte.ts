@@ -18,7 +18,7 @@ import { uniqueLoadoutNames, type ImportedCharacter, type ItemInstance } from '.
 import * as db from './store/db'
 import { readSearchCheckpoint, type SearchCheckpoint } from './store/search-checkpoint'
 import {
-  makePortable, newId, type EngineIdentity, type RawBlob, type ReportSummary,
+  makePortable, newId, portableSetup, type EngineIdentity, type RawBlob, type ReportSummary,
   type StoredCharacter, type StoredReport, type StoredSetup, type ToolId,
 } from './store/records'
 
@@ -701,6 +701,7 @@ export async function exportEverything(): Promise<ExportOutcome> {
       {
         characters: app.characters,
         reports,
+        setups: app.setups.map(setup => portableSetup($state.snapshot(setup))),
         draftCharacter: app.draft ? $state.snapshot(app.draft) : undefined,
         advancedDraft: { ...expert },
       },
@@ -727,28 +728,36 @@ export async function loadRaw(id: string): Promise<string | null> {
   return out.value?.text ?? null
 }
 
-export async function deleteReport(id: string): Promise<StoredReport | null> {
+export interface DeletedReport { record: StoredReport; blob?: RawBlob }
+
+export async function deleteReport(id: string): Promise<DeletedReport | null> {
   const record = app.reports.find((r) => r.id === id) ?? null
-  await db.del('reports', id)
-  await db.del('blobs', id)
+  const out = await db.takeReport(id)
+  if (!out.ok) { noteFailure(out.failure); toast('bad', storageMessage(out.failure)); return null }
   app.reports = app.reports.filter((r) => r.id !== id)
   void refreshUsage()
-  return record ? $state.snapshot(record) as StoredReport : null
+  const removed = out.value.record ?? (record ? $state.snapshot(record) as StoredReport : null)
+  return removed ? { record: { ...removed, hasRaw: !!out.value.blob }, blob: out.value.blob } : null
 }
 
 /** Puts a deleted report back, for undo (P11.2). */
-export async function restoreReport(record: StoredReport): Promise<void> {
-  await db.put('reports', plain(record))
+export async function restoreReport(record: StoredReport, blob?: RawBlob): Promise<boolean> {
+  const out = blob
+    ? await db.importLibrary({ characters: [], reports: [plain(record)], blobs: [plain(blob)], setups: [] })
+    : await db.put('reports', plain(record))
+  if (!out.ok) { noteFailure(out.failure); toast('bad', storageMessage(out.failure)); return false }
   app.reports = [record, ...app.reports].sort((a, b) => b.createdAt - a.createdAt)
   void refreshUsage()
+  return true
 }
 
-export async function updateReport(id: string, patch: Partial<StoredReport>): Promise<void> {
+export async function updateReport(id: string, patch: Partial<StoredReport>): Promise<boolean> {
   const rec = app.reports.find((r) => r.id === id)
-  if (!rec) return
+  if (!rec) return false
+  const out = await db.put('reports', { ...$state.snapshot(rec), ...patch })
+  if (!out.ok) { noteFailure(out.failure); toast('bad', storageMessage(out.failure)); return false }
   Object.assign(rec, patch)
-  const out = await db.put('reports', $state.snapshot(rec))
-  if (!out.ok) noteFailure(out.failure)
+  return true
 }
 
 // --- setups ------------------------------------------------------------------

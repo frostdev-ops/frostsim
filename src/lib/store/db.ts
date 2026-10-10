@@ -22,7 +22,7 @@ export function classifyStorageError(err: unknown): StorageFailure {
   if (name === 'SecurityError' || name === 'InvalidStateError') {
     return { kind: 'unavailable', message }
   }
-  if (name === 'VersionError' || name === 'AbortError') return { kind: 'blocked', message }
+  if (name === 'VersionError') return { kind: 'blocked', message }
   // Invalid keys and uncloneable input are write bugs, not damaged data.
   if (name === 'DataError' || name === 'DataCloneError') return { kind: 'invalid-record', message }
   return { kind: 'error', message }
@@ -45,7 +45,7 @@ function openDb(): Promise<IDBDatabase> {
       resolve(req.result)
     }
     req.onerror = () => reject(req.error)
-    req.onblocked = () => reject(new DOMException('another tab holds an older database', 'AbortError'))
+    req.onblocked = () => reject(new DOMException('another tab holds an older database', 'VersionError'))
   }).catch((err) => { dbPromise = null; throw err })
   return dbPromise
 }
@@ -84,13 +84,12 @@ function run<T>(
           // A request may succeed before a quota error aborts the transaction.
           tx.oncomplete = () => resolve({ ok: true, value: req.result })
           tx.onabort = () => resolve({ ok: false, failure: classifyStorageError(tx.error ?? req.error ?? new DOMException('Storage transaction aborted', 'AbortError')) })
-          tx.onerror = () => resolve({ ok: false, failure: classifyStorageError(tx.error ?? req.error) })
+          tx.onerror = () => resolve({ ok: false, failure: classifyStorageError(tx.error ?? req.error ?? new DOMException('Storage transaction aborted', 'AbortError')) })
         } catch (err) {
           resolve({ ok: false, failure: classifyStorageError(err) })
           return
         }
         req.onerror = () => {
-          req.transaction?.abort()
           resolve({ ok: false, failure: classifyStorageError(req.error) })
         }
       }),
@@ -117,6 +116,55 @@ export function all<T>(store: StoreName, index?: string): Promise<Outcome<T[]>> 
 
 export function clear(store: StoreName): Promise<Outcome<undefined>> {
   return run<undefined>(store, 'readwrite', (s) => s.clear() as IDBRequest<undefined>)
+}
+
+/** Keep the original raw report for Undo and delete both records as one operation. */
+export async function takeReport(id: string): Promise<Outcome<{ record?: import('./records').StoredReport; blob?: import('./records').RawBlob }>> {
+  try {
+    const db = await openDb()
+    return await new Promise(resolve => {
+      const tx = db.transaction(['reports', 'blobs'], 'readwrite')
+      const record = tx.objectStore('reports').get(id)
+      const blob = tx.objectStore('blobs').get(id)
+      tx.objectStore('reports').delete(id)
+      tx.objectStore('blobs').delete(id)
+      tx.oncomplete = () => resolve({ ok: true, value: { record: record.result, blob: blob.result } })
+      tx.onabort = () => resolve({ ok: false, failure: classifyStorageError(tx.error ?? new DOMException('Delete aborted', 'AbortError')) })
+      tx.onerror = () => resolve({ ok: false, failure: classifyStorageError(tx.error ?? new DOMException('Delete aborted', 'AbortError')) })
+    })
+  } catch (error) { return { ok: false, failure: classifyStorageError(error) } }
+}
+
+export async function clearHistory(): Promise<Outcome<undefined>> {
+  try {
+    const db = await openDb()
+    return await new Promise(resolve => {
+      const tx = db.transaction(['reports', 'blobs'], 'readwrite')
+      tx.objectStore('reports').clear()
+      tx.objectStore('blobs').clear()
+      tx.oncomplete = () => resolve({ ok: true, value: undefined })
+      tx.onabort = () => resolve({ ok: false, failure: classifyStorageError(tx.error ?? new DOMException('Clear aborted', 'AbortError')) })
+      tx.onerror = () => resolve({ ok: false, failure: classifyStorageError(tx.error ?? new DOMException('Clear aborted', 'AbortError')) })
+    })
+  } catch (error) { return { ok: false, failure: classifyStorageError(error) } }
+}
+
+/** A failed backup restore commits nothing, including raw blobs and character links. */
+export async function importLibrary(library: import('./history-import').LibraryImport): Promise<Outcome<undefined>> {
+  try {
+    const db = await openDb()
+    return await new Promise(resolve => {
+      const tx = db.transaction(['characters', 'reports', 'blobs', 'setups'], 'readwrite')
+      tx.oncomplete = () => resolve({ ok: true, value: undefined })
+      tx.onabort = () => resolve({ ok: false, failure: classifyStorageError(tx.error ?? new DOMException('Import aborted', 'AbortError')) })
+      tx.onerror = () => resolve({ ok: false, failure: classifyStorageError(tx.error ?? new DOMException('Import aborted', 'AbortError')) })
+      try {
+        for (const store of ['characters', 'reports', 'blobs', 'setups'] as const) {
+          for (const record of library[store]) tx.objectStore(store).add(record)
+        }
+      } catch (error) { tx.abort(); resolve({ ok: false, failure: classifyStorageError(error) }) }
+    })
+  } catch (error) { return { ok: false, failure: classifyStorageError(error) } }
 }
 
 export interface StorageUsage {

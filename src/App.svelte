@@ -16,7 +16,7 @@
   import { fmtInt } from './lib/format'
   import { installShortcuts, SHORTCUT_HINT } from './lib/shortcuts.svelte'
   import { initMedia, media } from './lib/media.svelte'
-  import { TOOL_LABELS } from './lib/store/records'
+  import { readPortableCharacter, TOOL_LABELS } from './lib/store/records'
   import { STATUS_LABELS, takeInterrupted, type InterruptedJob } from './lib/job.svelte'
   import { classLabel } from './lib/import/character'
   import { titleCase } from './lib/format'
@@ -132,7 +132,8 @@
         shareError = 'That link holds a saved setup or report; character links only, for now.'
         return
       }
-      shareOffer = { character: check.file.payload as ImportedCharacter }
+      try { shareOffer = { character: readPortableCharacter(check.file.payload) } }
+      catch (error) { shareError = error instanceof Error ? error.message : 'The shared character could not be read.' }
     })
   })
 
