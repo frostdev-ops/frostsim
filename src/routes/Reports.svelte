@@ -1,23 +1,27 @@
 <script lang="ts">
+  import { tick } from 'svelte'
   // P11.2: local history; summaries from stored record; raw engine report read on demand only.
   import {
-    app, deleteReport, engineIdentity, exportEverything, loadRaw, openDraft, restoreReport, toast, updateReport,
+    activeCharacter, app, deleteReport, engineIdentity, exportEverything, focusScope, loadLibrary, loadRaw, openDraft, restoreReport, storageMessage, toast, updateReport, type DeletedReport,
   } from '../lib/app.svelte'
   import { fmtBytes, fmtDateTime, fmtInt, fmtPct, fmtRelative, titleCase } from '../lib/format'
   import { href, navigate, router } from '../lib/router.svelte'
   import {
-    engineCompatibility, makePortable, readPortable, TOOL_LABELS,
-    type StoredReport, type ToolId,
+    engineCompatibility, makePortable, MAX_PORTABLE_BYTES, readPortable, readPortableCharacter, redactReport, TOOL_LABELS,
+    type StoredReport, type StoredSetup, type ToolId,
   } from '../lib/store/records'
   import * as db from '../lib/store/db'
+  import { readLibraryImport, type LibraryImport } from '../lib/store/history-import'
   import Banner from '../lib/ui/Banner.svelte'
   import CatalogStatus from '../lib/ui/CatalogStatus.svelte'
   import Dialog from '../lib/ui/Dialog.svelte'
   import ReportResult from '../lib/ui/ReportResult.svelte'
-  import { loadReportSummary, type SimOutcome, type SimRequest } from '../lib/simc/job'
-  import { parseAddonExport } from '../lib/import/character'
+  import { loadReportSummary, validateRequest, type SimOutcome, type SimRequest } from '../lib/simc/job'
+  import { GEAR_SLOTS, parseAddonExport } from '../lib/import/character'
+  import { buildProfile } from '../lib/import/serialize'
   import { sendSetup } from '../lib/handoff.svelte'
-  import { quickSettings } from '../lib/settings.svelte'
+  import { advancedSettings, compareSettings, crestSettings, dropSettings, gearSettings, quickSettings, type SettingsSnapshot } from '../lib/settings.svelte'
+  import { expert, persistDrafts, useSpec, type ExpertDraft } from '../lib/advanced.svelte'
   import { run, startRun } from '../lib/job.svelte'
   import { activeEngineChannel } from '../lib/simc/versions'
   import { profilesetStatus, reportEngineChannel } from '../lib/simc/report'
@@ -38,13 +42,48 @@
 
   let query = $state('')
   let toolFilter = $state<ToolId | 'all'>('all')
-  let undo = $state<StoredReport | null>(null)
+  let undo = $state<DeletedReport | null>(null)
   let undoTimer: ReturnType<typeof setTimeout> | null = null
   let detail = $state<StoredReport | null>(null)
   let detailRaw = $state<string | null>(null)
   let detailLoading = $state(false)
   let confirmClear = $state(false)
   let importInput: HTMLInputElement | undefined = $state()
+  let pendingImport = $state<LibraryImport | null>(null)
+  let importing = $state(false)
+  let setupOffer = $state<StoredSetup | null>(null)
+  let renameOffer = $state<StoredReport | null>(null)
+  let renameValue = $state('')
+  const setupTools = { quick: quickSettings, compare: compareSettings, gear: gearSettings, droptimizer: dropSettings, crests: crestSettings, advanced: advancedSettings }
+  const expertFields = ['raw', 'header', 'preActor', 'postActor', 'footer', 'extraOptions'] as const
+  const ordinarySetups = $derived(app.setups.filter(setup => !setup.checkpoint))
+
+  function expertDraft(settings: unknown): settings is ExpertDraft {
+    if (!settings || typeof settings !== 'object') return false
+    const value = settings as Record<string, unknown>
+    return (value.mode === 'raw' || value.mode === 'character') && expertFields.every(key => typeof value[key] === 'string')
+  }
+
+  function canUseSetup(setup: StoredSetup): boolean {
+    return Object.hasOwn(setupTools, setup.tool) && !!setup.settings && typeof setup.settings === 'object'
+      && (setup.tool === 'advanced' && expertDraft(setup.settings)
+        || Object.entries(quickSettings.snapshot()).some(([key, value]) => Object.hasOwn(setup.settings as object, key)
+          && typeof (setup.settings as Record<string, unknown>)[key] === typeof value))
+  }
+
+  function useSavedSetup(): void {
+    const setup = setupOffer
+    if (!setup || !canUseSetup(setup)) return
+    focusScope(setup.tool)
+    if (setup.tool === 'advanced' && expertDraft(setup.settings)) {
+      useSpec(activeCharacter()?.spec)
+      expert.mode = setup.settings.mode
+      for (const key of expertFields) expert[key] = setup.settings[key]
+      if (!persistDrafts()) toast('bad', 'The Advanced draft is open in this tab but could not be saved on this device.')
+    } else setupTools[setup.tool].apply(setup.settings as Partial<SettingsSnapshot>)
+    setupOffer = null
+    navigate(setup.tool)
+  }
 
   const current = $derived(engineIdentity())
 
@@ -82,9 +121,15 @@
     if (detail?.id !== r.id) return
     detailRaw = raw
     detailLoading = false
-    const request = r.requestSnapshot as SimRequest | null
-    if (raw && request?.schemaVersion === 1 && typeof request.profile === 'string' && request.settings && request.accuracy) {
+    const storedRequest = r.requestSnapshot as SimRequest | null
+    if (raw && storedRequest?.schemaVersion === 1) {
       try {
+        if (validateRequest(storedRequest, 64).length) throw Error('Invalid saved request')
+        // Rebuild validated display fields with the frozen gear/talents, preserving edited setups.
+        const snapshot = storedRequest.characterSnapshot
+        const displayProfile = snapshot ? buildProfile(snapshot, { talents: snapshot.talents,
+          items: Object.fromEntries(GEAR_SLOTS.map(slot => [slot, snapshot.equipped.find(item => item.slot === slot) ?? null])) }) : storedRequest.profile
+        const request = { ...storedRequest, characterSnapshot: readPortableCharacter({ raw: displayProfile }) }
         const blob = new Blob([raw], { type: 'application/json' })
         const report = await loadReportSummary(blob)
         if (detail?.id !== r.id) return
@@ -103,6 +148,16 @@
     undoTimer = setTimeout(() => (undo = null), 9000)
   }
 
+  async function togglePinned(r: StoredReport, event: MouseEvent): Promise<void> {
+    const focused = document.activeElement === event.currentTarget
+    await updateReport(r.id, { pinned: !r.pinned })
+    await tick()
+    // Moving between History and Pinned recreates the row and its focused button.
+    if (focused && document.activeElement === document.body) {
+      document.getElementById(`report-pin-${r.id}`)?.focus()
+    }
+  }
+
   function download(name: string, text: string, type = 'application/json'): void {
     const url = URL.createObjectURL(new Blob([text], { type }))
     const a = document.createElement('a')
@@ -112,12 +167,28 @@
     URL.revokeObjectURL(url)
   }
 
-  async function exportOne(r: StoredReport): Promise<void> {
-    const raw = r.hasRaw ? await loadRaw(r.id) : null
+  async function exportOne(r: StoredReport, anonymous = false): Promise<void> {
+    const record = anonymous ? redactReport(r) : r
+    const raw = record.hasRaw ? await loadRaw(record.id) : null
     download(
-      `${r.title.replace(/[^\w-]+/g, '-').toLowerCase()}.frostsim.json`,
-      JSON.stringify(makePortable('report', { record: r, rawReport: raw }, r.engine), null, 2),
+      `${record.title.replace(/[^\w-]+/g, '-').toLowerCase()}.frostsim.json`,
+      JSON.stringify(makePortable('report', { record, rawReport: raw }, record.engine, anonymous), null, 2),
     )
+  }
+
+  async function duplicate(r: StoredReport): Promise<void> {
+    try {
+      const library = readLibraryImport(makePortable('report', { record: { ...$state.snapshot(r), title: `${r.title} (copy)`, pinned: false }, rawReport: r.hasRaw ? await loadRaw(r.id) : null }))
+      const out = await db.importLibrary(library)
+      if (!out.ok) { toast('bad', storageMessage(out.failure)); return }
+      await loadLibrary()
+      toast('good', 'Report copied on this device.')
+    } catch (error) { toast('bad', error instanceof Error ? error.message : 'The report could not be copied.') }
+  }
+
+  async function renameReport(): Promise<void> {
+    if (!renameOffer || !renameValue.trim()) return
+    if (await updateReport(renameOffer.id, { title: renameValue.trim() })) renameOffer = null
   }
 
   // One export path, shared with the reload-required banner: a user in that
@@ -125,17 +196,34 @@
   const exportAll = exportEverything
 
   async function onImport(event: Event): Promise<void> {
-    const file = (event.target as HTMLInputElement).files?.[0]
-    if (!file) return
-    const check = readPortable(await file.text())
-    if (!check.ok) { toast('bad', check.reason); return }
-    toast('info', `Read a ${check.file.kind} export from ${fmtDateTime(check.file.exportedAt)}.`)
-    if (check.file.kind === 'character') navigate('character')
+    const input = event.target as HTMLInputElement
+    const file = input.files?.[0]
+    input.value = ''
+    if (!file || importing) return
+    if (file.size > MAX_PORTABLE_BYTES) { toast('bad', 'This export exceeds the 8 MB import limit.'); return }
+    try {
+      const check = readPortable(await file.text())
+      if (!check.ok) { toast('bad', check.reason); return }
+      pendingImport = readLibraryImport(check.file)
+    } catch (error) { toast('bad', error instanceof Error ? error.message : 'Could not read this export.'); }
+  }
+
+  async function acceptImport(): Promise<void> {
+    if (!pendingImport || importing) return
+    const library = $state.snapshot(pendingImport)
+    importing = true
+    const out = await db.importLibrary(library)
+    importing = false
+    if (!out.ok) { toast('bad', storageMessage(out.failure)); return }
+    const count = library.reports.length + library.characters.length + library.setups.length
+    pendingImport = null
+    await loadLibrary()
+    toast('good', `Imported ${count} saved ${count === 1 ? 'record' : 'records'} on this device.`)
   }
 
   async function clearAll(): Promise<void> {
-    await db.clear('reports')
-    await db.clear('blobs')
+    const out = await db.clearHistory()
+    if (!out.ok) { toast('bad', storageMessage(out.failure)); return }
     app.reports = []
     confirmClear = false
     toast('good', 'History cleared.')
@@ -151,6 +239,18 @@
       : undefined,
   )
 </script>
+
+{#if pendingImport}
+  <Dialog open={true} title="Import saved work" onclose={() => pendingImport = null}>
+    <div class="stack">
+      <p>{fmtInt(pendingImport.reports.length)} reports, {fmtInt(pendingImport.characters.length)} characters and {fmtInt(pendingImport.setups.length)} setups.</p>
+      <ul class="small">{#each [...pendingImport.reports.map(record => record.title), ...pendingImport.characters.map(record => record.label), ...pendingImport.setups.map(record => record.label)].slice(0, 8) as label}<li>{label}</li>{/each}</ul>
+      <p class="small muted">Creates local copies and keeps your existing work. Character workspaces are rebuilt from the exported addon text; recovered drafts become saved records.</p>
+      {#if pendingImport.reports.some(report => !compat(report).compatible)}<p class="small">Some reports use another or unrecorded engine. Their original results stay intact; rerunning creates a new result.</p>{/if}
+      <div class="row-tight"><button class="primary" disabled={importing} onclick={() => void acceptImport()}>{importing ? 'Importing…' : 'Import saved work'}</button><button class="ghost" disabled={importing} onclick={() => pendingImport = null}>Cancel</button></div>
+    </div>
+  </Dialog>
+{/if}
 
 {#if savedOutcome}
   <div class="stack"><div><button class="ghost sm" onclick={() => { savedOutcome = null; detail = null; navigate('reports') }}>← All reports</button></div><ReportResult outcome={savedOutcome} onrerun={() => { const request = { ...savedOutcome!.request, engineChannel: activeEngineChannel }; navigate('quick'); void startRun({ tool: 'quick', title: detail?.title ?? 'Quick Sim', request }) }} onedit={editSaved} /></div>
@@ -174,9 +274,10 @@
             · <span title="The browser may evict this data when space runs low. Export anything you need to keep.">evictable</span>
           {/if}
         </p>
+        <p id="summary-export-note" class="xs muted">Anonymous summaries keep numbers and engine versions. They exclude names, notes, inputs and raw details.</p>
       </div>
       <div class="row-tight">
-        <button class="sm" onclick={() => importInput?.click()}>Import export…</button>
+        <button class="sm" disabled={importing} onclick={() => importInput?.click()}>Import export…</button>
         <input
           type="file"
           accept=".json,application/json"
@@ -184,7 +285,7 @@
           bind:this={importInput}
           onchange={onImport}
         />
-        <button class="sm" onclick={exportAll} disabled={!app.reports.length}>Export all</button>
+        <button class="sm" onclick={exportAll} disabled={!app.reports.length && !app.characters.length && !app.setups.length && !app.draft}>Export all</button>
       </div>
     </header>
 
@@ -206,15 +307,23 @@
 
   </section>
 
+  {#if ordinarySetups.length}
+    <section class="panel stack-sm">
+      <h2>Saved setups</h2>
+      <ul class="plain">{#each ordinarySetups as setup (setup.id)}<li class="row"><span class="grow">{setup.label} · {TOOL_LABELS[setup.tool]}</span><button class="sm" onclick={() => setupOffer = setup}>Open</button><button class="ghost sm" onclick={() => download('frostsim-setup.json', JSON.stringify(makePortable('setup', setup), null, 2))}>Export</button></li>{/each}</ul>
+    </section>
+  {/if}
+
   {#if undo}
     <Banner kind="info" title="Report deleted" live>
-      <p>“{undo.title}” was removed.</p>
+      <p>“{undo.record.title}” was removed.</p>
       {#snippet actions()}
         <button
           class="sm"
-          onclick={() => {
-            if (undo) void restoreReport(undo)
-            undo = null
+          onclick={async () => {
+            if (!undo) return
+            const removed = undo
+            if (await restoreReport(removed.record, removed.blob)) undo = null
           }}
         >Undo</button>
       {/snippet}
@@ -279,12 +388,16 @@
                   {/if}
                 </div>
                 <div class="row-tight actions">
+                  <button class="ghost sm" onclick={() => { renameOffer = rep; renameValue = rep.title }}>Rename</button>
+                  <button class="ghost sm" onclick={() => void duplicate(rep)}>Duplicate</button>
                   <button
+                    id={`report-pin-${rep.id}`}
                     class="ghost sm"
                     aria-pressed={rep.pinned}
-                    onclick={() => void updateReport(rep.id, { pinned: !rep.pinned })}
+                    onclick={(event) => void togglePinned(rep, event)}
                   >{rep.pinned ? 'Unpin' : 'Pin'}</button>
                   <button class="ghost sm" onclick={() => void exportOne(rep)}>Export</button>
+                  <button class="ghost sm" aria-describedby="summary-export-note" onclick={() => void exportOne(rep, true)}>Anonymous summary</button>
                   <button class="ghost sm danger" onclick={() => void remove(rep)}>Delete</button>
                 </div>
               </li>
@@ -396,6 +509,7 @@
         />
       </label>
 
+      {#if reportError}<p class="small" role="status">{reportError} The saved summary and raw download are still available.</p>{/if}
       {#if detail.hasRaw}
         <p class="xs muted">
           {#if detailLoading}
@@ -422,6 +536,20 @@
       </button>
     {/if}
   {/snippet}
+</Dialog>
+
+<Dialog open={!!setupOffer} title={setupOffer?.label ?? 'Saved setup'} onclose={() => setupOffer = null}>
+  {#if setupOffer}
+    <p>Use these {TOOL_LABELS[setupOffer.tool]} settings with the character selected on that screen. This replaces its current settings{expertDraft(setupOffer.settings) ? ' and Advanced text' : ''}. Export first to keep a copy.</p>
+    {#if !canUseSetup(setupOffer)}<p>This setup has no settings this build can apply. You can keep or export it.</p>{/if}
+    <details class="disclosure"><summary>Saved contents</summary><pre class="small mono">{JSON.stringify(setupOffer.settings, null, 2)}</pre></details>
+  {/if}
+  {#snippet footer()}<button onclick={() => void exportAll()}>Export current work</button><button onclick={() => setupOffer = null}>Cancel</button><button class="primary" disabled={!setupOffer || !canUseSetup(setupOffer)} onclick={useSavedSetup}>Use saved setup</button>{/snippet}
+</Dialog>
+
+<Dialog open={!!renameOffer} title="Rename report" onclose={() => renameOffer = null}>
+  <label class="field"><span>Title</span><input bind:value={renameValue} maxlength="200" /></label>
+  {#snippet footer()}<button onclick={() => renameOffer = null}>Cancel</button><button class="primary" disabled={!renameValue.trim()} onclick={() => void renameReport()}>Save title</button>{/snippet}
 </Dialog>
 
 <Dialog
@@ -470,12 +598,12 @@
     line-height: 1.2;
   }
   .big { font-size: var(--fs-lg); font-weight: 650; }
-  .actions { flex: none; }
+  .actions { flex: none; flex-wrap: wrap; }
   .warn-text { color: var(--warn); }
   .kv { display: grid; grid-template-columns: auto 1fr; gap: 0.3rem var(--s3); margin: 0; }
   .kv dt { color: var(--text-muted); white-space: nowrap; }
   .kv dd { margin: 0; }
-  @media (max-width: 44rem) {
+  @media (max-width: 60rem) {
     .report { flex-wrap: wrap; }
     .actions { width: 100%; justify-content: flex-end; }
   }

@@ -12,7 +12,7 @@
   } from '../lib/app.svelte'
   import { fmtDateTime } from '../lib/format'
   import { href, navigate, router } from '../lib/router.svelte'
-  import { makePortable, readPortable, redactCharacter } from '../lib/store/records'
+  import { makePortable, readPortable, readPortableCharacter, redactCharacter } from '../lib/store/records'
   import { encodeShare } from '../lib/store/share'
   import Banner from '../lib/ui/Banner.svelte'
   import CatalogStatus from '../lib/ui/CatalogStatus.svelte'
@@ -163,7 +163,8 @@
         parseError = 'That file holds a saved setup or report, not a character.'
         return
       }
-      await commitImport(check.file.payload as ImportedCharacter)
+      try { await commitImport(readPortableCharacter(check.file.payload)) }
+      catch (error) { parseError = error instanceof Error ? error.message : 'The character export could not be read.' }
       return
     }
     await ingest(text, file.name.replace(/\.[^.]+$/, ''))

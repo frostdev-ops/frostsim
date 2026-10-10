@@ -28,6 +28,16 @@ const report = { schemaVersion: 1, startedAt: new Date().toISOString(), sourceDi
 let server;
 let browser;
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+const waitForWorkerExit = async session => {
+  const deadline = Date.now() + 5000;
+  let workers;
+  do {
+    workers = (await session.send('Target.getTargets')).targetInfos.filter(t => t.type === 'worker');
+    if (!workers.length) break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  } while (Date.now() < deadline);
+  return workers;
+};
 try {
   assert.ok(existsSync(join(sourceDist, 'index.html')), 'build production frontend first');
   report.appIndexSha256 = hash(readFileSync(join(sourceDist, 'index.html')));
@@ -37,6 +47,8 @@ try {
     outfile: join(dist, '__ci__/suite.mjs'), define: { __ENGINE_COMPAT__: JSON.stringify(report.engineCompat), 'import.meta.env.DEV': 'false' } });
   await build({ entryPoints: [join(root, 'src/lib/simc/report-worker.ts')], bundle: true, format: 'esm', platform: 'browser', outfile: join(dist, '__ci__/report-worker.mjs') });
   writeFileSync(join(dist, '__ci__/index.html'), '<!doctype html><html><head><title>Frostsim CI engine harness</title></head><body><main>Production-policy engine validation</main></body></html>');
+  writeFileSync(join(dist, '__ci__/observer-child.js'), "setInterval(()=>{},1000); postMessage('child-ready');");
+  writeFileSync(join(dist, '__ci__/observer-parent.js'), "const child=new Worker('/__ci__/observer-child.js'); child.onmessage=()=>postMessage('parent-ready'); onmessage=()=>{ child.terminate(); self.close(); };");
   const registry = { schemaVersion: 3, packs: [], status: null, statusByChannel: { live: null, ptr: null } };
   const catalogs = {};
   for (const channel of channels) {
@@ -119,6 +131,9 @@ try {
   }
   browser = await chromium.launch({ headless: true, channel: 'chromium' });
   report.chromium = browser.version();
+  report.workerObservation = { mode: 'public Playwright Chromium controller and CDP target snapshots',
+    positiveControl: 'live tagged parent and child discovered after jobs, then shutdown to zero',
+    diagnosticRawObserver: 'preserved in ignored lifecycle-cdp snapshots; did not resolve strict all-worker failure' };
   const profile = readFileSync(join(root, 'tests/fixtures/addon-export-demonology.simc'), 'utf8');
   report.fixtureSha256 = hash(profile);
   report.helperSha256 = hash(readFileSync(join(dist, '__ci__/suite.mjs')));
@@ -130,6 +145,10 @@ try {
     const externalRequests = [];
     page.on('request', request => { if (new URL(request.url()).origin !== origin) externalRequests.push(request.url()); });
     page.setDefaultTimeout(180000);
+    const startObserverControl = () => page.evaluate(() => new Promise(resolve => {
+      globalThis.__observerParent = new Worker('/__ci__/observer-parent.js');
+      globalThis.__observerParent.onmessage = () => resolve(true);
+    }));
     let suite;
     try {
       const response = await page.goto(`${origin}/?engine=${channel}`);
@@ -139,6 +158,7 @@ try {
       await page.waitForSelector('main');
       assert.equal(await page.evaluate(() => crossOriginIsolated), true);
       await page.goto(`${origin}/__ci__/index.html?engine=${channel}`);
+      await startObserverControl();
       suite = await page.evaluate(async input => (await import('/__ci__/suite.mjs')).runSuite(input),
         { channel, variant, profile, catalogBase: catalogs[channel] });
       report.suites.push(suite);
@@ -146,6 +166,7 @@ try {
         const input = { channel, profile, catalogBase: catalogs[channel] };
         const prepared = await page.evaluate(async input => (await import('/__ci__/suite.mjs')).prepareResume(input), input);
         await page.reload();
+        await startObserverControl();
         const resumed = await page.evaluate(async input => (await import('/__ci__/suite.mjs')).resumeSearch(input), input);
         suite.cases.push({ name: 'checkpoint-real-reload-resume', status: 'passed', ...prepared, ...resumed });
         const denied = await page.evaluate(async () => (await import('/__ci__/suite.mjs')).storageDenial());
@@ -165,17 +186,38 @@ try {
           boundary: 'actual browser sandbox and source withPolicy contract; ReportFrame UI rendering audited separately' });
       }
       const workerSession = await browser.newBrowserCDPSession();
-      let runningEngineTargets;
-      const workerDeadline = Date.now() + 5000;
+      let controlTargets;
+      const controlDeadline = Date.now() + 5000;
       do {
         const targets = await workerSession.send('Target.getTargets');
-        runningEngineTargets = targets.targetInfos.filter(t => t.type === 'worker' && t.url.includes('/engine/versions/ci-'));
-        if (!runningEngineTargets.length) break;
-        await new Promise(resolve => setTimeout(resolve, 100));
-      } while (Date.now() < workerDeadline);
+        controlTargets = targets.targetInfos.filter(t => t.type === 'worker' && t.url.includes('/__ci__/observer-'));
+        if (controlTargets.length === 2) break;
+        await page.waitForTimeout(100);
+      } while (Date.now() < controlDeadline);
+      assert.equal(controlTargets.length, 2, 'observer must discover both existing live control workers');
+      const parentTarget = controlTargets.find(t => t.url.endsWith('/observer-parent.js'));
+      const childTarget = controlTargets.find(t => t.url.endsWith('/observer-child.js'));
+      assert.ok(parentTarget && childTarget, 'observer control URLs must identify actual parent and child');
+      assert.equal(childTarget.parentId, parentTarget.targetId, 'observer control must prove nested worker topology');
+      await page.evaluate(() => globalThis.__observerParent.postMessage('stop'));
+      const controlCloseDeadline = Date.now() + 5000;
+      let closedControls;
+      do {
+        const targets = await workerSession.send('Target.getTargets');
+        closedControls = targets.targetInfos.filter(t => t.type === 'worker' && t.url.includes('/__ci__/observer-'));
+        if (!closedControls.length) break;
+        await page.waitForTimeout(100);
+      } while (Date.now() < controlCloseDeadline);
+      suite.workerObserverControl = { discovered: controlTargets, afterShutdown: closedControls };
+      assert.equal(closedControls.length, 0, 'nested observer control workers did not terminate');
+      suite.cases.push({ name: 'nested-worker-observer-positive-control', status: 'passed', discovered: 2, afterShutdown: 0 });
+      const terminalWorkers = await waitForWorkerExit(workerSession);
+      const runningEngineTargets = terminalWorkers.filter(t => t.url.includes('/engine/versions/ci-'));
       suite.workerTargetsAfterSuite = runningEngineTargets;
+      suite.allWorkerTargetsAfterSuite = terminalWorkers;
       suite.playwrightWorkersAfterSuite = page.workers().map(worker => worker.url());
       assert.equal(runningEngineTargets.length, 0, 'engine child targets remain after terminal jobs');
+      assert.equal(terminalWorkers.length, 0, 'worker targets, including unidentified or orphaned workers, remain after terminal jobs');
       suite.cases.push({ name: 'terminal-engine-worker-teardown', status: 'passed', engineWorkerTargets: 0 });
       await workerSession.detach();
       await page.reload();
@@ -183,17 +225,18 @@ try {
       suite.cases.push({ name: 'persistence-after-reload', status: 'passed' });
       if (suite.cases.find(c => c.name === 'cancel-and-retry')?.requiresReload) {
         const cdp = await browser.newBrowserCDPSession();
-        let engineWorkers;
-        const teardownDeadline = Date.now() + 5000;
-        do {
-          const targets = await cdp.send('Target.getTargets');
-          engineWorkers = targets.targetInfos.filter(t => t.type === 'worker' && t.url.includes('/engine/versions/ci-'));
-          if (!engineWorkers.length) break;
-          await new Promise(resolve => setTimeout(resolve, 100));
-        } while (Date.now() < teardownDeadline);
+        const reloadWorkers = await waitForWorkerExit(cdp);
+        const engineWorkers = reloadWorkers.filter(t => t.url.includes('/engine/versions/ci-'));
         suite.workerTargetsAfterReload = engineWorkers;
+        suite.allWorkerTargetsAfterReload = reloadWorkers;
         assert.equal(engineWorkers.length, 0, 'engine child targets remain after explicit page reload');
+        assert.equal(reloadWorkers.length, 0, 'worker targets remain after explicit page reload');
         const retry = await page.evaluate(async input => (await import('/__ci__/suite.mjs')).retryAfterReload(input), { channel, variant, profile });
+        const retryWorkers = await waitForWorkerExit(cdp);
+        suite.workerTargetsAfterFreshRetry = retryWorkers.filter(t => t.url.includes('/engine/versions/ci-'));
+        suite.allWorkerTargetsAfterFreshRetry = retryWorkers;
+        assert.equal(suite.workerTargetsAfterFreshRetry.length, 0, 'engine child targets remain after fresh retry');
+        assert.equal(retryWorkers.length, 0, 'worker targets remain after fresh retry');
         suite.cases.push({ name: 'explicit-reload-and-fresh-retry', status: 'passed', engineWorkerTargetsAfterReload: engineWorkers.length, ...retry });
         await cdp.detach();
       }
@@ -207,6 +250,7 @@ try {
         const session = await browser.newBrowserCDPSession();
         const targets = await session.send('Target.getTargets');
         suite.workerTargetsAfterPageClose = targets.targetInfos.filter(t => t.type === 'worker' && t.url.includes('/engine/versions/ci-'));
+        suite.allWorkerTargetsAfterPageClose = targets.targetInfos.filter(t => t.type === 'worker');
         await session.detach();
       }
       await context.close();

@@ -10,7 +10,7 @@ export interface AbilityRow {
   school?: string
   /** "damage", "heal", "absorb", "resource", ... */
   type?: string
-  /** Own contribution to actor's DPS (portion_apse.mean, additive, excludes children; top-level sum undercounts). */
+  /** Own portion_apse contribution over the owner's iterations; excludes children. */
   dps: number
   /** Own plus every descendant; top-level plus pets reproduces actor's DPS exactly. */
   dpsWithChildren: number
@@ -133,36 +133,50 @@ function critPct(stat: Obj): number | undefined {
   return total > 0 ? (crit / total) * 100 : undefined
 }
 
-function toAbility(raw: unknown): AbilityRow | null {
+/** Pet stats can omit iterations where that pet was absent; their mean is conditional. */
+function actorMean(raw: unknown, samples?: number): number | undefined {
+  const value = mean(raw)
+  const count = num(asObj(raw)?.count)
+  return samples !== undefined && value !== undefined && count !== undefined && Number.isInteger(count) && count >= 0
+    ? value * count / samples : value
+}
+
+function toAbility(raw: unknown, samples?: number): AbilityRow | null {
   const s = asObj(raw)
   const name = s && str(s.name)
   if (!s || !name) return null
-  const children = asArr(s.children).map(toAbility).filter((c): c is AbilityRow => c !== null)
+  const children = asArr(s.children).map((child) => toAbility(child, samples)).filter((c): c is AbilityRow => c !== null)
   // portion_apse (per fight second), not portion_aps (per actor uptime); only apse is additive.
-  const own = mean(s.portion_apse) ?? 0
+  const own = actorMean(s.portion_apse, samples) ?? 0
+  const ownAmount = actorMean(s.actual_amount, samples)
+  const amountCount = num(asObj(s.actual_amount)?.count)
+  const type = str(s.type)
+  const totalAmount = samples !== undefined && ownAmount !== undefined && amountCount !== undefined && Number.isInteger(amountCount) && amountCount >= 0
+    ? (ownAmount ?? 0) + children.filter((child) => child.type === type).reduce((sum, child) => sum + child.totalAmount, 0)
+    : num(s.compound_amount) ?? 0
   return {
     name,
     spellName: str(s.spell_name),
     id: num(s.id),
     itemId: num(s.item_id),
     school: str(s.school),
-    type: str(s.type),
+    type,
     dps: own,
     dpsWithChildren: own + children.reduce((sum, c) => sum + c.dpsWithChildren, 0),
     rateWhileActive: mean(s.portion_aps) ?? 0,
-    totalAmount: num(s.compound_amount) ?? 0,
-    ownAmount: mean(s.actual_amount),
+    totalAmount,
+    ownAmount,
     portionPct: num(s.portion_amount) === undefined ? undefined : num(s.portion_amount)! * 100,
-    executeCount: mean(s.num_executes) ?? 0,
-    tickCount: mean(s.num_ticks),
+    executeCount: actorMean(s.num_executes, samples) ?? 0,
+    tickCount: actorMean(s.num_ticks, samples),
     critPct: critPct(s),
     children: children.length ? children : undefined,
   }
 }
 
-function toAbilities(raw: unknown): AbilityRow[] {
+function toAbilities(raw: unknown, samples?: number): AbilityRow[] {
   return asArr(raw)
-    .map(toAbility)
+    .map((ability) => toAbility(ability, samples))
     .filter((a): a is AbilityRow => a !== null)
     .sort((a, b) => b.dpsWithChildren - a.dpsWithChildren)
 }
@@ -266,10 +280,13 @@ export function parsePlayerDetail(raw: unknown, playerName: string): PlayerDetai
   if (!found) throw new PlayerNotInReportError(playerName, names)
   const p = asObj(found)!
 
-  const abilities = toAbilities(p.stats)
+  const collected = asObj(p.collected_data) ?? {}
+  const count = num(asObj(collected.dps)?.count)
+  const samples = count !== undefined && Number.isInteger(count) && count > 0 ? count : undefined
+  const abilities = toAbilities(p.stats, samples)
   const pets: PetDetail[] = Object.entries(asObj(p.stats_pets) ?? {})
     .map(([name, stats]) => {
-      const petAbilities = toAbilities(stats)
+      const petAbilities = toAbilities(stats, samples)
       return {
         name,
         dps: petAbilities.reduce((sum, a) => sum + a.dpsWithChildren, 0),
@@ -279,7 +296,6 @@ export function parsePlayerDetail(raw: unknown, playerName: string): PlayerDetai
     })
     .sort((a, b) => b.dps - a.dps)
 
-  const collected = asObj(p.collected_data) ?? {}
   const abilityDps = abilities.reduce((sum, a) => sum + a.dpsWithChildren, 0)
   const actorDps = mean(asObj(collected.dps))
 

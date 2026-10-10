@@ -1,6 +1,6 @@
 // Stored record shapes and portable file/link format (P11.4-P11.6); everything pure for testing without IndexedDB.
 
-import type { ImportedCharacter } from '../import/character'
+import { parseAddonExport, type ImportedCharacter } from '../import/character'
 import { engineChannelLabel, type EngineChannel } from '../simc/channel'
 import type { SearchCheckpoint } from './search-checkpoint'
 
@@ -160,7 +160,7 @@ export function readPortable(text: string): PortableCheck {
   if (f.format !== PORTABLE_FORMAT) {
     return { ok: false, reason: 'File was not exported by Frostsim.' }
   }
-  if (typeof f.version !== 'number' || f.version > PORTABLE_VERSION) {
+  if (f.version !== PORTABLE_VERSION) {
     return {
       ok: false,
       reason: `File uses export format v${f.version} and this build reads up to v${PORTABLE_VERSION}. Update Frostsim, then import it again.`,
@@ -178,6 +178,16 @@ export function readPortable(text: string): PortableCheck {
   return { ok: true, file: f as PortableFile }
 }
 
+/** Rebuild untrusted workspace fields from the exported addon text at every character ingress. */
+export function readPortableCharacter(value: unknown): ImportedCharacter {
+  if (!value || typeof value !== 'object' || !('raw' in value) || typeof value.raw !== 'string') {
+    throw Error('The export has no character addon text.')
+  }
+  const character = parseAddonExport(value.raw)
+  if (character.diagnostics.some(d => d.severity === 'error')) throw Error('The exported character addon text is invalid.')
+  return character
+}
+
 export function portableSetup(setup: StoredSetup): Omit<StoredSetup, 'checkpoint'> {
   const portable = { ...setup }
   delete portable.checkpoint
@@ -190,6 +200,7 @@ export function redactCharacter(c: ImportedCharacter): ImportedCharacter {
     let out = text
     if (c.name) out = out.split(c.name).join('Shared')
     if (c.server) out = out.split(c.server).join('realm')
+    out = out.replace(/^(\s*region\s*=\s*)[^\r\n]*/gm, '$1xx')
     return out
   }
   return {
@@ -200,6 +211,19 @@ export function redactCharacter(c: ImportedCharacter): ImportedCharacter {
     raw: swap(c.raw),
     profileLines: c.profileLines.map(swap),
   }
+}
+
+/** Share numeric results without free text, input snapshots or the original raw report. */
+export function redactReport(record: StoredReport): StoredReport {
+  const summary = Object.fromEntries([
+    'dps', 'confidenceMargin', 'confidenceLevel', 'standardError', 'actualIterations',
+    'targetReached', 'elapsedSeconds', 'candidateCount',
+  ].filter(key => Object.hasOwn(record.summary, key)).map(key => [key, record.summary[key as keyof ReportSummary]]))
+  const engine = Object.fromEntries(['engineChannel', 'simcVersion', 'upstreamCommit', 'wowVersion']
+    .filter(key => Object.hasOwn(record.engine, key)).map(key => [key, record.engine[key as keyof EngineIdentity]]))
+  return { id: newId(), tool: record.tool, title: `${TOOL_LABELS[record.tool]} shared summary`,
+    characterLabel: 'Shared', requestSnapshot: null, engine, completion: record.completion,
+    summary, hasRaw: false, createdAt: record.createdAt, pinned: false }
 }
 
 /** Whether imported report can be reopened with current engine; matching input on different engine is NEW result not rewritten (P11.6), gates display not recomputation. */

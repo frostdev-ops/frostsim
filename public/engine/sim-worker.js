@@ -41,8 +41,13 @@ if (globalThis.name !== 'em-pthread') {
   // Cache engine binaries by sha256 hash, not version (two builds of same data differ).
   const CACHE_NAME = 'frostsim-engine-v1'
 
-  // Exception sentinel to unwind cancelled callMain without reporting as engine failure.
-  const CANCEL_SENTINEL = 'frostsim:cancelled'
+  // A JS throw enters C++ catch-all/destructors, which can join an already reaped pthread forever.
+  // A genuine wasm trap bypasses those handlers and returns directly to the outer JS controller.
+  const cancelTrap = new WebAssembly.Instance(new WebAssembly.Module(new Uint8Array([
+    0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 3, 2, 1, 0,
+    7, 8, 1, 4, 116, 114, 97, 112, 0, 0, 10, 5, 1, 3, 0, 0, 11,
+  ]))).exports.trap
+  let cancelTrapIssued = false
   const ASSET_PROGRESS_MS = 120
 
   function fail(jobId, code, message) {
@@ -96,8 +101,8 @@ if (globalThis.name !== 'em-pthread') {
     } catch {
       // Already closing; the throw below still unwinds the run.
     }
-    // Throw to unwind out of callMain since neither close() nor terminate() can interrupt wasm (measured).
-    throw new Error(CANCEL_SENTINEL)
+    cancelTrapIssued = true
+    cancelTrap()
   }
 
   /** Final message sent outside callMain confirming coordinator returned and nothing running. */
@@ -475,7 +480,7 @@ if (globalThis.name !== 'em-pthread') {
     } catch (err) {
       flush()
       // Cancel unwind reached here: callMain returned, so shutdown confirmation is valid.
-      if (err && err.message === CANCEL_SENTINEL) {
+      if (cancelTrapIssued && err instanceof WebAssembly.RuntimeError) {
         confirmShutdown('cancelled')
         return
       }
