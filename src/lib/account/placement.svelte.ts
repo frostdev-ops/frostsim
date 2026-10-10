@@ -27,6 +27,11 @@ let hybridThreads = 0
  *  `hybrid`: the plan includes hybrid runs. */
 export const placement = $state<{ value: Placement; entitled: boolean; hybrid: boolean }>({ value: chosen ?? 'browser', entitled: false, hybrid: false })
 
+/** Checkpoints bind the requested execution policy; a changed entitlement or split starts a new search. */
+export function executionIdentity(): string {
+  return JSON.stringify({ place: placement.entitled ? placement.value : 'browser', cloudThreads: hybridThreads })
+}
+
 /** Registers a cloud engine only for cloud or hybrid AND entitled; a hybrid choice without the plan runs in the cloud. */
 export function applyPlacement(entitled = placement.entitled, threads = hybridThreads): void {
   hybridThreads = entitled ? threads : 0

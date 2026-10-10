@@ -5,6 +5,7 @@ import type {
   OptimizationResult, StageConfig, StagePlan,
 } from './types';
 import { multiplicityFactor, retain, unresolvedTie } from './statistics';
+import { cacheKey as identityHash } from '../simc/cache-key';
 
 // Engine port: narrow interface so this module is testable without wasm.
 
@@ -66,11 +67,12 @@ export function cacheKey(parts: {
   catalogId: string;
   canonical: string;
   accuracy: Accuracy;
+  requestIdentity?: string;
 }): string {
   const acc = parts.accuracy.mode === 'iterations'
     ? `i${parts.accuracy.iterations}`
     : `e${parts.accuracy.targetError}:${parts.accuracy.maxIterations}`;
-  return [parts.engineIdentity, parts.catalogId, acc, parts.canonical].join('\u0000');
+  return [parts.engineIdentity, parts.catalogId, acc, parts.canonical, ...(parts.requestIdentity ? [parts.requestIdentity] : [])].join('\u0000');
 }
 
 export interface ResultCache {
@@ -88,6 +90,18 @@ export interface SearchLedger {
   stageIndex: number;
   completed: Record<string, CandidateMeasurement>;
   eliminated: Record<string, string>;
+  requestIdentity?: string;
+  baseline?: CandidateMeasurement | null;
+  samplesSpent?: number;
+  elapsedMs?: number;
+  stagesRun?: OptimizationResult['stagesRun'];
+  states?: Record<string, Omit<CandidateState, 'candidate'>>;
+  activeIds?: string[];
+  droppedWhileAlive?: string[];
+  warnings?: string[];
+  problems?: string[];
+  pass?: { plan: Omit<PassPlan, 'accuracyFor'>; accuracies: Record<string, Accuracy> };
+  finished?: boolean;
 }
 
 export function emptyLedger(): SearchLedger {
@@ -105,6 +119,9 @@ export interface SearchOptions {
   runBatch: RunBatch;
   cache?: ResultCache;
   ledger?: SearchLedger;
+  /** Frozen request settings not already in profile (thread count, extra options, seed, execution mode). */
+  requestIdentity?: string;
+  onCheckpoint?: (ledger: SearchLedger) => Promise<void>;
   signal?: AbortSignal;
   onProgress?: (p: OptimizationProgress) => void;
   /** Fails a batch not settled in this long; prevents hangs from adapters that never settle. */
@@ -227,8 +244,24 @@ export async function runPassSearch(
 ): Promise<OptimizationResult> {
   const cache = opts.cache ?? memoryCache();
   const ledger = opts.ledger ?? emptyLedger();
-  const warnings: string[] = [];
-  const stagesRun: OptimizationResult['stagesRun'] = [];
+  const requestIdentity = await identityHash({
+    engineIdentity: opts.engineIdentity ?? 'unknown-engine', catalogId: opts.catalogId,
+    precision: JSON.stringify(opts.plan),
+    canonical: JSON.stringify([opts.requestIdentity, opts.profile, candidates.map(c => [c.id, c.canonical, c.lines, c.provenance.vaultRewardId])]),
+  });
+  if (ledger.requestIdentity && ledger.requestIdentity !== requestIdentity) throw new Error('This checkpoint belongs to a different search request. The saved setup is unchanged.');
+  const candidateIds = new Set(candidates.map(c => c.id));
+  if (!Object.entries(ledger.completed).every(([id, m]) => candidateIds.has(id) && m.candidateId === id && m.stageIndex <= ledger.stageIndex)
+    || !Object.keys(ledger.eliminated).every(id => candidateIds.has(id))
+    || !Object.entries(ledger.states ?? {}).every(([id, state]) => candidateIds.has(id)
+      && (!state.measurement || (state.measurement.candidateId === id && state.measurement.stageIndex <= ledger.stageIndex))
+      && state.history.every(m => m.candidateId === id && m.stageIndex <= ledger.stageIndex))
+    || ![...(ledger.activeIds ?? []), ...(ledger.droppedWhileAlive ?? [])].every(id => candidateIds.has(id))) {
+    throw new Error('This checkpoint has inconsistent candidate records. The saved setup is unchanged.');
+  }
+  ledger.requestIdentity = requestIdentity;
+  const warnings = [...(ledger.warnings ?? [])];
+  const stagesRun = [...(ledger.stagesRun ?? [])];
 
   const states = new Map<string, CandidateState>();
   const compareVaultChoices = candidates.some((c) => c.provenance.vaultRewardId);
@@ -243,7 +276,10 @@ export async function runPassSearch(
     // Resume: ledger-measured candidates are restored rather than rerun.
     const done = ledger.completed[c.id];
     const eliminated = ledger.eliminated[c.id];
-    if (eliminated) {
+    const restored = ledger.states?.[c.id];
+    if (restored) {
+      states.set(c.id, { ...restored, status: restored.status === 'running' ? 'pending' : restored.status, candidate: c });
+    } else if (eliminated) {
       states.set(c.id, { candidate: c, status: 'eliminated', measurement: done ?? null, history: done ? [done] : [], note: eliminated });
     } else if (done) {
       states.set(c.id, { candidate: c, status: 'measured', measurement: done, history: [done] });
@@ -253,31 +289,46 @@ export async function runPassSearch(
   }
 
   let active = [...states.values()]
-    .filter((s) => s.status === 'pending' || s.status === 'measured')
+    .filter((s) => (s.status === 'pending' || s.status === 'measured') && (!ledger.activeIds || ledger.activeIds.includes(s.candidate.id)))
     .map((s) => s.candidate);
-  let baseline: CandidateMeasurement | null = null;
+  let baseline = ledger.baseline ?? null;
   const engineIdentity = opts.engineIdentity ?? null;
-  let truncated = false;
-  let samplesSpent = 0;
+  let truncated = !!ledger.droppedWhileAlive?.length;
+  let samplesSpent = ledger.samplesSpent ?? 0;
   let lastLooks = Math.max(1, opts.plan.stages.length - 1);
   let stageCount = opts.plan.stages.length;
   const startedAt = Date.now();
+  const priorElapsed = ledger.elapsedMs ?? 0;
   let reportedMissingIdentity = false;
-  const problems: string[] = [];
-  const droppedWhileAlive: string[] = [];
+  const problems = [...(ledger.problems ?? [])];
+  const droppedWhileAlive = [...(ledger.droppedWhileAlive ?? [])];
   let incomplete: OptimizationResult['incomplete'] = null;
+  const checkpoint = async () => {
+    Object.assign(ledger, {
+      baseline, samplesSpent, elapsedMs: priorElapsed + Date.now() - startedAt, stagesRun,
+      states: Object.fromEntries([...states].map(([id, state]) => [id, { status: state.status, measurement: state.measurement, history: state.history, note: state.note }])),
+      activeIds: active.map(c => c.id), droppedWhileAlive, warnings: [...new Set(warnings)], problems: [...new Set(problems)],
+    });
+    if (opts.onCheckpoint) await opts.onCheckpoint(structuredClone(ledger));
+  };
 
   outer:
-  for (let stageIndex = ledger.stageIndex; ; stageIndex++) {
-    const stage = source({
+  for (let stageIndex = ledger.stageIndex; !ledger.finished; stageIndex++) {
+    const stage: PassPlan | null = ledger.pass ? {
+      ...ledger.pass.plan, accuracyFor: id => ledger.pass!.accuracies[id] ?? ledger.pass!.plan.accuracy,
+    } : source({
       stageIndex,
       measured: latestMeasurements(states),
       active,
       baseline,
       samplesSpent,
-      elapsedMs: Date.now() - startedAt,
+      elapsedMs: priorElapsed + Date.now() - startedAt,
     });
-    if (!stage) break;
+    if (!stage) { ledger.finished = true; break; }
+    if (!ledger.pass) {
+      const { accuracyFor, ...plan } = stage;
+      ledger.pass = { plan, accuracies: Object.fromEntries(active.map(c => [c.id, accuracyFor?.(c.id) ?? stage.accuracy])) };
+    }
     lastLooks = stage.looks ?? Math.max(1, opts.plan.stages.length - 1);
     stageCount = stage.stageCount ?? opts.plan.stages.length;
     const accuracyOf = (c: Candidate): Accuracy => stage.accuracyFor?.(c.id) ?? stage.accuracy;
@@ -289,8 +340,9 @@ export async function runPassSearch(
       const accuracy = accuracyOf(c);
       // Already measured at this stage's precision by ledger or earlier batch.
       const state = states.get(c.id)!;
-      if (state.status === 'measured' && state.measurement?.stageIndex === stageIndex) {
-        if (accuracy.mode !== 'targetError' || state.measurement.iterations >= opts.plan.minIterations) return false;
+      if (state.status === 'missing' || (state.status === 'measured' && state.measurement?.stageIndex === stageIndex)) {
+        if (state.status === 'missing') return false;
+        if (accuracy.mode !== 'targetError' || (state.measurement && state.measurement.iterations >= opts.plan.minIterations)) return false;
         // Older ledger may predate convergence floor; mark pending so baseline is also replaced.
         state.status = 'pending';
       }
@@ -298,7 +350,7 @@ export async function runPassSearch(
       if (stage.noCache) return true;
       // Unknown engine: cached number could come from another binary.
       if (engineIdentity === null) return true;
-      const key = cacheKey({ engineIdentity, catalogId: opts.catalogId, canonical: c.canonical, accuracy });
+      const key = cacheKey({ engineIdentity, catalogId: opts.catalogId, canonical: c.canonical, accuracy, requestIdentity });
       const hit = cache.get(key);
       if (!hit || (accuracy.mode === 'targetError' && hit.iterations < opts.plan.minIterations)) return true;
       state.measurement = { ...hit, candidateId: c.id, stageIndex };
@@ -412,9 +464,10 @@ export async function runPassSearch(
       }
 
       const returned = new Set<string>();
+      const requested = new Set(batch.map(c => c.id));
       for (const r of outcome.results) {
         const state = states.get(r.id);
-        if (!state) { warnings.push(`engine returned an unrequested profileset ${r.id}`); continue; }
+        if (!state || !requested.has(r.id)) { warnings.push(`engine returned an unrequested profileset ${r.id}`); continue; }
         returned.add(r.id);
         const measurement: CandidateMeasurement = {
           candidateId: r.id, mean: r.mean, margin: r.margin,
@@ -426,7 +479,7 @@ export async function runPassSearch(
         ledger.completed[r.id] = measurement;
         if (engineIdentity !== null) {
           cache.set(
-            cacheKey({ engineIdentity, catalogId: opts.catalogId, canonical: state.candidate.canonical, accuracy: batchAccuracy }),
+            cacheKey({ engineIdentity, catalogId: opts.catalogId, canonical: state.candidate.canonical, accuracy: batchAccuracy, requestIdentity }),
             measurement,
           );
         }
@@ -463,9 +516,11 @@ export async function runPassSearch(
       } else {
         stagesRun[stageIndex] = { label: stage.label, accuracy: stage.accuracy, targetReached: outcome.targetReached, candidates: 0, samples: batchSamples };
       }
+      await checkpoint();
     }
 
     ledger.stageIndex = stageIndex + 1;
+    delete ledger.pass;
 
     const measuredAll = latestMeasurements(states);
     // ONLY WHAT IS STILL IN THE SEARCH; `active` is the authority on who is racing.
@@ -476,7 +531,7 @@ export async function runPassSearch(
       stagesRun[stageIndex].candidates = measuredAll.filter((m) => m.stageIndex === stageIndex).length;
     }
 
-    if (stage.noElimination) break;
+    if (stage.noElimination) { ledger.finished = true; break; }
 
     const retentionOptions = {
       retentionFactor: opts.plan.retentionFactor,
@@ -565,8 +620,10 @@ export async function runPassSearch(
 
     const survivorIds = new Set(outcome.survivors.map((m) => m.candidateId));
     active = active.filter((c) => survivorIds.has(c.id));
-    if (active.length === 0) break;
+    await checkpoint();
+    if (active.length === 0) { ledger.finished = true; break; }
   }
+  await checkpoint();
 
   const budgetDropped = new Set(droppedWhileAlive);
   const finalMeasured = [...states.values()]

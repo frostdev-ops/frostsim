@@ -87,5 +87,5 @@ const rewards = encounters.map(boss => {
   ]));
   return { id: `blizzard-journal:encounter:${boss.ID}`, name: boss.Name_lang, instanceId: instance.ID, ignoredItemIds, byDifficulty };
 });
-writeFileSync('src/lib/catalog/generated/raid-rewards.json', JSON.stringify({ engineChannel, build, seasonId: policy.seasonId, policy, sources, rewards }, null, 2) + '\n');
+writeFileSync('src/lib/catalog/generated/raid-rewards.json', JSON.stringify({ engineChannel, build, engineCommit: lock.upstream.commit, seasonId: policy.seasonId, policy, sources, rewards }, null, 2) + '\n');
 console.log(`Generated ${rewards.length} bosses with per-item rewards for ${build}`);

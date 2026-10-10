@@ -64,6 +64,10 @@ export async function onRequest(context: PagesContext): Promise<Response> {
   const idSegment = segments[3];
   const region = readRegion(url);
   if (region === null) return errorResponse('invalid_request', 400, 'Unsupported region.', 'region');
+  if (['character-media', 'character-profile', 'character-render'].includes(route)
+    && !isAllowedRegion((segments[3] ?? '').toLowerCase())) {
+    return errorResponse('invalid_request', 400, 'Unsupported region.', 'region');
+  }
   const locale = readLocale(url);
   if (locale === null) return errorResponse('invalid_request', 400, 'Unsupported locale.', 'locale');
 
@@ -298,14 +302,10 @@ async function proxyImage(target: string, env: Env, ttl = cacheSeconds(env)): Pr
 // --- Character media (public profile namespace) -------
 // Leaves origin: region, realm slug, char name (portrait only); no addon export, action list, bag, talents, gear, results, account OAuth, private data.
 
-/** Official realm slugs, cached module-scope (once per process, not per request); not derivable from names, must not be guessed client-side. */
-const realmSlugCache = new Map<Region, Map<string, string>>();
-
 async function realmSlugs(
   region: Region, credentials: Credentials, env: Env,
 ): Promise<Map<string, string> | null> {
-  const cached = realmSlugCache.get(region);
-  if (cached) return cached;
+  // Normalize the bounded raw cache; a second TTL would extend the original data's retention.
   const body = await clientFor(credentials, env).get<unknown>('/data/wow/realm/index', region, null, 'dynamic');
   const realms = (body as { realms?: { name?: unknown; slug?: unknown }[] } | null)?.realms;
   if (!Array.isArray(realms)) return null;
@@ -322,8 +322,7 @@ async function realmSlugs(
       map.set(compactRealmKey(name), r.slug);
     }
   }
-  realmSlugCache.set(region, map);
-  return map; // Cached.
+  return map;
 }
 
 /** The region's realms by display name (en_US spelling), for pickers such as the Discord bot's realm autocomplete. */

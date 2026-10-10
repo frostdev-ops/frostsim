@@ -81,11 +81,14 @@ function run<T>(
         try {
           const tx = db.transaction(store, mode)
           req = body(tx.objectStore(store))
+          // A request may succeed before a quota error aborts the transaction.
+          tx.oncomplete = () => resolve({ ok: true, value: req.result })
+          tx.onabort = () => resolve({ ok: false, failure: classifyStorageError(tx.error ?? req.error ?? new DOMException('Storage transaction aborted', 'AbortError')) })
+          tx.onerror = () => resolve({ ok: false, failure: classifyStorageError(tx.error ?? req.error) })
         } catch (err) {
           resolve({ ok: false, failure: classifyStorageError(err) })
           return
         }
-        req.onsuccess = () => resolve({ ok: true, value: req.result })
         req.onerror = () => {
           req.transaction?.abort()
           resolve({ ok: false, failure: classifyStorageError(req.error) })

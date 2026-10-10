@@ -48,7 +48,8 @@ describe('CharacterIndex', () => {
     const copy = new CharacterIndex(() => NOW);
     copy.load([...JSON.parse(JSON.stringify(index)), { name: 5 }, null]);
     expect(copy.search('us', 'kept', null)).toEqual([c('Kept')]);
-    expect(copy.dirty).toBe(false);
+    // Dropping malformed rows must rewrite the persisted snapshot, even without another lookup.
+    expect(copy.dirty).toBe(true);
   });
 
   it('builds an entry from a profile summary, or nothing without a name, realm or known class', () => {

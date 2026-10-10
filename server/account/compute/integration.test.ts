@@ -300,8 +300,8 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
     const siblings = [await enqueue(busy), await enqueue(busy)].map((r) => (r as { id: string }).id);
     const [a, b] = [await addWorker(), await addWorker()];
     const claimed: string[] = [];
-    // Concurrent rounds until the queue has nothing claimable left.
-    for (let round = 0; round < 5; round++) {
+    // SKIP LOCKED can return a transient null while another claim holds several rows.
+    for (let round = 0; round < 20 && claimed.length < 9; round++) {
       const got = await Promise.all(Array.from({ length: 12 }, (_, i) => claimJob(app(), i % 2 ? a.id : b.id, 32)));
       for (const job of got) if (job && job !== 'draining') claimed.push(job.id);
     }

@@ -16,6 +16,7 @@ import { expert, persistDrafts } from './advanced.svelte'
 import { forgetCharacterSelections, hasGearDrafts } from './selection.svelte'
 import { uniqueLoadoutNames, type ImportedCharacter, type ItemInstance } from './import/character'
 import * as db from './store/db'
+import { readSearchCheckpoint, type SearchCheckpoint } from './store/search-checkpoint'
 import {
   makePortable, newId, type EngineIdentity, type RawBlob, type ReportSummary,
   type StoredCharacter, type StoredReport, type StoredSetup, type ToolId,
@@ -516,7 +517,7 @@ export function planOptions(
 }
 
 export function maxThreads(): number {
-  return app.capability?.ok ? app.capability.maxThreads : 8
+  return app.capability?.ok ? app.capability.maxThreads : 1
 }
 
 export function profilesetsSupported(): boolean {
@@ -566,12 +567,12 @@ export async function saveCharacter(
   const i = app.characters.findIndex((c) => c.id === id)
   if (i >= 0) app.characters[i] = record
   else app.characters.unshift(record)
-  if (!background) {
+  if (import.meta.env.VITE_FEATURE_ACCOUNTS !== true || !background) {
     // A saved draft replaces the draft wherever it was picked.
     if (app.activeCharacterId === DRAFT || !existing) app.draft = null
     for (const scope of PICK_SCOPES) if (app.picks[scope] === DRAFT) app.picks[scope] = id
     pickCharacter(id)
-    characterSync?.saved(record)
+    if (import.meta.env.VITE_FEATURE_ACCOUNTS === true) characterSync?.saved(record)
   }
   resolveCharacter(character).catch(() => { /* reported in app state */ })
   void refreshUsage()
@@ -579,8 +580,10 @@ export async function saveCharacter(
 }
 
 export async function deleteCharacter(id: string, background = false): Promise<void> {
-  const record = app.characters.find((c) => c.id === id)
-  if (record && !background) characterSync?.deleted($state.snapshot(record))
+  if (import.meta.env.VITE_FEATURE_ACCOUNTS === true) {
+    const record = app.characters.find((c) => c.id === id)
+    if (record && !background) characterSync?.deleted($state.snapshot(record))
+  }
   const out = await db.del('characters', id)
   if (!out.ok) noteFailure(out.failure)
   app.characters = app.characters.filter((c) => c.id !== id)
@@ -600,7 +603,7 @@ export async function renameCharacter(id: string, label: string): Promise<void> 
   rec.updatedAt = Date.now()
   const out = await db.put('characters', $state.snapshot(rec))
   if (!out.ok) noteFailure(out.failure)
-  characterSync?.saved($state.snapshot(rec))
+  if (import.meta.env.VITE_FEATURE_ACCOUNTS === true) characterSync?.saved($state.snapshot(rec))
 }
 
 // --- reports -----------------------------------------------------------------
@@ -781,6 +784,35 @@ export async function saveSetup(tool: ToolId, label: string, settings: unknown):
   if (!out.ok) { noteFailure(out.failure); toast('bad', storageMessage(out.failure)); return }
   app.setups.unshift(record)
   toast('good', `Saved “${label}”.`)
+}
+
+/** Commit one batch to the existing setup store; a failed save leaves the in-memory search usable. */
+export async function saveSearchCheckpoint(
+  tool: 'gear' | 'droptimizer', label: string, characterId: string | undefined,
+  settings: unknown, checkpoint: SearchCheckpoint, id?: string,
+): Promise<string | null> {
+  const safe = readSearchCheckpoint(checkpoint)
+  if (!safe) { toast('bad', 'This search checkpoint could not be saved. The search continues in this tab.'); return null }
+  const prior = id ? app.setups.find(s => s.id === id) : undefined
+  if (id && !prior) return null
+  const record: StoredSetup = plain({
+    ...prior, id: id ?? newId(), tool, label, characterId, settings,
+    createdAt: prior?.createdAt ?? Date.now(), updatedAt: Date.now(), checkpoint: safe,
+  })
+  const out = await db.put('setups', record)
+  if (!out.ok) { noteFailure(out.failure); toast('bad', `Search resume is unavailable. ${storageMessage(out.failure)}`); return null }
+  app.setups = [record, ...app.setups.filter(s => s.id !== record.id)]
+  return record.id
+}
+
+export async function clearSearchCheckpoint(id: string): Promise<void> {
+  const prior = app.setups.find(s => s.id === id)
+  if (!prior) return
+  const record = plain(prior)
+  delete record.checkpoint
+  const out = await db.put('setups', record)
+  if (!out.ok) { noteFailure(out.failure); return }
+  app.setups = app.setups.map(s => s.id === id ? record : s)
 }
 
 export async function deleteSetup(id: string): Promise<void> {

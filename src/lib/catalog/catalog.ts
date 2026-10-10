@@ -4,6 +4,7 @@ import { bonusTables, buildItem, scaledStat, ScalingTables, type BaseItem, type 
 import { ITEM_CLASS, ITEM_FLAG, ITEM_MOD, QUALITY_LABEL, STAT_LABEL, eligibleSlots } from './enums';
 import { itemUpgradeTrack } from './upgrades';
 import { liveRules, rulesMatch, type SeasonRules } from './rules';
+import { lootProblems } from './validation';
 import type {
   BonusPayload, CatalogManifest, Consumable, EnchantOption, EnchantsPayload, GearSlot,
   GemsPayload, ItemColumns, ItemInstance, LootCatalog, LootProvenance, LootSource,
@@ -66,8 +67,8 @@ export class Catalog {
 
   constructor(private readonly payloads: CatalogPayloads) {
     this.manifest = payloads.manifest;
-    // Direct legacy Live constructors retain existing test/local behavior. Loaders explicitly pass null on absent pack data.
-    this.rules = payloads.rules === undefined ? ((this.manifest.engineChannel ?? this.manifest.engine.engineChannel ?? 'live') === 'live' ? liveRules : null)
+    // Legacy local constructors may use bundled rules only with matching identity; loaders pass null on absent pack data.
+    this.rules = payloads.rules === undefined ? (rulesMatch(liveRules, this.manifest) ? liveRules : null)
       : payloads.rules && rulesMatch(payloads.rules, this.manifest) ? payloads.rules : null;
     this.items = payloads.items;
     this.bonus = bonusTables(payloads.bonus);
@@ -356,6 +357,8 @@ export class Catalog {
         unavailableReason: entry?.notes ?? 'No loot source data in this catalog.',
       };
     }
+    const problems = lootProblems(this.loot, now);
+    if (problems.length) return { sources: [], provenance: [], expiresAt, unavailableReason: problems.join('; ') };
     if (this.loot.expiresAt && Date.parse(this.loot.expiresAt) <= now) {
       return {
         sources: [],

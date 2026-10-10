@@ -22,7 +22,7 @@ Code comments cite this file as `DESIGN.md <id>`: `A` architecture, `C` contract
 
 | # | Decision |
 | --- | --- |
-| A1 | One Node service, `server/account-server.mjs` on `127.0.0.1:3012`, its own systemd unit, user and env file. The Battle.net proxy (`server/api-server.mjs`, `functions/api/**`) is untouched. |
+| A1 | One Node service, `server/account-server.mjs` on `127.0.0.1:3012`, its own systemd unit, user and env file. Battle.net remains on `/api/wow` and its separate service. Approved Armory/import and bounded-cache changes update the reviewed surface baseline independently of account features (CLAUDE.md D6, PLAN P15.1). |
 | A2 | nginx gets one block, `location ^~ /api/v1/`, proxied to 3012 with the same security headers. `/api/wow/*` still matches `location /api/`. |
 | A3 | Plain fetch handler: a regex route table, per-route body caps, no framework. |
 | A4 | Dependencies: `postgres`, `aws4fetch`, `ioredis`. Stripe, Hetzner, OAuth and Discord use `fetch`; HMAC and Ed25519 use `node:crypto`. |

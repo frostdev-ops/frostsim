@@ -2,6 +2,7 @@
 // Generates versioned game-data catalogs (P05) from the selected pinned Live/PTR SimulationCraft tables.
 
 import { createHash } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -373,6 +374,7 @@ function readTalents() {
   /** @type {Record<number, any>} classId -> tree */
   const byClass = {};
   for (const t of traits) {
+    if (t.id_class === 0) continue; // System traits have no playable class; retain all class rows for loadout node ordering.
     const tree = (byClass[t.id_class] ??= { classId: t.id_class, nodes: [], subTrees: [] });
     tree.nodes.push({
       treeIndex: t.tree_index,
@@ -542,6 +544,13 @@ async function main(argv) {
   const pretty = argv.includes('--pretty');
   const outIdx = argv.indexOf('--out');
   const engine = engineIdentity();
+  const lock = JSON.parse(readFileSync(join(ROOT, 'engine.lock.json'), 'utf8'));
+  const commit = execFileSync('git', ['-C', join(ROOT, lock.upstream.path), 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  if (commit !== lock.upstream.commit) throw Error('Catalog source checkout does not match engine.lock.json; bootstrap the locked engine first.');
+  const expected = engineChannel === 'ptr' && !lock.engineChannel ? lock.expectedByChannel?.ptr : lock.expected;
+  if (expected && (expected.clientDataWowVersion !== engine.clientDataVersion || expected.clientDataHotfixHash !== engine.hotfixHash)) {
+    throw Error('Catalog client build/hotfix does not match the locked engine.');
+  }
   const id = catalogId(engine);
   const outDir = outIdx >= 0 ? resolve(argv[outIdx + 1]) : join(ROOT, 'public/catalogs', id);
 
@@ -584,11 +593,12 @@ async function main(argv) {
   const weekly = bundled('src/lib/simc/generated/weekly-defaults.json');
   // Verified Live tables may be shared only after the publisher's build attestation.
   // PTR has no corresponding season/reward proof; never copy Live values into it.
-  const sameBuild = engineChannel === 'live' && engine.clientDataVersion === upgrades.build;
+  const sameBuild = engineChannel === 'live' && engine.clientDataVersion === upgrades.build && engine.upstreamCommit === upgrades.engineCommit;
   const sections = {
     upgrades: sameBuild ? upgrades : null,
-    costs: sameBuild && costs.build === engine.clientDataVersion ? costs : null,
-    raid: sameBuild && raid.build === engine.clientDataVersion ? { ...raid, bonusRollRanks: policy.raidBonusRollRanks } : null,
+    costs: sameBuild && costs.build === engine.clientDataVersion && costs.engineCommit === engine.upstreamCommit ? costs : null,
+    raid: sameBuild && raid.build === engine.clientDataVersion && policy.build === engine.clientDataVersion
+      && policy.seasonId === upgrades.season.id ? { ...raid, bonusRollRanks: policy.raidBonusRollRanks } : null,
     mplus: sameBuild && policy.build === engine.clientDataVersion ? policy.mplus : null,
     vault: sameBuild && policy.build === engine.clientDataVersion ? policy.vault : null,
     weekly: engineChannel === 'live' && weekly.engine.commit === engine.upstreamCommit ? weekly : null,
@@ -662,11 +672,23 @@ async function main(argv) {
       const section = entry.field.startsWith('item upgrade track') ? 'upgrades'
         : entry.field.startsWith('upgrade currency') ? 'costs'
         : entry.field.includes('Great Vault') ? 'vault' : null;
+      if (entry.field === 'Great Vault reward levels' && sections.mplus && sections.vault) entry = { ...entry,
+        status: 'partial', source: 'rules.json: pack-scoped reward-policy.json and engine-pinned upgrade ranks',
+        notes: 'Mythic+ Vault levels and Merit socket rules are verified for this pack. Offered addon-export rewards are compared exactly; complete raid/world eligible pools and probabilities remain unavailable.' };
       return section && !sections[section] ? { ...entry, status: 'unavailable',
         notes: `Verified ${engineChannel.toUpperCase()} ${section} data is unavailable for this pack.` }
         : engineChannel === 'ptr' && entry.field.startsWith('loot source membership') ? { ...entry,
           notes: 'Verified PTR loot source membership is unavailable. Live loot is not substituted.' } : entry;
-    }),
+    }).concat([
+      { field: 'Mythic+ end-of-run and Vault reward levels', status: sections.mplus ? 'verified' : 'unavailable',
+        source: sections.mplus?.reference ?? 'none', notes: sections.mplus
+          ? 'Pack-scoped key-level policy references verified upgrade ranks. Seasonal dungeon membership is separately required.'
+          : `Verified ${engineChannel.toUpperCase()} Mythic+ reward data is unavailable for this pack.` },
+      { field: 'talent graph, budgets and presentation', status: 'partial', source: 'selected pack talent-layout/class-*.json',
+        notes: 'Pinned layout is loaded and checked separately for class, build, revision and node references. API descriptions expire; missing layout blocks guided talent edits. Engine rows alone do not establish graph/budget coverage.' },
+      ...['Delves', 'Prey', 'professions', 'PvP'].map(name => ({ field: `${name} complete seasonal reward pools`, status: 'unavailable', source: 'none',
+        notes: `A complete permitted ${name} item pool with season membership and reward variants is unavailable. Imported owned/offered items remain comparable; source recommendations are disabled.` })),
+    ]),
   };
   writeFileSync(join(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
   for (const w of lootWarnings) process.stderr.write(`warning: ${w}\n`);

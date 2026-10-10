@@ -145,6 +145,7 @@ export class BlizzardClient {
       // Token expired/revoked earlier than advertised; mint again.
       return this.fetchJson(url, await this.accessToken(true), true);
     }
+    if (res.status === 401 || res.status === 403) throw new UpstreamError('unauthorized', res.status, 'upstream access denied');
     if (res.status === 404) throw new UpstreamError('not_found', 404, 'not found');
     if (res.status === 429) throw new UpstreamError('rate_limited', 429, 'upstream rate limited');
     if (!res.ok) throw new UpstreamError('upstream_unavailable', res.status, `upstream returned ${res.status}`);

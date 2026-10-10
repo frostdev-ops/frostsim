@@ -65,6 +65,7 @@ export function withUpgradeRank<T extends ItemInstance>(item: T, trackId: number
   }
   const originalInstanceId = item.originalInstanceId ?? item.instanceId;
   const upgraded = { ...item, originalInstanceId,
+    upgradeOrigin: item.upgradeOrigin ?? (original ? { trackId: original.track.id, rank: original.rank.rank } : undefined),
     bonusIds: [...item.bonusIds.filter(id => !byBonus.has(id)), rank.bonusId], itemLevel: undefined,
     upgradeTrackHypothetical: item.upgradeTrackHypothetical || original?.track.id !== trackId };
   upgraded.instanceId = `${originalInstanceId}:upgrade:${serializeItem(upgraded)}`;

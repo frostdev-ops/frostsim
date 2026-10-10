@@ -180,7 +180,7 @@
         <input
           type="file"
           accept=".json,application/json"
-          class="sr-only"
+          hidden
           bind:this={importInput}
           onchange={onImport}
         />

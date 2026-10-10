@@ -34,7 +34,10 @@
   import { fmtDelta, fmtDeltaPct, fmtInt, fmtSeconds } from '../lib/format'
   import { estimateSearchSeconds, type SearchTiming } from '../lib/estimate'
   import { href, navigate } from '../lib/router.svelte'
-  import { newId } from '../lib/store/records'
+  import { newId, type StoredSetup } from '../lib/store/records'
+  import { resumeLedger, readSearchCheckpoint } from '../lib/store/search-checkpoint'
+  import { saveSearchCheckpoint, clearSearchCheckpoint } from '../lib/app.svelte'
+  import type { WorkerPlanOptions } from '../lib/catalog/protocol'
   import RunStatus from '../lib/ui/RunStatus.svelte'
   import SimLog from '../lib/ui/SimLog.svelte'
   import { ProgressBuffer } from '../lib/ui/progress'
@@ -48,9 +51,23 @@
   import { KIND_LABELS, groupInstances, tilesByKind } from '../lib/lootTiles'
   import { ms, stagger, reducedMotion } from '../lib/theme.svelte'
   import { fly, slide } from 'svelte/transition'
+  import { crestCurrencies, upgradeCostLabel } from '../lib/catalog/upgradeCosts'
+  let useUpgradeBudget = $state(false)
+  let upgradeLimits = $state<Record<number, number | undefined>>({})
+  let upgradeGold = $state<number | undefined>(undefined)
+  const budgetCurrencies = $derived(crestCurrencies(app.catalogRules))
+  const upgradeBudget = $derived(useUpgradeBudget ? {
+    currencies: Object.fromEntries(Object.entries(upgradeLimits).filter(([, value]) => value !== undefined)) as Record<number, number>,
+    money: upgradeGold === undefined ? undefined : Math.round(upgradeGold * 10_000),
+  } : undefined)
 
   const character = $derived(activeCharacter())
   const stored = $derived(activeStored())
+  const pendingSearches = $derived(app.setups.filter(row => row.tool === 'droptimizer' && row.characterId === stored?.id && row.checkpoint))
+  let checkpointNotice = $state('')
+  type FrozenDropRequest = { character: NonNullable<typeof character>; sources: DropSource[];
+    options: WorkerPlanOptions & { allEligibleSlots: boolean }; plan: typeof searchPlan;
+    settings: ReturnType<typeof dropSettings.snapshot>; extraLines: string[]; characterId?: string; title: string; label: string; baselineMax: boolean }
   const busy = $derived(isBusy())
   const level = $derived(character?.level ?? 0)
   const upgradeTracks = $derived(tracksFor(app.catalogRules))
@@ -64,6 +81,8 @@
   const raidRewardLabel = (source: LootSource, difficulty: RaidDifficulty, max: boolean, bonus: boolean) => raidRules.raidRewardLabel(source, difficulty, max, bonus, app.catalogRules)
 
   let allSlots = $state(true)
+  let baselineMax = $state(false)
+  let resultBaselineMax = $state(false)
   let result = $state<OptimizationResult | null>(null)
   let resultGear = $state<ItemInstance[]>([])
   let scenarios = $state<DropScenario[]>([])
@@ -85,7 +104,10 @@
   )
   const baselineGear = $derived(
     new Map<GearSlot, ItemInstance | null>(
-      GEAR_SLOTS.map((slot) => [slot, equippedBySlot.get(slot) ?? null]),
+      GEAR_SLOTS.map((slot) => {
+        const item = equippedBySlot.get(slot)
+        return [slot, item ? baselineMax ? withMaxUpgrade(item) ?? item : item : null]
+      }),
     ),
   )
 
@@ -324,14 +346,15 @@
     const client = catalogClient()
     const selected = selectedSources.map(dropSourceFor).filter((s): s is DropSource => !!s).map(evaluatedSource)
     const ready = rewardReady
-    const options = character ? { ...planOptions(character, [...baselineGear.entries()]), plan: searchPlan, allEligibleSlots: allSlots } : null
+    const options = character ? { ...planOptions(character, [...baselineGear.entries()]), plan: searchPlan, allEligibleSlots: allSlots,
+      ownedItems: [...character.equipped, ...character.bag], highWatermarks: character.highWatermarks, budget: upgradeBudget } : null
     plannedCount = null
     planningError = ''
     if (!client || !options || !selected.length || !ready) return
     let cancelled = false
     const timer = setTimeout(() => {
       client.planDroptimizer(selected, options)
-        .then(p => { if (!cancelled) plannedCount = p?.scenarios.length ?? 0 })
+        .then(p => { if (!cancelled) { plannedCount = p?.scenarios.length ?? 0; if (!plannedCount && p?.warnings.length) planningError = p.warnings.join('; ') } })
         .catch(e => { if (!cancelled) planningError = e instanceof Error ? e.message : String(e) })
     }, 150)
     return () => { cancelled = true; clearTimeout(timer) }
@@ -367,13 +390,21 @@
     return () => clearInterval(timer)
   })
 
-  async function go(): Promise<void> {
-    if (!character || !canRun || busy || plannedCount === null || plannedCount === 0) return
+  async function go(saved?: StoredSetup): Promise<void> {
+    if (!character || busy || !saved && (!canRun || plannedCount === null || plannedCount === 0)) return
+    const checkpoint = saved ? readSearchCheckpoint(saved.checkpoint) : null
+    const restored = checkpoint?.request as { setup?: FrozenDropRequest; identity?: string } | undefined
+    if (saved && (!checkpoint || !restored?.setup?.character?.raw || !restored.setup.sources?.length || !restored.setup.plan?.stages?.length || !restored.setup.options?.baselineGear)) {
+      error = 'This checkpoint is incompatible or damaged. The saved setup is unchanged; start a new search.'
+      return
+    }
     let client: Awaited<ReturnType<typeof ensureCatalog>> = null
+    let executionPolicy: typeof import('../lib/account/placement.svelte') | null = null
     try {
       client = await ensureCatalog()
+      if (import.meta.env.VITE_FEATURE_ACCOUNTS === true) executionPolicy = await import('../lib/account/placement.svelte')
     } catch (err) {
-      error = `Game data could not be loaded: ${err instanceof Error ? err.message : String(err)}`
+      error = `Game data or execution settings could not be loaded: ${err instanceof Error ? err.message : String(err)}`
       return
     }
     if (!client) {
@@ -392,8 +423,8 @@
     logBuffer = new ProgressBuffer()
     engineLog = []
 
-    const sources: DropSource[] = []
-    if (selectedSources.length && rewardReady) {
+    const sources: DropSource[] = restored?.setup?.sources ?? []
+    if (!restored && selectedSources.length && rewardReady) {
       const skipped: string[] = []
       for (const s of selectedSources) {
         const converted = dropSourceFor(s)
@@ -418,26 +449,41 @@
 
     const jobId = newId()
     ownedJobId = jobId
-    const title = `${stored?.label ?? character.name} — Droptimizer`
+    const title = restored?.setup?.title ?? `${stored?.label ?? character.name} — Droptimizer`
     // Marker so a run killed by reload is not silent.
     markStarted({ tool: 'droptimizer', title, startedAt: Date.now() })
     app.job = {
-      character: runCharacter(),
+      character: restored?.setup ? { id: restored.setup.characterId, label: restored.setup.label ?? restored.setup.character.name,
+        className: restored.setup.character.className, spec: restored.setup.character.spec } : runCharacter(),
       id: jobId, tool: 'droptimizer', title,
       status: 'validating', startedAt: Date.now(),
     }
 
     const controller = new AbortController()
     cancelRun = () => controller.abort()
-    const snapshot = $state.snapshot(character)
-    resultGear = snapshot.equipped
+    const snapshot = restored?.setup?.character ?? $state.snapshot(character)
+    const frozen = restored?.setup ?? $state.snapshot({ character: snapshot, sources,
+      options: { ...planOptions(snapshot, [...baselineGear.entries()]),
+        plan: searchPlan, allEligibleSlots: allSlots, ownedItems: [...snapshot.equipped, ...snapshot.bag],
+        highWatermarks: snapshot.highWatermarks, budget: upgradeBudget },
+      plan: searchPlan, settings: dropSettings.snapshot(), extraLines: dropSettings.extraProfileLines() ?? [],
+      characterId: stored?.id, title, label: stored?.label ?? snapshot.name, baselineMax })
+    const effectiveSettings = { fightStyle: frozen.settings.fightStyle, maxTime: frozen.settings.maxTime,
+      targets: frozen.settings.targets, threads: Math.min(frozen.settings.threads, maxThreads()) }
+    const execution = executionPolicy?.executionIdentity() ?? 'browser'
+    const requestIdentity = JSON.stringify({ settings: effectiveSettings, extraLines: frozen.extraLines,
+      execution, algorithm: 'adaptive-v2', engine: engineIdentityString(), pack: app.engine?.id,
+      artifact: app.capability?.ok ? [app.capability.artifact, app.capability.manifest.files?.['simc.wasm']?.sha256] : null,
+      data: app.catalogManifest?.files.map(file => [file.path, file.sha256]), budget: frozen.options.budget })
+    let checkpointId = saved?.id
+    let saveFailed = !app.capability?.ok || !app.capability.manifest.files?.['simc.wasm']?.sha256
+    checkpointNotice = saveFailed ? 'Search resume is unavailable without the engine artifact hash; this search continues in this tab.' : ''
+    resultGear = frozen.options.baselineGear.map(([, item]) => item).filter((item): item is ItemInstance => !!item && 'optionOrder' in item)
+    resultBaselineMax = frozen.baselineMax
 
     try {
-      const plan = await client.planDroptimizer(sources, {
-        ...planOptions(snapshot, GEAR_SLOTS.map((slot) => [slot, snapshot.equipped.find((item) => item.slot === slot) ?? null])),
-        plan: searchPlan,
-        allEligibleSlots: allSlots,
-      })
+      if (checkpoint && restored?.identity !== requestIdentity) throw Error('The engine or effective settings changed. This checkpoint is preserved; start a new search.')
+      const plan = await client.planDroptimizer(frozen.sources, frozen.options)
       if (!plan) {
         error = 'Game data is required to evaluate an item, and the catalog did not answer.'
         return
@@ -449,21 +495,30 @@
 
       const batch = makeRunBatch({
         onOutcome: value => shareOutcome = value,
-        settings: {
-          fightStyle: dropSettings.fightStyle, maxTime: dropSettings.maxTime,
-          targets: dropSettings.targets, threads: Math.min(dropSettings.threads, maxThreads()),
-        },
-        extraProfileLines: dropSettings.extraProfileLines(),
+        settings: effectiveSettings,
+        extraProfileLines: frozen.extraLines,
         buffer: logBuffer,
         onEvent: () => { engineLog = [...logBuffer.lines] },
       })
-      const finalStage = searchPlan.stages[searchPlan.stages.length - 1]
+      const finalStage = frozen.plan.stages[frozen.plan.stages.length - 1]
       const r = await runAdaptiveSearch(plan.scenarios.map((s) => s.candidate), {
-        profile: buildProfile(snapshot),
+        profile: buildProfile(snapshot, frozen.baselineMax ? { items: Object.fromEntries(frozen.options.baselineGear) as Partial<Record<GearSlot, ItemInstance | null>> } : {}),
         catalogId: plan.catalogId,
         // Without this cache never warms and runner warns once per batch, producing identical strings.
         engineIdentity: engineIdentityString(),
+        ledger: checkpoint ? resumeLedger(checkpoint) : undefined,
+        requestIdentity,
+        onCheckpoint: async ledger => {
+          if (saveFailed) return
+          const id = await saveSearchCheckpoint('droptimizer', frozen.title, frozen.characterId, frozen.settings,
+            { version: 1, request: { setup: frozen, identity: requestIdentity }, ledger }, checkpointId)
+          if (id) checkpointId = id
+          else { saveFailed = true; checkpointNotice = 'Search resume is unavailable; this search continues in this tab.' }
+        },
         runBatch: async request => {
+          if ((executionPolicy?.executionIdentity() ?? 'browser') !== execution) {
+            throw Error('The execution setting changed. The checkpoint is preserved; start a new search.')
+          }
           const started = performance.now()
           const outcome = await batch(request)
           const seconds = (performance.now() - started) / 1000
@@ -487,21 +542,23 @@
           }
         },
       }, {
-        targetError: finalStage.accuracy.mode === 'targetError' ? finalStage.accuracy.targetError : dropSettings.targetError,
+        targetError: finalStage.accuracy.mode === 'targetError' ? finalStage.accuracy.targetError : frozen.settings.targetError,
         maxIterations: iterationCeiling(finalStage.accuracy),
-        minIterations: searchPlan.minIterations,
-        retentionFactor: searchPlan.retentionFactor,
-        correctForMultipleComparisons: searchPlan.correctForMultipleComparisons,
+        minIterations: frozen.plan.minIterations,
+        retentionFactor: frozen.plan.retentionFactor,
+        correctForMultipleComparisons: frozen.plan.correctForMultipleComparisons,
       }, controller.signal)
       if (app.job?.id !== jobId) return
       result = r
+      if (!r.incomplete && checkpointId) await clearSearchCheckpoint(checkpointId)
       app.job.status = r.incomplete ? 'error' : 'complete'
       await saveReport({
           character: app.job?.character,
         tool: 'droptimizer',
         title: app.job.title,
         completion: r.incomplete ? 'partial' : 'complete',
-        requestSnapshot: { sources: selectedSources.map(s => s.id), raidDifficulty: useRaidRewards ? raidDifficulty : undefined, keyLevel: useMplusRewards ? keyLevel : undefined, bonusRoll: useRaidRewards || useMplusRewards ? bonusRoll : undefined, maxRaidUpgrade: useRaidRewards || useMplusRewards ? maxRaidUpgrade : undefined, itemLevel: useRaidRewards || useMplusRewards ? undefined : sourceItemLevel, trackId: useRaidRewards || useMplusRewards ? undefined : sourceTrackId, rank: !useRaidRewards && !useMplusRewards && sourceTrackId ? sourceRank : undefined, allEligibleSlots: allSlots, settings: dropSettings.snapshot() },
+        requestSnapshot: { sources: frozen.sources, options: frozen.options,
+          settings: frozen.settings, extraLines: frozen.extraLines, baselineMax: frozen.baselineMax },
         summary: {
           dps: r.baseline?.mean,
           searchTiming: liveTiming ?? undefined,
@@ -607,7 +664,7 @@
       margin: row.gain?.margin ?? undefined,
       indistinguishable: indistinguishable(row.gain?.significant),
       status: row.status,
-      detail: `${SLOT_LABELS[row.scenario.slot]} · replaces ${row.scenario.replaces?.name ?? 'nothing'}`,
+      detail: `${SLOT_LABELS[row.scenario.slot]} · replaces ${row.scenario.replaces?.name ?? 'nothing'} · ${upgradeCostLabel(row.scenario.candidate.cost, app.catalogRules)}`,
       // Chip on every row says nothing; when whole run hypothetical, header says once and rows stay clean.
       hypothetical: !allHypothetical
         && row.scenario.candidate.delta.gear?.get(row.scenario.slot)?.source === 'hypothetical',
@@ -651,6 +708,16 @@
     <CatalogStatus />
 
     <!-- SOURCE -> BOSSES -> ITEMS -> RUN -> RANKED: tiles per instance/bosses/drops, one button; result folds setup to summary. -->
+    {#if pendingSearches.length && !running}
+      <section class="panel stack-sm" aria-label="Saved search progress">
+        <h2 class="small">Saved search progress</h2>
+        {#each pendingSearches as row (row.id)}
+          <div class="spread"><span class="small">{row.label}</span><div class="row-tight"><button class="sm" disabled={busy} onclick={() => go(row)}>Resume</button><button class="ghost sm" disabled={busy} onclick={() => clearSearchCheckpoint(row.id)}>Discard progress</button></div></div>
+        {/each}
+        <p class="xs muted">Resumes the saved inputs. Engine or effective-setting changes require a new search.</p>
+      </section>
+    {/if}
+    {#if checkpointNotice}<p class="xs" role="status">{checkpointNotice}</p>{/if}
     <section class="panel stack setup" bind:this={setupPanel} hidden={running} class:collapsed={result && !setupOpen}>
       <header>
         <div class="stack-sm">
@@ -675,7 +742,7 @@
           {:else}
             <button
               class="primary"
-              onclick={go}
+              onclick={() => go()}
               aria-describedby={nextStep ? 'drop-next-step' : undefined}
               disabled={!canRun || !plannedCount || !candidateComparisonsSupported() || app.catalogState !== 'ready' || busy}
             >
@@ -852,6 +919,25 @@
         {/if}
 
         <details class="disclosure">
+          <summary>Upgrade budget</summary>
+          <div class="stack-sm">
+            <label class="check small"><input type="checkbox" bind:checked={useUpgradeBudget} disabled={!app.catalogRules?.costs} />Limit crest and upgrade gold spending</label>
+            {#if useUpgradeBudget}
+              <button class="sm" disabled={!character.currencies?.upgrade} onclick={() => upgradeLimits = { ...character.currencies?.upgrade }}>Use imported crests</button>
+              {#each budgetCurrencies as currency (currency.id)}
+                <label class="small">{currency.name}<input type="number" min="0" step="1" placeholder="Unbounded" bind:value={upgradeLimits[currency.id]} /></label>
+              {/each}
+              <label class="small">Gold for upgrades<input type="number" min="0" step="0.01" placeholder="Unbounded" bind:value={upgradeGold} /></label>
+              <p class="xs muted">Blank limits are unbounded; zero permits no spending. Unverified transformations are excluded. Armor high-watermarks waive eligible crest costs; gold remains charged.</p>
+            {:else if !app.catalogRules?.costs}
+              <p class="xs muted">Verified upgrade costs are unavailable for this engine pack.</p>
+            {/if}
+          </div>
+        </details>
+        <label class="check small"><input type="checkbox" bind:checked={baselineMax} disabled={!app.catalogRules?.upgrades} />Compare against equipped gear upgraded to its track maximum</label>
+        {#if baselineMax}<p class="xs muted">This is a hypothetical baseline. Unknown or crafted tracks stay unchanged; budgets include the required equipped-item upgrades in each candidate.</p>{/if}
+
+        <details class="disclosure">
           <summary>Run settings</summary>
           <SettingsForm settings={dropSettings} character={character} perCandidate />
         </details>
@@ -920,7 +1006,7 @@
             <div class="row-tight">
               {#if result.baseline}
                 <span class="small muted">
-                  Current gear <b class="num">{fmtInt(result.baseline.mean)}</b>
+                  {resultBaselineMax ? 'Upgraded baseline' : 'Current gear'} <b class="num">{fmtInt(result.baseline.mean)}</b>
                   {#if result.baseline.margin !== null && result.baseline.margin !== undefined}
                     <span class="faint">±{fmtInt(result.baseline.margin)}</span>
                   {/if}

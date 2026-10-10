@@ -4,22 +4,13 @@ import { Catalog, type CatalogPayloads } from './catalog';
 import type { CatalogManifest, TalentTree } from './types';
 import { rulesMatch, type SeasonRules } from './rules';
 import type { EngineChannel } from '../simc/channel';
-import { isEngineChannel } from '../simc/channel';
+import { manifestProblems, payloadProblems, talentTreeProblems } from './validation';
 
 export const SUPPORTED_CATALOG_SCHEMA = 1;
 
 /** Validate fields read before and during catalog use; malformed metadata must settle loading. */
 export function validCatalogManifest(manifest: CatalogManifest): boolean {
-  const engine = manifest?.engine;
-  return !!engine && typeof manifest.catalogId === 'string' && Array.isArray(manifest.coverage)
-    && manifest.coverage.every(entry => !!entry && typeof entry.field === 'string'
-      && ['verified', 'partial', 'unavailable'].includes(entry.status))
-    && !!manifest.counts && typeof manifest.counts === 'object' && Array.isArray(manifest.files)
-    && typeof engine.clientDataVersion === 'string' && typeof engine.hotfixHash === 'string'
-    && (engine.upstreamCommit === null || typeof engine.upstreamCommit === 'string')
-    && (manifest.engineChannel === undefined || isEngineChannel(manifest.engineChannel))
-    && (engine.engineChannel === undefined || isEngineChannel(engine.engineChannel))
-    && (!manifest.engineChannel || !engine.engineChannel || manifest.engineChannel === engine.engineChannel);
+  return manifestProblems(manifest).length === 0;
 }
 
 export interface EngineIdentity {
@@ -62,10 +53,10 @@ export function checkCompatibility(manifest: CatalogManifest, engine: EngineIden
       message: `catalog hotfix ${c.hotfixHash.slice(0, 12)} does not match engine hotfix ${engine.hotfixHash.slice(0, 12)}`,
     });
   }
-  if (engine.upstreamCommit && c.upstreamCommit && engine.upstreamCommit !== c.upstreamCommit) {
+  if (engine.upstreamCommit && engine.upstreamCommit !== c.upstreamCommit) {
     out.push({
       code: 'engine_commit_mismatch',
-      message: `catalog built from ${c.upstreamCommit.slice(0, 7)}, engine from ${engine.upstreamCommit.slice(0, 7)}`,
+      message: `catalog built from ${c.upstreamCommit?.slice(0, 7) ?? 'unknown'}, engine from ${engine.upstreamCommit.slice(0, 7)}`,
     });
   }
   if (!engine.engineChannel && engine.ptr !== undefined && engine.ptr !== c.ptr) {
@@ -104,7 +95,7 @@ export async function loadCatalog(opts: LoadOptions): Promise<CatalogLoadResult>
   }
   if (!validCatalogManifest(manifest)) return { ok: false, reason: 'malformed', message: 'Catalog manifest is missing valid engine identity or metadata.' };
   const warnings = checkCompatibility(manifest, opts.engine ?? null);
-  if (warnings.some(w => w.code === 'ptr_mismatch')) return { ok: false, reason: 'malformed', message: 'Catalog belongs to a different engine channel.' };
+  if (warnings.some(w => w.code !== 'engine_identity_unknown')) return { ok: false, reason: 'malformed', message: warnings.map(w => w.message).join('; ') };
 
   try {
     const [items, bonus, scaling, enchants, gems, sets, embellishments, consumables] = await Promise.all([
@@ -120,9 +111,8 @@ export async function loadCatalog(opts: LoadOptions): Promise<CatalogLoadResult>
     const payloads = { manifest, items, bonus, scaling, enchants, gems, sets, embellishments, consumables } as CatalogPayloads;
     const rules = await fetchJson(baseUrl, 'rules.json', signal).catch(() => null) as SeasonRules | null;
     payloads.rules = rules && rulesMatch(rules, manifest) ? rules : null;
-    if (!payloads.items?.count || !Array.isArray(payloads.items.id)) {
-      return { ok: false, reason: 'malformed', message: 'items.json is missing its columns' };
-    }
+    const problems = payloadProblems(payloads);
+    if (problems.length) return { ok: false, reason: 'malformed', message: problems.join('; ') };
     return { ok: true, catalog: new Catalog(payloads), warnings: checkCompatibility(manifest, opts.engine ?? null) };
   } catch (err) {
     return { ok: false, reason: 'unavailable', message: `catalog payload unavailable: ${String(err)}` };
@@ -132,7 +122,8 @@ export async function loadCatalog(opts: LoadOptions): Promise<CatalogLoadResult>
 /** Talent trees are per class and loaded only for the character in front of the user. */
 export async function loadTalentTree(baseUrl: string, classId: number, signal?: AbortSignal): Promise<TalentTree | null> {
   try {
-    return (await fetchJson(baseUrl, `talents/class-${classId}.json`, signal)) as TalentTree;
+    const tree = (await fetchJson(baseUrl, `talents/class-${classId}.json`, signal)) as TalentTree;
+    return talentTreeProblems(tree, classId).length ? null : tree;
   } catch {
     return null;
   }

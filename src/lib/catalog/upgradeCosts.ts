@@ -1,7 +1,9 @@
 // Season upgrade costs and weekly crest supply from generated/upgrade-costs.json (engine-pinned DB2s). No hardcoded costs, currency ids, or caps.
 import data from './generated/upgrade-costs.json';
-import { GEAR_SLOTS, type GearSlot } from './types';
+import { GEAR_SLOTS, type GearSlot, type ItemInstance } from './types';
 import { liveRules, type SeasonRules } from './rules';
+import { itemUpgradeTrack } from './upgrades';
+import type { CandidateCost, UpgradeBudget } from '../optimization/types';
 
 /** Crest wallet cap and weekly earn; unencoded fields are null and named in unavailable. */
 export interface CapModel {
@@ -185,4 +187,63 @@ export function characterWatermarks(
 ): Record<number, number> {
   return Object.fromEntries((character.highWatermarks ?? [])
     .map(row => [row.slotIndex, Math.max(row.current, row.max)]));
+}
+
+/** One physical item's rank transformation; never infer a starting rank from level. */
+export function itemUpgradeCost(item: ItemInstance, original: ItemInstance | undefined, rules: SeasonRules | null,
+  watermarks?: SlotWatermarks['watermarks'], received = false): CandidateCost {
+  const unknownCosts: string[] = [];
+  const known = itemUpgradeTrack(item, rules);
+  const start = received && item.upgradeOrigin
+    ? { track: { id: item.upgradeOrigin.trackId }, rank: { rank: item.upgradeOrigin.rank } }
+    : original ? itemUpgradeTrack(original, rules) : item.upgradeOrigin
+    ? { track: { id: item.upgradeOrigin.trackId }, rank: { rank: item.upgradeOrigin.rank } } : null;
+  const cost: CandidateCost = { currencies: {}, money: 0, unknownCosts };
+  if (!original && !received && !item.vaultRewardId) unknownCosts.push('item acquisition');
+  if (item.itemLevel !== original?.itemLevel || received && item.itemLevel !== undefined || item.upgradeTrackHypothetical) unknownCosts.push('hypothetical item level or track');
+  if (JSON.stringify(item.craftedStats ?? []) !== JSON.stringify(original?.craftedStats ?? [])
+    || (item.craftingQuality ?? 0) !== (original?.craftingQuality ?? 0)) unknownCosts.push('crafting reagents and eligibility');
+  if (JSON.stringify(item.gemIds ?? []) !== JSON.stringify(original?.gemIds ?? []) || item.enchantId !== original?.enchantId) unknownCosts.push('gem or enchant acquisition');
+  if (original && rules && rules.upgrades && original.itemId !== item.itemId) unknownCosts.push('item conversion');
+  if (original && JSON.stringify(item.bonusIds.filter(id => !rules?.upgrades?.tracks.some(track => track.ranks.some(rank => rank.bonusId === id))).sort((a, b) => a - b))
+    !== JSON.stringify(original.bonusIds.filter(id => !rules?.upgrades?.tracks.some(track => track.ranks.some(rank => rank.bonusId === id))).sort((a, b) => a - b))) unknownCosts.push('bonus transformation');
+  if (known && start && (known.track.id !== start.track.id || known.rank.rank < start.rank.rank)) unknownCosts.push('track conversion or downgrade');
+  else if (known && start && known.rank.rank > start.rank.rank) {
+    if (!rules?.costs) unknownCosts.push('upgrade currency and gold');
+    else {
+      try {
+        let upgraded = upgradeStepCost(known.track.id, start.rank.rank, known.rank.rank, rules);
+        const slotIndex = watermarkSlotForGear(item.slot, rules);
+        if (slotIndex !== null && watermarks?.length) upgraded = applyHighWatermark(upgraded, { slotIndex, watermarks }, known.track.id, known.rank.rank, rules);
+        cost.currencies = upgraded.currencies;
+        cost.money = upgraded.money;
+        unknownCosts.push(...(upgraded.unavailable ?? []));
+      } catch { unknownCosts.push('upgrade currency and gold'); }
+    }
+  } else if (item.upgradeOrigin && !known) unknownCosts.push('upgrade track identity');
+  return cost;
+}
+
+export function budgetProblem(cost: CandidateCost, budget: UpgradeBudget | undefined): string | null {
+  if (!budget) return null;
+  if (cost.unknownCosts.length) return `Cost unavailable: ${cost.unknownCosts.join(', ')}`;
+  for (const [id, limit] of Object.entries(budget.currencies ?? {})) {
+    if (!Number.isInteger(Number(id)) || Number(id) <= 0 || !Number.isSafeInteger(limit) || limit < 0) throw Error('Currency budgets must be whole amounts at least zero.');
+    if ((cost.currencies?.[Number(id)] ?? 0) > limit) return `Currency ${id} budget`;
+    if (cost.currencies === undefined) return `Currency ${id} cost unavailable`;
+  }
+  if (budget.money !== undefined) {
+    if (!Number.isSafeInteger(budget.money) || budget.money < 0) throw Error('Gold budget must be a whole copper amount at least zero.');
+    if (cost.money === undefined) return 'Gold cost unavailable';
+    if (cost.money > budget.money) return 'Gold budget';
+  }
+  return null;
+}
+
+export function upgradeCostLabel(cost: CandidateCost, rules: SeasonRules | null): string {
+  if (cost.unknownCosts.length) return `Unverified cost: ${cost.unknownCosts.join(', ')}`;
+  const parts = Object.entries(cost.currencies ?? {}).filter(([, count]) => count > 0).map(([id, count]) =>
+    `${count} ${crestCurrencies(rules).find(currency => currency.id === Number(id))?.name ?? `currency ${id}`}`);
+  if (cost.money) parts.push(`${(cost.money / 10_000).toLocaleString(undefined, { maximumFractionDigits: 4 })} gold`);
+  return parts.length ? `Upgrade cost: ${parts.join(' · ')}` : 'No upgrade spending';
 }

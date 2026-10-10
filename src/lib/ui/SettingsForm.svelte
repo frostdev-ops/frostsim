@@ -2,7 +2,7 @@
   import { FIGHT_PRESETS } from '../simc/client'
   import type { ToolSettings } from '../settings.svelte'
   import type { ImportedCharacter } from '../import/character'
-  import { maxThreads } from '../app.svelte'
+  import { app, maxThreads } from '../app.svelte'
   import { RAID_BUFFS, type RaidBuff } from '../simc/raid-buffs'
   import GameIcon from './GameIcon.svelte'
   import EquipmentOptions from './EquipmentOptions.svelte'
@@ -16,6 +16,9 @@
   const lockedTargets = $derived(['DungeonSlice', 'DungeonRoute'].includes(settings.fightStyle))
   const standardAccuracy = $derived(settings.accuracyMode === 'targetError' && [0.1, 0.05].includes(settings.targetError) && settings.maxIterations === 100000)
   const highPrecision = $derived(standardAccuracy && settings.targetError === 0.05)
+  const initialMemory = $derived(app.capability?.manifest?.build?.artifactFlags?.initialMemory)
+  const memoryLimit = $derived(app.capability?.manifest?.build?.linkFlags?.match(/(?:^|\s)-sMAXIMUM_MEMORY=(\d+)(kb|mb|gb)?(?:\s|$)/i))
+  const maximumMemory = $derived(memoryLimit ? Number(memoryLimit[1]) * ({ kb: 1024, mb: 1024 ** 2, gb: 1024 ** 3 }[memoryLimit[2]?.toLowerCase() as 'kb' | 'mb' | 'gb'] ?? 1) : null)
 </script>
 <div class="settings stack">
   {#if !rawScript}
@@ -40,8 +43,11 @@
         <label class="field"><span>Accuracy mode</span><select bind:value={settings.accuracyMode} disabled={staged}><option value="targetError">Target error</option><option value="iterations">Fixed iterations</option>{#if rawScript}<option value="script">Use script settings</option>{/if}</select></label>
         {#if settings.accuracyMode === 'targetError'}<label class="field"><span>{perCandidate ? 'Error per candidate (%)' : 'Target error (%)'}</span><input type="number" min="0.01" max="10" step="0.01" bind:value={settings.targetError} /></label><label class="field"><span>Maximum iterations</span><input type="number" min="100" max="1000000" step="100" bind:value={settings.maxIterations} /></label>
         {:else if settings.accuracyMode === 'iterations'}<label class="field"><span>Iterations</span><input type="number" min="100" max="1000000" step="100" bind:value={settings.iterations} /></label>{/if}
-        <label class="field"><span>Threads</span><input type="number" min="1" max={maxThreads()} bind:value={settings.threads} /></label>
+        <label class="field"><span>Throughput</span><select bind:value={settings.threadPolicy}><option value="balanced">Balanced</option><option value="maximum">Maximum</option><option value="manual">Manual</option></select></label>
+        {#if settings.threadPolicy === 'manual'}<label class="field"><span>Thread ceiling</span><input type="number" min="1" max={maxThreads()} value={settings.threads} onchange={(e) => settings.threads = Number(e.currentTarget.value)} /></label>{/if}
       </div>
+      <p class="xs muted">{settings.threads} thread{settings.threads === 1 ? '' : 's'} for this run. Balanced uses up to 8; Maximum uses the browser's CPU hint, within the engine's {maxThreads()}-thread limit. The hint does not measure free cores or memory.</p>
+      <p class="xs muted">Memory: {#if initialMemory && Number.isFinite(initialMemory)}{Math.round(initialMemory / 1024 ** 2)} MiB initial engine allocation{:else}initial allocation unknown{/if}{#if maximumMemory && Number.isFinite(maximumMemory)}, up to {Math.round(maximumMemory / 1024 ** 2)} MiB engine growth{/if}. Browser peak memory is not measured; reports and candidates need additional space.</p>
       <label class="check small"><input type="checkbox" bind:checked={settings.htmlReport} />Include detailed HTML report</label>
     </div>
   </details>

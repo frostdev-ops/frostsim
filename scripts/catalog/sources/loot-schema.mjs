@@ -20,16 +20,38 @@ export function validateLootCatalog(catalog) {
   if (!Array.isArray(catalog.provenance) || catalog.provenance.length === 0) {
     problems.push('loot catalog has no provenance; a source without provenance is not usable');
   }
+  const generated = Date.parse(catalog.generatedAt);
+  const expires = Date.parse(catalog.expiresAt);
+  if (!Number.isFinite(generated)) problems.push('loot generatedAt is not a valid date');
+  if (catalog.expiresAt !== null && (!Number.isFinite(expires) || expires <= generated)) problems.push('loot expiry is not a valid date after generation');
+  if (!Array.isArray(catalog.warnings) || !catalog.warnings.every(warning => typeof warning === 'string')) problems.push('loot warnings is not an array of strings');
+  const provenance = Array.isArray(catalog.provenance) ? catalog.provenance : [];
+  const seenProviders = new Set();
+  for (const entry of provenance) {
+    if (!entry || !['provider', 'description', 'retention', 'attribution'].every(key => typeof entry[key] === 'string' && entry[key].trim())
+      || !Array.isArray(entry.limitations) || !entry.limitations.every(note => typeof note === 'string')) {
+      problems.push('loot provenance is missing description, retention, attribution or limitations');
+      continue;
+    }
+    if (seenProviders.has(entry.provider)) problems.push(`duplicate provenance provider ${entry.provider}`);
+    seenProviders.add(entry.provider);
+    if (entry.provider === 'blizzard-journal' && (catalog.expiresAt === null || expires - generated > BLIZZARD_API_MAX_RETENTION_DAYS * 86_400_000)) {
+      problems.push('Blizzard loot requires an expiry within its recorded 30-day retention limit');
+    }
+  }
 
   const seen = new Set();
-  const providers = new Set(catalog.provenance?.map((p) => p.provider) ?? []);
+  const providers = new Set(provenance.filter(Boolean).map((p) => p.provider));
   for (const source of catalog.sources) {
+    if (!source || typeof source !== 'object') { problems.push('a source is not an object'); continue; }
     if (!source.id || typeof source.id !== 'string') { problems.push('a source has no id'); continue; }
     if (seen.has(source.id)) problems.push(`duplicate source id ${source.id}`);
     seen.add(source.id);
-    if (!source.provider || !providers.has(source.provider)) {
+    if (typeof source.provider !== 'string' || !source.provider.split('+').every(provider => providers.has(provider))) {
       problems.push(`source ${source.id} names provider ${source.provider}, which has no provenance entry`);
     }
+    if (typeof source.name !== 'string' || !source.name.trim()
+      || !['raid', 'dungeon', 'delve', 'pvp', 'profession', 'vault', 'other'].includes(source.kind)) problems.push(`source ${source.id} has no valid name or kind`);
     if (!Array.isArray(source.itemIds) || source.itemIds.length === 0) {
       problems.push(`source ${source.id} has no items`);
       continue;
@@ -57,9 +79,9 @@ export function unknownItems(catalog, knownItemIds) {
 }
 
 export function isExpired(catalog, now = Date.now()) {
-  if (!catalog?.expiresAt) return false;
+  if (catalog?.expiresAt === null) return false;
   const t = Date.parse(catalog.expiresAt);
-  return Number.isFinite(t) && t <= now;
+  return !Number.isFinite(t) || t <= now;
 }
 
 export function emptyLootCatalog(warnings = []) {

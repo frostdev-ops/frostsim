@@ -8,6 +8,7 @@ export {
   type WorkerPlanOptions, type WorkerState,
 } from './protocol';
 export { loadCatalog, loadTalentTree, checkCompatibility, SUPPORTED_CATALOG_SCHEMA } from './load';
+export { manifestProblems, payloadProblems, talentTreeProblems, lootProblems } from './validation';
 export type { CatalogLoadResult, CompatWarning, EngineIdentity, LoadOptions } from './load';
 export { serializeItem, serializeEmptySlot, serializeGear, itemToken, SerializeError } from './serialize';
 export { checkItemForSlot, checkGearSet, checkSockets, isLegal, raceAllowed } from './legality';

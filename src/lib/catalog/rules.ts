@@ -36,6 +36,9 @@ export function rulesMatch(rules: SeasonRules, manifest: CatalogManifest): boole
     const quantity = (value: unknown) => value === null || Number.isFinite(value) && (value as number) >= 0;
     const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(entry => typeof entry === 'string');
     const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+    const unique = (values: unknown[]) => new Set(values).size === values.length;
+    const provenance = (sources: { url: string; sha256: string }[]) => Array.isArray(sources) && sources.length > 0
+      && sources.every(source => source.url.startsWith('https://') && /^[a-f0-9]{64}$/.test(source.sha256));
     const rewardRank = (value: unknown) => Array.isArray(value) && value.length === 2
       && typeof value[0] === 'string' && positive(value[1]) && !!rules.upgrades?.tracks.some(track =>
         track.seasonId === rules.upgrades?.season.id && track.label === value[0] && track.ranks.some(rank => rank.rank === value[1]));
@@ -89,6 +92,34 @@ export function rulesMatch(rules: SeasonRules, manifest: CatalogManifest): boole
       && rules.weekly.rules.every(rule => typeof rule.class === 'string' && typeof rule.spec === 'string'
         && positive(rule.minLevel) && typeof rule.option === 'string' && /^[\w.]+$/.test(rule.option)
         && typeof rule.value === 'string' && /^[a-z0-9_:]+$/.test(rule.value)))) return false;
+    if (rules.upgrades && (rules.upgrades.engineCommit !== rules.engineCommit || !provenance(rules.upgrades.sources)
+      || !unique(rules.upgrades.tracks.map(track => track.id))
+      || !unique(rules.upgrades.tracks.flatMap(track => track.ranks.map(rank => rank.bonusId)))
+      || rules.upgrades.tracks.some(track => !unique(track.ranks.map(rank => rank.rank))
+        || track.ranks.some((rank, index, ranks) => rank.extended !== (rank.rank > track.max)
+          || rank.rank !== index + 1 || index > 0 && rank.itemLevel < ranks[index - 1].itemLevel)))) return false;
+    if (rules.costs) {
+      const costs = rules.costs;
+      const currencies = new Set([...costs.crests, ...costs.otherCurrencies].map(row => row.id));
+      if (costs.engineCommit !== rules.engineCommit || !provenance(costs.sources)
+        || !unique(costs.crests.map(row => row.id)) || !unique(costs.crests.map(row => row.tier))
+        || !unique(costs.tracks.map(row => row.trackId)) || !unique(costs.watermarkSlots.map(row => row.index))
+        || costs.crests.some(crest => !costs.tracks.some(track => track.trackId === crest.trackId))
+        || costs.tracks.some(cost => {
+          const track = rules.upgrades?.tracks.find(track => track.id === cost.trackId && track.seasonId === cost.seasonId);
+          return !track || !unique(cost.steps.map(step => step.toRank)) || cost.steps.length !== track.ranks.length - 1
+            || cost.steps.some(step => {
+              const rank = track.ranks.find(rank => rank.rank === step.toRank);
+              return !rank || rank.itemLevel !== step.itemLevel || step.money !== null && !Number.isInteger(step.money)
+                || step.currencies && Object.keys(step.currencies).some(id => !currencies.has(Number(id)))
+                || rank.extended && step.currencies !== null;
+            });
+        })) return false;
+    }
+    if (rules.raid && (!provenance(rules.raid.sources) || !unique(rules.raid.rewards.map(row => row.id))
+      || rules.raid.rewards.some(row => !unique(row.ignoredItemIds)
+        || row.ignoredItemIds.some(id => Object.hasOwn(row.byDifficulty.heroic, id))))) return false;
+    if (rules.vault && !unique(rules.vault.socketSlots)) return false;
     return true;
   } catch { return false; }
 }

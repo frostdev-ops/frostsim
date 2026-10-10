@@ -55,7 +55,9 @@
   import { display, resolveItem } from '../lib/items'
   import { fmtDelta, fmtDeltaPct, fmtInt, fmtSeconds, titleCase } from '../lib/format'
   import { href, navigate } from '../lib/router.svelte'
-  import { newId } from '../lib/store/records'
+  import { newId, type StoredSetup } from '../lib/store/records'
+  import { resumeLedger, readSearchCheckpoint } from '../lib/store/search-checkpoint'
+  import { saveSearchCheckpoint, clearSearchCheckpoint } from '../lib/app.svelte'
   import { fractionOf, ProgressBuffer, type EngineProgress } from '../lib/ui/progress'
   import Banner from '../lib/ui/Banner.svelte'
   import CatalogStatus from '../lib/ui/CatalogStatus.svelte'
@@ -66,6 +68,15 @@
   import ItemSearch from '../lib/ui/ItemSearch.svelte'
   import ItemUpgradePicker from '../lib/ui/ItemUpgradePicker.svelte'
   import { withMaxUpgrade as withPackMaxUpgrade } from '../lib/catalog/upgrades'
+  import { crestCurrencies, upgradeCostLabel } from '../lib/catalog/upgradeCosts'
+  let useUpgradeBudget = $state(false)
+  let upgradeLimits = $state<Record<number, number | undefined>>({})
+  let upgradeGold = $state<number | undefined>(undefined)
+  const budgetCurrencies = $derived(crestCurrencies(app.catalogRules))
+  const upgradeBudget = $derived(useUpgradeBudget ? {
+    currencies: Object.fromEntries(Object.entries(upgradeLimits).filter(([, value]) => value !== undefined)) as Record<number, number>,
+    money: upgradeGold === undefined ? undefined : Math.round(upgradeGold * 10_000),
+  } : undefined)
   import { VAULT_SOCKET_REWARD_ID, vaultRewardReference, vaultTokenCount as packVaultTokenCount } from '../lib/catalog/vaultRewards'
   const upgradeSeason = $derived(app.catalogRules?.upgrades?.season ?? { id: 0, name: 'Upgrade data unavailable' })
   const vaultCurrencySeason = $derived(app.catalogRules?.vault?.seasonId ?? -1)
@@ -102,6 +113,8 @@
   let restoredFor = $state<string | null>(null)
   /** Whose search state this is: a stored character, or the unsaved draft (its state is not kept past the page). */
   const stateKey = $derived(stored?.id ?? (character ? DRAFT : null))
+  const pendingSearches = $derived(app.setups.filter(row => row.tool === 'gear' && row.characterId === stored?.id && row.checkpoint))
+  let checkpointNotice = $state('')
   $effect(() => {
     const id = stateKey
     if (!id || restoredFor === id) return
@@ -530,6 +543,9 @@
             embellishmentLimit: embellishmentCap.enforce ? embellishmentCap.limit : undefined,
           }),
           plan: stagePlan,
+          ownedItems: [...character.equipped, ...character.bag, ...importedVault],
+          highWatermarks: character.highWatermarks,
+          budget: upgradeBudget,
         }
       : null,
   )
@@ -603,14 +619,26 @@
     selection = { ...selection }
   }
 
-  async function go(repeat = false): Promise<void> {
+  async function go(repeat = false, saved?: StoredSetup): Promise<void> {
     if ((!character && !lastSearch) || isBusy()) return
+    const checkpoint = saved ? readSearchCheckpoint(saved.checkpoint) : null
+    if (saved) {
+      const request = checkpoint?.request as { setup?: NonNullable<typeof lastSearch>; identity?: string } | undefined
+      if (!checkpoint || !request?.setup?.character?.raw || !request.setup.plan?.stages?.length || !request.setup.selection?.slots) {
+        searchError = 'This checkpoint is incompatible or damaged. The saved setup is unchanged; start a new search.'
+        return
+      }
+      lastSearch = request.setup
+      repeat = true
+    }
     // Nothing before try may reject; failure here used to abort silently leaving button broken.
     let client: Awaited<ReturnType<typeof ensureCatalog>> = null
+    let executionPolicy: typeof import('../lib/account/placement.svelte') | null = null
     try {
       client = await ensureCatalog()
+      if (import.meta.env.VITE_FEATURE_ACCOUNTS === true) executionPolicy = await import('../lib/account/placement.svelte')
     } catch (err) {
-      searchError = `Game data could not be loaded: ${err instanceof Error ? err.message : String(err)}`
+      searchError = `Game data or execution settings could not be loaded: ${err instanceof Error ? err.message : String(err)}`
       return
     }
     const opts = repeat ? lastSearch?.options : workerOptions
@@ -638,6 +666,20 @@
       searchError = err instanceof Error ? err.message : String(err)
       return
     }
+    const effectiveSettings = { fightStyle: setup.settings.fightStyle, maxTime: setup.settings.maxTime,
+      targets: setup.settings.targets, threads: Math.min(setup.settings.threads, maxThreads()) }
+    const execution = executionPolicy?.executionIdentity() ?? 'browser'
+    const requestIdentity = JSON.stringify({ settings: effectiveSettings, extraLines: setup.extraLines,
+      execution, algorithm: 'adaptive-v2', engine: engineIdentityString(), pack: app.engine?.id,
+      artifact: app.capability?.ok ? [app.capability.artifact, app.capability.manifest.files?.['simc.wasm']?.sha256] : null,
+      data: app.catalogManifest?.files.map(file => [file.path, file.sha256]), budget: setup.options.budget })
+    if (checkpoint && (checkpoint.request as { identity?: string }).identity !== requestIdentity) {
+      searchError = 'The engine or effective settings changed. This checkpoint is preserved; start a new search.'
+      return
+    }
+    let checkpointId = saved?.id
+    let saveFailed = !app.capability?.ok || !app.capability.manifest.files?.['simc.wasm']?.sha256
+    checkpointNotice = saveFailed ? 'Search resume is unavailable without the engine artifact hash; this search continues in this tab.' : ''
     lastSearch = setup
     searchError = ''
     result = null
@@ -665,7 +707,7 @@
     // killed by a reload. Without this marker that ending is completely silent.
     markStarted({ tool: 'gear', title: `${setup.label} — Top Gear`, startedAt: Date.now() })
     app.job = {
-      character: runCharacter(),
+      character: { id: setup.characterId ?? undefined, label: setup.label, className: setup.character.className, spec: setup.character.spec },
       id: jobId, tool: 'gear', title: `${setup.label} — Top Gear`,
       status: 'validating', startedAt: Date.now(),
     }
@@ -674,6 +716,13 @@
     // because runJob owns the engine worker.
     const controller = new AbortController()
     cancelSearch = () => controller.abort()
+    const batch = makeRunBatch({
+      onOutcome: value => shareOutcome = value,
+      settings: effectiveSettings,
+      extraProfileLines: $state.snapshot(resultExtraLines),
+      buffer: logBuffer,
+      onEvent: () => { engineLog = [...logBuffer.lines] },
+    })
 
     try {
       const plan = await client.planTopGear(runSelection, opts)
@@ -693,18 +742,21 @@
           catalogId: plan.catalogId,
           // Without this result cache never warms; engine identity arrives after first batch, too late; runner warns per batch.
           engineIdentity: engineIdentityString(),
-          runBatch: makeRunBatch({
-            onOutcome: value => shareOutcome = value,
-            settings: {
-              fightStyle: resultSettings.fightStyle,
-              maxTime: resultSettings.maxTime,
-              targets: resultSettings.targets,
-              threads: Math.min(resultSettings.threads, maxThreads()),
-            },
-            extraProfileLines: $state.snapshot(resultExtraLines),
-            buffer: logBuffer,
-            onEvent: () => { engineLog = [...logBuffer.lines] },
-          }),
+          ledger: checkpoint ? resumeLedger(checkpoint) : undefined,
+          requestIdentity,
+          onCheckpoint: async ledger => {
+            if (saveFailed) return
+            const id = await saveSearchCheckpoint('gear', setup.label, setup.characterId ?? undefined, setup.settings,
+              { version: 1, request: { setup, identity: requestIdentity }, ledger }, checkpointId)
+            if (id) checkpointId = id
+            else { saveFailed = true; checkpointNotice = 'Search resume is unavailable; this search continues in this tab.' }
+          },
+          runBatch: request => {
+            if ((executionPolicy?.executionIdentity() ?? 'browser') !== execution) {
+              throw Error('The execution setting changed. The checkpoint is preserved; start a new search.')
+            }
+            return batch(request)
+          },
           onProgress: (p) => {
             progress = p
             // Floor moves only on progress event; derived can add engine iteration signal without writing back into input.
@@ -728,6 +780,7 @@
       trace('search.returned', { incomplete: r.incomplete?.reason ?? null, candidates: r.candidates.length })
       // Generation notes belong with the result: a capped search is not exhaustive.
       const warnings = [...r.warnings]
+      for (const [constraint, count] of Object.entries(plan.report.rejectedBudget ?? {})) warnings.push(`${fmtInt(count)} combinations excluded: ${constraint}.`)
       if (plan.report.capped) {
         warnings.push(
           `generation stopped at the candidate cap; the selection describes at least ${plan.report.upperBound} combinations, so this search is not exhaustive`,
@@ -737,6 +790,7 @@
         warnings.push(`${plan.report.rejectedIllegal} combinations were rejected as illegal before reaching the engine`)
       }
       result = { ...r, warnings, generation: plan.report, comparisonCandidates: plan.candidates.length }
+      if (!r.incomplete && checkpointId) await clearSearchCheckpoint(checkpointId)
       app.job.status = r.incomplete ? 'error' : 'complete'
 
       // Saving must not discard finished search; measurements cost minutes and already on screen; TypeError or full disk not a reason to fail.
@@ -1158,6 +1212,16 @@
       </header>
 
       <CharacterBanner {character} characterId={stored?.id} />
+      {#if pendingSearches.length}
+        <section class="panel stack-sm" aria-label="Saved search progress">
+          <h2 class="small">Saved search progress</h2>
+          {#each pendingSearches as row (row.id)}
+            <div class="spread"><span class="small">{row.label}</span><div class="row-tight"><button class="sm" disabled={isBusy()} onclick={() => go(true, row)}>Resume</button><button class="ghost sm" disabled={isBusy()} onclick={() => clearSearchCheckpoint(row.id)}>Discard progress</button></div></div>
+          {/each}
+          <p class="xs muted">Resumes the saved inputs. Engine or effective-setting changes require a new search.</p>
+        </section>
+      {/if}
+      {#if checkpointNotice}<p class="xs" role="status">{checkpointNotice}</p>{/if}
 
       <nav class="quick-nav" aria-label="Top Gear sections">
         {#each [['gear-vault', 'Great Vault'], ['gear-items', 'Gear'], ['gear-enhancements', 'Enhancements'], ['gear-consumables', 'Consumables'], ['gear-talents', 'Talents'], ['gear-options', 'Options']] as [id, label]}
@@ -1440,13 +1504,29 @@
       </section>
 
       <details class="disclosure">
+        <summary>Upgrade budget</summary>
+        <div class="stack-sm">
+          <label class="check small"><input type="checkbox" bind:checked={useUpgradeBudget} disabled={!app.catalogRules?.costs} />Limit crest and upgrade gold spending</label>
+          {#if useUpgradeBudget}
+            <button class="sm" disabled={!character.currencies?.upgrade} onclick={() => upgradeLimits = { ...character.currencies?.upgrade }}>Use imported crests</button>
+            {#each budgetCurrencies as currency (currency.id)}
+              <label class="small">{currency.name}<input type="number" min="0" step="1" placeholder="Unbounded" bind:value={upgradeLimits[currency.id]} /></label>
+            {/each}
+            <label class="small">Gold for upgrades<input type="number" min="0" step="0.01" placeholder="Unbounded" bind:value={upgradeGold} /></label>
+            <p class="xs muted">Blank limits are unbounded; zero permits no spending. Unverified transformations are excluded. Armor high-watermarks waive eligible crest costs; gold remains charged.</p>
+          {:else if !app.catalogRules?.costs}
+            <p class="xs muted">Verified upgrade costs are unavailable for this engine pack.</p>
+          {/if}
+        </div>
+      </details>
+
+      <details class="disclosure">
         <summary>Not yet searchable</summary>
         <ul class="xs muted">
           <li>Catalyst conversions and crafted-quality variants of an item you do not own.</li>
           <li>
-            Currency budgets and affordability: the catalog has no upgrade-cost, crafting-reagent or
-            Catalyst-charge data, so no candidate is filtered on what it would cost. Costs show as
-            unknown, never as zero.
+            Crafting reagents, Catalyst conversions and acquisition prices are unverified.
+            Budgeted searches exclude these transformations; unbudgeted comparisons remain hypothetical.
           </li>
         </ul>
       </details>
@@ -1588,6 +1668,7 @@
           {/if}
           {#if result.baseline}<p class="small muted">Equipped baseline: {fmtInt(result.baseline.mean)} DPS{result.baseline.margin !== null ? ` ±${fmtInt(result.baseline.margin)}` : ''}</p>{/if}
           <p class="small">{rec.reason}</p>
+          {#if rec.winner}<p class="xs muted">{upgradeCostLabel(rec.winner.cost, app.catalogRules)}</p>{/if}
           {#if rec.engineProblems}
             <!--
               The ranking is still shown because it is the only evidence there

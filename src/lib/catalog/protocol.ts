@@ -3,6 +3,7 @@
 import { Catalog, type CatalogPayloads, type GemOption, type SearchQuery } from './catalog';
 import { checkCompatibility, validCatalogManifest, type CompatWarning, type EngineIdentity } from './load';
 import { rulesMatch, type SeasonRules } from './rules';
+import { payloadProblems, talentTreeProblems } from './validation';
 import type { CharacterConstraints } from './legality';
 import { collect, generate, type GenerationReport } from '../optimization/candidates';
 import {
@@ -10,7 +11,8 @@ import {
   type DropScenario, type DropSource, type UsabilityCriteria, type UsabilityReason,
 } from '../optimization/droptimizer';
 import { DEFAULT_WORK_CAP, estimateWork, selectionToDimensions, type Selection, type WorkEstimate } from '../optimization/topgear';
-import type { Candidate, StagePlan } from '../optimization/types';
+import type { Candidate, StagePlan, UpgradeBudget } from '../optimization/types';
+import type { SlotWatermarks } from './upgradeCosts';
 import type {
   CatalogManifest, Consumable, Embellishment, EnchantOption, GearSlot, ItemInstance, LootCatalog,
   LootProvenance, LootSource, ResolvedItem, SetBonus, SpecEntry, TalentTree,
@@ -59,6 +61,9 @@ export interface DropSourceCounts {
 }
 
 export interface WorkerPlanOptions {
+  ownedItems?: ItemInstance[];
+  highWatermarks?: SlotWatermarks['watermarks'];
+  budget?: UpgradeBudget;
   character: CharacterConstraints;
   /** Slot -> instance as pairs (Map survives structured clone but pairs simpler to validate). */
   baselineGear: [GearSlot, ItemInstance | null][];
@@ -188,6 +193,8 @@ export async function handleRequest(
   fetchJson: FetchJson = defaultFetchJson,
 ): Promise<CatalogResponse> {
   if (request.kind === 'load') {
+    state.catalog = null;
+    state.baseUrl = null;
     const base = request.baseUrl.replace(/\/+$/, '');
     let manifest: CatalogManifest;
     try {
@@ -200,7 +207,7 @@ export async function handleRequest(
     }
     if (!validCatalogManifest(manifest)) return { kind: 'load', ok: false, reason: 'malformed', message: 'Catalog manifest is missing valid engine identity or metadata.' };
     const warnings = checkCompatibility(manifest, request.engine);
-    if (warnings.some(w => w.code === 'ptr_mismatch')) return { kind: 'load', ok: false, reason: 'channel_mismatch', message: 'Catalog belongs to a different engine channel.' };
+    if (warnings.some(w => w.code !== 'engine_identity_unknown')) return { kind: 'load', ok: false, reason: 'engine_mismatch', message: warnings.map(w => w.message).join('; ') };
     try {
       const parts = await Promise.all(PAYLOAD_FILES.map((f) => fetchJson(`${base}/${f}`)));
       const [items, bonus, scaling, enchants, gems, sets, embellishments, consumables] = parts;
@@ -209,9 +216,8 @@ export async function handleRequest(
       const payloads = { manifest, items, bonus, scaling, enchants, gems, sets, embellishments, consumables, specs } as CatalogPayloads;
       const rules = await fetchJson(`${base}/rules.json`).catch(() => null) as SeasonRules | null;
       payloads.rules = rules && rulesMatch(rules, manifest) ? rules : null;
-      if (!payloads.items?.count || !Array.isArray(payloads.items.id)) {
-        return { kind: 'load', ok: false, reason: 'malformed', message: 'items.json is missing its columns' };
-      }
+      const problems = payloadProblems(payloads);
+      if (problems.length) return { kind: 'load', ok: false, reason: 'malformed', message: problems.join('; ') };
       const catalog = new Catalog(payloads);
       // Loot optional (only when adapter configured at build time); absence normal and never error.
       if (manifest.loot?.path) {
@@ -267,6 +273,7 @@ export async function handleRequest(
       if (cached) return { kind: 'talentTree', tree: cached };
       try {
         const tree = (await fetchJson(`${state.baseUrl}/talents/class-${request.classId}.json`)) as TalentTree;
+        if (talentTreeProblems(tree, request.classId).length) return { kind: 'talentTree', tree: null };
         catalog.registerTalentTree(tree);
         return { kind: 'talentTree', tree };
       } catch {
@@ -350,6 +357,7 @@ export async function handleRequest(
         preferredGems: request.options.preferredGems,
         preferredEnchants: request.options.preferredEnchants,
         preferredCraftedStats: request.options.preferredCraftedStats,
+        ownedItems: request.options.ownedItems, highWatermarks: request.options.highWatermarks, budget: request.options.budget,
       });
       return {
         kind: 'planDroptimizer',
@@ -368,6 +376,7 @@ function countItems(sources: DropSource[]): number {
 
 function planOptions(catalog: Catalog, options: WorkerPlanOptions) {
   return {
+    ownedItems: options.ownedItems, highWatermarks: options.highWatermarks, budget: options.budget,
     catalog,
     character: options.character,
     baselineGear: new Map<GearSlot, ItemInstance | null>(options.baselineGear),

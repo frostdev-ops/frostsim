@@ -22,7 +22,6 @@ import { candidatesDone, latestProgress, type EngineProgress } from './progress'
 import { acquireEngineSlot, type EngineSlot } from '../engine-budget'
 import { roleGroups, roleNote } from './role-share'
 import { SequenceWorker } from './sequence-worker'
-import { recordRun } from './speed-store'
 import { rulesMatch, type SeasonRules } from '../catalog/rules'
 import type { CatalogManifest } from '../catalog/types'
 
@@ -933,7 +932,9 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
     const raw = parsed.bytes
     try { verifyReportIdentity(parsed.report, capability.manifest) }
     catch (err) { fail(new SimEngineError('engine-identity-mismatch', err instanceof Error ? err.message : String(err))); return }
-    if (soloLocal && placement === 'browser') recordRun(req, parsed.report)
+    if (import.meta.env.VITE_FEATURE_ACCOUNTS === true && soloLocal && placement === 'browser') {
+      void import('./speed-store').then(m => m.recordRun(req, parsed.report)).catch(() => { /* Learning never fails a run. */ })
+    }
     // Kept for dev hook so stderr-reachability question can be asked from console.
     lastNotices = engineNotices
     succeed({

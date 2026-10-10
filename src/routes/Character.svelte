@@ -241,7 +241,7 @@
   {/if}
 {/snippet}
 
-<input type="file" accept=".simc,.txt,.json,text/plain,application/json" bind:this={fileInput} onchange={onFile} class="sr-only" />
+<input type="file" accept=".simc,.txt,.json,text/plain,application/json" bind:this={fileInput} onchange={onFile} hidden />
 
 <div class="stack">
   <CatalogStatus />
@@ -249,8 +249,13 @@
   {#if !character}
     <!-- First visit (P12.1). -->
     <section class="panel stack">
-      <HomeIntro />
-      <h2>Import a character</h2>
+      {#if import.meta.env.VITE_FEATURE_ACCOUNTS === true}
+        <HomeIntro />
+        <h2>Import a character</h2>
+      {:else}
+        <h1>Import a character</h1>
+        <p class="muted">Look up a character on the Armory, or paste your SimulationCraft addon export.</p>
+      {/if}
       {@render exportField()}
 
       <div class="row">

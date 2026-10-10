@@ -4,10 +4,11 @@ import type { Catalog } from '../catalog/catalog';
 import { checkGearSet, isLegal, type CharacterConstraints, type LegalityIssue } from '../catalog/legality';
 import { INVTYPE, ITEM_CLASS, ITEM_MOD, classMaskFor } from '../catalog/enums';
 import { GEAR_SLOTS, type GearSlot, type ItemInstance, type ResolvedItem } from '../catalog/types';
-import { canonicalize, candidateId, deltaToLines } from './candidates';
+import { canonicalize, candidateId, deltaToLines, mergeCost } from './candidates';
 import { compareCandidates, gainOverBaseline, type Gain } from './statistics';
 import { DEFAULT_STAGE_PLAN, runStagedSearch, type RunBatch, type ResultCache, type SearchLedger } from './runner';
-import type { Candidate, CandidateDelta, OptimizationProgress, OptimizationResult, StagePlan } from './types';
+import type { Candidate, CandidateDelta, CandidateCost, OptimizationProgress, OptimizationResult, StagePlan, UpgradeBudget } from './types';
+import { budgetProblem, itemUpgradeCost, type SlotWatermarks } from '../catalog/upgradeCosts';
 
 export interface DropSource {
   id: string;
@@ -24,6 +25,9 @@ export interface DropSource {
 }
 
 export interface DroptimizerOptions {
+  ownedItems?: ItemInstance[];
+  highWatermarks?: SlotWatermarks['watermarks'];
+  budget?: UpgradeBudget;
   catalog: Catalog;
   character: CharacterConstraints;
   baselineGear: Map<GearSlot, ItemInstance | null>;
@@ -60,6 +64,7 @@ export function buildScenarios(sources: DropSource[], opts: DroptimizerOptions):
   sourcesFor: Map<string, string[]>;
   warnings: string[];
 } {
+  budgetProblem({ currencies: {}, money: 0, unknownCosts: [] }, opts.budget);
   // Recheck at run time: an open picker can outlive its catalog's season/expiry.
   if (sources.some((s) => s.provenance === 'catalog')) {
     const loot = opts.catalog.lootSources(opts.now);
@@ -125,6 +130,20 @@ export function buildScenarios(sources: DropSource[], opts: DroptimizerOptions):
         if (!isLegal(checkGearSet(fullSet, opts.character).filter((i) => !baselineIssues.has(issueKey(i))))) continue;
 
         const delta: CandidateDelta = { gear };
+        let cost: CandidateCost = { currencies: {}, money: 0, unknownCosts: [] };
+        const owned = opts.ownedItems ?? [...opts.baselineGear.values()].filter((item): item is ItemInstance => !!item);
+        const charged = new Set<string>();
+        for (const item of new Map([...opts.baselineGear, ...gear]).values()) {
+          if (!item) continue;
+          const identity = item.originalInstanceId ?? item.instanceId;
+          if (charged.has(identity)) continue;
+          charged.add(identity);
+          const received = identity === (candidateItem.originalInstanceId ?? candidateItem.instanceId);
+          const original = owned.find(original => original.instanceId === identity) ?? (received ? candidateItem : undefined);
+          cost = mergeCost(cost, itemUpgradeCost(item, original, opts.catalog.rules, opts.highWatermarks, received));
+        }
+        const binding = budgetProblem(cost, opts.budget);
+        if (binding) { warnings.push(`${resolved.name}: ${binding}`); continue; }
         const canonical = canonicalize(delta);
         const existing = byCanonical.get(canonical);
         if (existing) {
@@ -141,8 +160,7 @@ export function buildScenarios(sources: DropSource[], opts: DroptimizerOptions):
             sourceId: source.id,
           },
           delta,
-          // Upgrade and Catalyst costs are not in the catalog; they stay unknown.
-          cost: { unknownCosts: ['upgrade currency', 'Catalyst charges'] },
+          cost,
           lines: deltaToLines(delta, new Map([[resolved.itemId, resolved.name]])),
           canonical,
         };
@@ -403,10 +421,11 @@ function dress(
     }
   }
 
-  // Any change creates different physical item from loot table original.
+  // A dressed variant keeps the physical reward origin for cost accounting.
   if (dressed !== instance) {
     dressed = {
       ...dressed,
+      originalInstanceId: instance.originalInstanceId ?? instance.instanceId,
       instanceId: `${instance.instanceId}+g${(dressed.gemIds ?? []).join('.')}+e${dressed.enchantId ?? ''}+c${(dressed.craftedStats ?? []).join('.')}`,
     };
   }

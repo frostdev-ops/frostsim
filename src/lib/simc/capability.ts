@@ -42,6 +42,10 @@ export interface EngineManifest {
     requiresSharedArrayBuffer?: boolean
   }
   files?: Record<string, { bytes: number; sha256: string }>
+  build?: {
+    artifactFlags?: { initialMemory?: number | null }
+    linkFlags?: string
+  }
   lockMismatches?: string[]
   buildTreeMismatches?: string[]
 }
@@ -279,24 +283,4 @@ export function precisionKey(accuracy: Accuracy): string {
   }
 }
 
-export interface CacheKeyParts {
-  /** From `engineIdentity(manifest)`, or `outcome.engineIdentity`. */
-  engineIdentity: string
-  /** Version of the static catalogs the candidate was generated from. */
-  catalogId?: string
-  /** From `precisionKey(accuracy)`. */
-  precision: string
-  /** The caller's canonical form of the simulation-affecting input. */
-  canonical: string
-}
-
-/** One hash, shared, so callers don't drift. Rejects on missing SubtleCrypto (collision worse than no cache). NUL-separated to prevent re-splitting. */
-export async function cacheKey(parts: CacheKeyParts): Promise<string> {
-  const subtle = globalThis.crypto?.subtle
-  if (!subtle) {
-    throw new Error('SubtleCrypto is unavailable, so no cache key can be computed; do not cache')
-  }
-  const input = [parts.engineIdentity, parts.catalogId ?? 'no-catalog', parts.precision, parts.canonical].join('\0')
-  const digest = await subtle.digest('SHA-256', new TextEncoder().encode(input))
-  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('')
-}
+export { cacheKey, type CacheKeyParts } from './cache-key'

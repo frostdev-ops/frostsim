@@ -18,6 +18,8 @@ export interface ItemInstance {
   source?: 'equipped' | 'bag' | 'vault' | 'catalog' | 'hypothetical';
   /** Stable physical item identity across simulated upgrade and slot variants. */
   originalInstanceId?: string;
+  /** Rank of the original owned/offered item, preserved through simulated upgrades. */
+  upgradeOrigin?: { trackId: number; rank: number };
   /** All variants of one Great Vault reward retain this identity. */
   vaultRewardId?: string;
   /** The user chose a track different from the imported one, or for an unknown item. */
