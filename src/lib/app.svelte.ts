@@ -18,7 +18,7 @@ import { uniqueLoadoutNames, type ImportedCharacter, type ItemInstance } from '.
 import * as db from './store/db'
 import { readSearchCheckpoint, type SearchCheckpoint } from './store/search-checkpoint'
 import {
-  makePortable, newId, portableSetup, type EngineIdentity, type RawBlob, type ReportSummary,
+  makePortable, newId, portableSetup, serializePortable, type EngineIdentity, type RawBlob, type ReportSummary,
   type StoredCharacter, type StoredReport, type StoredSetup, type ToolId,
 } from './store/records'
 
@@ -693,7 +693,9 @@ export async function exportEverything(): Promise<ExportOutcome> {
   try {
     const reports = []
     for (const r of app.reports) {
-      reports.push({ record: r, rawReport: r.hasRaw ? await loadRaw(r.id) : null })
+      const rawReport = r.hasRaw ? await loadRaw(r.id) : null
+      if (r.hasRaw && rawReport === null) throw Error(`The raw data for “${r.title}” could not be read. Export its anonymous summary separately; your saved work is unchanged.`)
+      reports.push({ record: r, rawReport })
     }
     // Drafts included; they're the only copy, and omitting them is same lie as incomplete export.
     const file = makePortable(
@@ -707,7 +709,7 @@ export async function exportEverything(): Promise<ExportOutcome> {
       },
       engineIdentity(),
     )
-    const text = JSON.stringify(file, null, 2)
+    const text = serializePortable(file)
     const blob = new Blob([text], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
     const a = document.createElement('a')
