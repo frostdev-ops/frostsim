@@ -621,7 +621,7 @@
 
   async function go(repeat = false, saved?: StoredSetup): Promise<void> {
     if ((!character && !lastSearch) || isBusy()) return
-    const checkpoint = saved ? readSearchCheckpoint(saved.checkpoint) : null
+    const checkpoint = saved ? readSearchCheckpoint($state.snapshot(saved.checkpoint)) : null
     if (saved) {
       const request = checkpoint?.request as { setup?: NonNullable<typeof lastSearch>; identity?: string } | undefined
       if (!checkpoint || !request?.setup?.character?.raw || !request.setup.plan?.stages?.length || !request.setup.selection?.slots) {

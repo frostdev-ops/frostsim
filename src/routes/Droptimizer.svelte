@@ -392,7 +392,7 @@
 
   async function go(saved?: StoredSetup): Promise<void> {
     if (!character || busy || !saved && (!canRun || plannedCount === null || plannedCount === 0)) return
-    const checkpoint = saved ? readSearchCheckpoint(saved.checkpoint) : null
+    const checkpoint = saved ? readSearchCheckpoint($state.snapshot(saved.checkpoint)) : null
     const restored = checkpoint?.request as { setup?: FrozenDropRequest; identity?: string } | undefined
     if (saved && (!checkpoint || !restored?.setup?.character?.raw || !restored.setup.sources?.length || !restored.setup.plan?.stages?.length || !restored.setup.options?.baselineGear)) {
       error = 'This checkpoint is incompatible or damaged. The saved setup is unchanged; start a new search.'
