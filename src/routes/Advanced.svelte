@@ -16,6 +16,8 @@
   import { fly } from 'svelte/transition'
   import RunPanel from '../lib/ui/RunPanel.svelte'
   import ResultHeader from '../lib/ui/ResultHeader.svelte'
+  import EngineNotices from '../lib/ui/EngineNotices.svelte'
+  import ReportExports from '../lib/ui/ReportExports.svelte'
   import ShareReport from '../lib/ui/ShareReport.svelte'
   import SettingsForm from '../lib/ui/SettingsForm.svelte'
   import {
@@ -168,6 +170,7 @@
         accuracy: advancedSettings.accuracy(),
         extraProfileLines: [...(advancedSettings.extraProfileLines() ?? []), ...(route.enabled && !routeIssues.length ? parsedRoute.profileLines : [])],
         extraOptions: extras.length ? extras : undefined,
+        htmlReport: advancedSettings.htmlReport,
       },
     })
   }
@@ -528,6 +531,8 @@
       characterLabel={stored?.label ?? outcome.report.players[0]?.name ?? 'Script'}
       onrerun={go}
     />
+    <EngineNotices logs={outcome.report.logs} engineNotices={outcome.engineNotices} inputWarnings={outcome.inputWarnings} />
+    <ReportExports {outcome} />
 
     {#if outcome.report.players.length > 1}
       <section class="panel panel-flush">
