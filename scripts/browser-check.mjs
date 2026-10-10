@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Actual Chromium + production CSP/COOP/COEP. Test helper and registry never enter dist/ or releases.
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync, constants } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -17,13 +17,14 @@ const variants = arg('--variants', 'threaded,fallback').split(',');
 assert.ok(variants.length && variants.every(v => ['threaded', 'fallback'].includes(v)), '--variants requires threaded,fallback');
 const sourceDist = resolve(arg('--dist', join(root, 'dist')));
 const engineRoot = resolve(arg('--engine-root', join(root, 'public/engine')));
+const catalogRoot = resolve(arg('--catalog-root', join(root, 'public/catalogs')));
 const output = resolve(arg('--output', join(root, 'build/browser-results.json')));
 const prepareOnly = process.argv.includes('--prepare-only');
 mkdirSync(join(root, 'build'), { recursive: true });
 mkdirSync(resolve(output, '..'), { recursive: true });
 const work = mkdtempSync(join(root, 'build/browser-'));
 const dist = join(work, 'app');
-const report = { schemaVersion: 1, startedAt: new Date().toISOString(), sourceDist, appIndexSha256: null,
+const report = { schemaVersion: 1, startedAt: new Date().toISOString(), sourceDist, catalogRoot, appIndexSha256: null,
   engineCompat: engineCompat(root), suites: [], failures: [], scope: 'real production Chromium integration; deterministic sequential/direct numerical controls; no native/WASM ensemble or physical-device claim' };
 let server;
 let browser;
@@ -81,15 +82,30 @@ try {
     registry.packs.push({ id, engineChannel: channel, baseUrl: `/engine/versions/${id}/`, compat: report.engineCompat,
       upstreamCommit: manifest.engine.upstreamCommit, clientDataVersion: manifest.wow.clientDataVersion,
       publishedAt: report.startedAt, commitDate: report.startedAt });
-    const catalogRoot = join(root, 'public/catalogs');
-    catalogs[channel] = readdirSync(catalogRoot).find(name => {
+    const matchingCatalogs = readdirSync(catalogRoot).filter(name => {
       const file = join(catalogRoot, name, 'manifest.json');
       if (!existsSync(file)) return false;
       const c = JSON.parse(readFileSync(file, 'utf8'));
       return (c.engineChannel ?? c.engine.engineChannel ?? 'live') === channel &&
         c.engine.upstreamCommit === manifest.engine.upstreamCommit && c.engine.clientDataVersion === manifest.wow.clientDataVersion && c.engine.hotfixHash === manifest.wow.hotfixHash;
-    });
-    assert.ok(catalogs[channel], `${channel}: no matching catalog; generate it from the frozen source`);
+    }).sort((a, b) => Number(b.startsWith(`${channel}-`)) - Number(a.startsWith(`${channel}-`)) || a.localeCompare(b));
+    const rejectedCatalogs = [];
+    let catalogValidation;
+    for (const name of matchingCatalogs) {
+      try {
+        catalogValidation = execFileSync(process.execPath, [join(root, 'scripts/catalog/validate-catalogs.mjs'),
+          join(catalogRoot, name), '--engine', join(engineDir, 'manifest.json')], { cwd: root, encoding: 'utf8' });
+        catalogs[channel] = name;
+        break;
+      } catch (error) {
+        rejectedCatalogs.push({ name, error: String(error) });
+      }
+    }
+    report.catalogValidation ??= {};
+    report.catalogValidation[channel] = { selected: catalogs[channel] ?? null,
+      manifestSha256: catalogs[channel] ? hash(readFileSync(join(catalogRoot, catalogs[channel], 'manifest.json'))) : null,
+      validation: catalogValidation ?? null, rejected: rejectedCatalogs };
+    assert.ok(catalogs[channel], `${channel}: no fully validated matching catalog; generate it from the frozen source. ${JSON.stringify(rejectedCatalogs)}`);
     cpSync(join(catalogRoot, catalogs[channel]), join(target, 'catalog'), { recursive: true, mode: constants.COPYFILE_FICLONE });
     const layout = existsSync(join(engineDir, 'talent-layout')) ? join(engineDir, 'talent-layout') : join(root, 'public/talent-layout');
     for (let classId = 1; classId <= 13; classId++) {
