@@ -18,6 +18,7 @@ assert.ok(variants.length && variants.every(v => ['threaded', 'fallback'].includ
 const sourceDist = resolve(arg('--dist', join(root, 'dist')));
 const engineRoot = resolve(arg('--engine-root', join(root, 'public/engine')));
 const output = resolve(arg('--output', join(root, 'build/browser-results.json')));
+const prepareOnly = process.argv.includes('--prepare-only');
 mkdirSync(join(root, 'build'), { recursive: true });
 mkdirSync(resolve(output, '..'), { recursive: true });
 const work = mkdtempSync(join(root, 'build/browser-'));
@@ -77,8 +78,32 @@ try {
         c.engine.upstreamCommit === manifest.engine.upstreamCommit && c.engine.clientDataVersion === manifest.wow.clientDataVersion && c.engine.hotfixHash === manifest.wow.hotfixHash;
     });
     assert.ok(catalogs[channel], `${channel}: no matching catalog; generate it from the frozen source`);
+    cpSync(join(catalogRoot, catalogs[channel]), join(target, 'catalog'), { recursive: true, mode: constants.COPYFILE_FICLONE });
+    const layout = existsSync(join(engineDir, 'talent-layout')) ? join(engineDir, 'talent-layout') : join(root, 'public/talent-layout');
+    for (let classId = 1; classId <= 13; classId++) {
+      const data = JSON.parse(readFileSync(join(layout, `class-${classId}.json`), 'utf8'));
+      assert.equal(data.schemaVersion, 1);
+      assert.equal(data.classId, classId);
+      assert.equal(data.engineChannel ?? 'live', channel, `${channel}: talent layout channel mismatch`);
+      assert.equal(data.engineCommit, manifest.engine.upstreamCommit);
+      assert.equal(data.build, manifest.wow.clientDataVersion);
+      assert.ok(Number.isFinite(Date.parse(data.expiresAt)) && data.nodes && data.descriptions && Array.isArray(data.edges) && data.budgetSources, 'invalid talent presentation metadata');
+    }
+    cpSync(layout, join(target, 'talent-layout'), { recursive: true, mode: constants.COPYFILE_FICLONE });
+    const presentationPath = existsSync(join(engineDir, 'presentation.json')) ? join(engineDir, 'presentation.json') : join(root, 'public/presentation.json');
+    const presentation = JSON.parse(readFileSync(presentationPath, 'utf8'));
+    assert.equal(presentation.engineChannel ?? 'live', channel);
+    assert.equal(presentation.engineCommit, manifest.engine.upstreamCommit);
+    if (presentation.build !== undefined) assert.equal(presentation.build, manifest.wow.clientDataVersion);
+    assert.ok(presentation.names && Array.isArray(presentation.augmentation) && Array.isArray(presentation.weapon), 'invalid presentation choices');
+    cpSync(presentationPath, join(target, 'presentation.json'));
+    // Guided UI and the numerical helper must resolve the same immutable pack catalog.
+    catalogs[channel] = `/engine/versions/${id}/catalog`;
   }
   writeFileSync(join(dist, 'engine-channels.json'), JSON.stringify(registry));
+  report.fixturePath = dist;
+  report.browserChecksRun = !prepareOnly;
+  if (!prepareOnly) {
   const port = Number(arg('--port', '4189'));
   const origin = `http://127.0.0.1:${port}`;
   server = spawn(process.execPath, [join(root, 'scripts/serve-pages.mjs'), '--dist', dist, '--port', String(port)], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -115,10 +140,10 @@ try {
       assert.equal(await page.evaluate(() => crossOriginIsolated), true);
       await page.goto(`${origin}/__ci__/index.html?engine=${channel}`);
       suite = await page.evaluate(async input => (await import('/__ci__/suite.mjs')).runSuite(input),
-        { channel, variant, profile, catalogBase: `/catalogs/${catalogs[channel]}` });
+        { channel, variant, profile, catalogBase: catalogs[channel] });
       report.suites.push(suite);
       if (variant === 'fallback') {
-        const input = { channel, profile, catalogBase: `/catalogs/${catalogs[channel]}` };
+        const input = { channel, profile, catalogBase: catalogs[channel] };
         const prepared = await page.evaluate(async input => (await import('/__ci__/suite.mjs')).prepareResume(input), input);
         await page.reload();
         const resumed = await page.evaluate(async input => (await import('/__ci__/suite.mjs')).resumeSearch(input), input);
@@ -187,13 +212,15 @@ try {
       await context.close();
     }
   }
+  }
 } catch (error) { report.failures.push({ error: String(error) }); }
 finally {
   if (browser) await browser.close();
   if (server) server.kill('SIGTERM');
   report.finishedAt = new Date().toISOString();
-  report.passed = report.failures.length === 0;
+  report.passed = prepareOnly ? null : report.failures.length === 0;
+  report.fixturePrepared = report.failures.length === 0 && !!report.fixturePath;
   writeFileSync(output, JSON.stringify(report, null, 2) + '\n');
-  console.log(`browser checks ${report.passed ? 'passed' : 'failed'}: ${output}`);
+  console.log(prepareOnly ? `fixture ${report.fixturePrepared ? 'prepared' : 'failed'}; browser checks not run: ${report.fixturePath}\n${output}` : `browser checks ${report.passed ? 'passed' : 'failed'}: ${output}`);
 }
-assert.equal(report.passed, true, JSON.stringify(report.failures));
+assert.equal(prepareOnly ? report.fixturePrepared : report.passed, true, JSON.stringify(report.failures));

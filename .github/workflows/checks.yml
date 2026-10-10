@@ -1,5 +1,5 @@
-# Unit, type and build checks. No engine compile here — that is engine.yml, which is
-# expensive and runs on demand.
+# Unit, type and build checks. The separate engine.yml builds artifacts and runs
+# the production-browser gate.
 #
 # Locked install only: `npm ci` against the committed lockfile, Node from .nvmrc. If the
 # lockfile and package.json disagree, `npm ci` fails, which is the point (P00.4, P14.14).

@@ -74,6 +74,10 @@ jobs:
           catalog_id="$(node -p "JSON.parse(require('fs').readFileSync('$engine_dir/catalog/manifest.json')).catalogId")"
           mkdir -p public/catalogs
           cp -R "$engine_dir/catalog" "public/catalogs/$catalog_id"
+          if [ '${{ matrix.channel }}' = ptr ]; then
+            node scripts/generate-talent-layout.mjs --channel ptr --catalog "$engine_dir/catalog" --out "$engine_dir/talent-layout"
+            node scripts/generate-presentation.mjs --channel ptr --out "$engine_dir/presentation.json"
+          fi
       - name: Reproducible package with exact corresponding source
         run: npm run check:engine-package -- --channel ${{ matrix.channel }}
       - name: Production app and real Chromium

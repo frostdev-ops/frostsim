@@ -174,7 +174,7 @@
   ]
   /** #/plans (CLAUDE.md D15) is a page outside the tool groups, like the `s/` alias; compiled out without VITE_FEATURE_ACCOUNTS. */
   const onPlans = $derived(import.meta.env.VITE_FEATURE_ACCOUNTS === true && (router.raw === 'plans' || router.raw === 'discord'))
-  const group = $derived(onPlans ? undefined : NAV_GROUPS.find((g) => g.routes.includes(router.name)))
+  const group = $derived(import.meta.env.VITE_FEATURE_ACCOUNTS === true && onPlans ? undefined : NAV_GROUPS.find((g) => g.routes.includes(router.name)))
   // Each screen works on its own character (app.svelte.ts picks); arriving on one focuses its pick. Shared reports and #/plans
   // alias the Reports and Character routes, so they have none.
   const scope = $derived((PICK_SCOPES as readonly string[]).includes(router.name) && !router.raw.startsWith('r/')
@@ -307,7 +307,7 @@
       {#if navOpen}<X size={18} />{:else}<Menu size={18} />{/if}
     </button>
 
-    <nav id="main-nav" class="groups" class:open={navOpen} aria-label="Tools" use:navIndicator={onPlans ? router.raw : router.name}>
+    <nav id="main-nav" class="groups" class:open={navOpen} aria-label="Tools" use:navIndicator={import.meta.env.VITE_FEATURE_ACCOUNTS === true && onPlans ? router.raw : router.name}>
       {#each NAV_GROUPS as g (g.id)}
         {@const target = lastInGroup[g.id] ?? g.routes[0]}
         <div class="group" class:multi={g.routes.length > 1}>
@@ -316,7 +316,7 @@
             href={href(target)}
             data-track
             data-on={group === g ? '' : undefined}
-            aria-current={!onPlans && router.name === target ? 'page' : undefined}
+            aria-current={!(import.meta.env.VITE_FEATURE_ACCOUNTS === true && onPlans) && router.name === target ? 'page' : undefined}
           >
             <g.icon size={16} strokeWidth={2.1} aria-hidden="true" />
             <span>{g.label}</span>
@@ -348,11 +348,10 @@
       {/if}
       {#if character}
         <!-- Account builds: the chip opens the account dialog (Character stays one click away in the nav). -->
-        <a class="who" href={href('character')} data-class={character.className} onclick={(e) => {
-          if (import.meta.env.VITE_FEATURE_ACCOUNTS !== true) return
+        <a class="who" href={href('character')} data-class={character.className} onclick={import.meta.env.VITE_FEATURE_ACCOUNTS === true ? (e) => {
           e.preventDefault()
           void import('./lib/account/state.svelte').then((m) => (m.account.open = true))
-        }}>
+        } : undefined}>
           <span class="who-mark" aria-hidden="true">{(stored?.label ?? character.name).slice(0, 1).toUpperCase()}</span>
           <span class="who-text">
             <span class="truncate">{stored?.label ?? character.name}</span>

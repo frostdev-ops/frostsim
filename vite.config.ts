@@ -5,6 +5,7 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import type { Plugin } from 'vite'
 import { fileURLToPath } from 'node:url'
 import { engineCompat } from './scripts/engine-compat.mjs'
+import { stripAccountBlocks } from './scripts/strip-account-blocks.mjs'
 import { isAccountApi, proxyAccountApi } from './scripts/account-proxy.mjs'
 import adsense from './scripts/adsense.mjs'
 
@@ -166,6 +167,14 @@ export default defineConfig({
     __ENGINE_COMPAT__: JSON.stringify(engineCompat(fileURLToPath(new URL('.', import.meta.url)))),
   },
   plugins: [
+    {
+      name: 'frostsim-account-template-gate',
+      enforce: 'pre',
+      transform(source, id) {
+        if (!id.endsWith('.svelte')) return null
+        return stripAccountBlocks(source, process.env.VITE_FEATURE_ACCOUNTS === '1')
+      },
+    },
     svelte(), stampServiceWorker(), accountApiDev(), gameDataProxyDev(), adsense(),
     {
       name: 'frostsim-home-intro',
