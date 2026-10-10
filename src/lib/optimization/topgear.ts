@@ -8,7 +8,8 @@ import {
   type Dimension, type DimensionOption, type GenerationReport, type SetBonusRequirement,
 } from './candidates';
 import { DEFAULT_STAGE_PLAN, runStagedSearch, type RunBatch, type ResultCache, type SearchLedger } from './runner';
-import type { Accuracy, Candidate, OptimizationProgress, OptimizationResult, StagePlan } from './types';
+import type { Accuracy, Candidate, OptimizationProgress, OptimizationResult, StagePlan, UpgradeBudget } from './types';
+import type { SlotWatermarks } from '../catalog/upgradeCosts';
 import { VAULT_SOCKET_REWARD_ID, vaultSocketVariant } from '../catalog/vaultRewards';
 
 /** User-picked options, as UI collects them. */
@@ -61,6 +62,9 @@ export interface WorkEstimate {
 }
 
 export interface TopGearOptions {
+  ownedItems?: ItemInstance[];
+  highWatermarks?: SlotWatermarks['watermarks'];
+  budget?: UpgradeBudget;
   catalog: Catalog;
   character: CharacterConstraints;
   baselineGear: Map<GearSlot, ItemInstance | null>;
@@ -118,8 +122,7 @@ export function selectionToDimensions(selection: Selection, opts: TopGearOptions
             : option.enchantId === baseline.enchantId);
         if (enchant) reward = { ...reward, enchantId: enchant.enchantId };
       }
-      vaultOptions.set(key, { key, label: item.addonName ?? `item ${item.itemId}`, item: reward,
-        cost: { unknownCosts: ['upgrade currency', 'crafting reagents'] } });
+      vaultOptions.set(key, { key, label: item.addonName ?? `item ${item.itemId}`, item: reward });
     }
   }
   const paired = new Set<GearSlot>();
@@ -142,7 +145,6 @@ export function selectionToDimensions(selection: Selection, opts: TopGearOptions
         key: `${left.instanceId}/${right.instanceId}`,
         label: [left, right].map((item) => item.addonName ?? `item ${item.itemId}`).join(' + '),
         gear: [{ ...left, slot: first }, { ...right, slot: second }],
-        cost: { unknownCosts: ['upgrade currency', 'crafting reagents'] },
       });
       // Slot-specific enhancements can distinguish assignments; keep both, collapse after attachments applied.
       if (first === 'finger1' && [first, second].some((slot) =>
@@ -163,8 +165,6 @@ export function selectionToDimensions(selection: Selection, opts: TopGearOptions
       key: item.instanceId,
       label: item.addonName ?? `item ${item.itemId}`,
       item: { ...item, slot },
-      // Upgrade/crafting costs unknown in catalog; saying "unknown" prevents zero-cost display (P05).
-      cost: { unknownCosts: ['upgrade currency', 'crafting reagents'] },
     }));
     if (options.length < 2 && options[0]?.item?.instanceId === opts.baselineGear.get(slot)?.instanceId) continue;
     dimensions.push({ key: `slot:${slot}`, kind: 'gear', slot, options });
@@ -331,6 +331,7 @@ export function search(selection: Selection, opts: RunOptions): SearchHandle {
       requiredSets: selection.requiredSets,
       embellishmentBonusIds: opts.catalog.embellishments().map((e) => e.bonusId),
       embellishmentLimit: opts.embellishmentLimit,
+      ownedItems: opts.ownedItems, highWatermarks: opts.highWatermarks, budget: opts.budget,
     }),
     workCap,
   );
@@ -377,6 +378,7 @@ function decorate(r: OptimizationResult, report: GenerationReport, workCap: numb
     if (report.rejectedIllegal) {
       warnings.push(`${report.rejectedIllegal} combinations were rejected as illegal before reaching the engine`);
     }
+    for (const [constraint, count] of Object.entries(report.rejectedBudget ?? {})) warnings.push(`${count} combinations excluded: ${constraint}`);
     const unknownCosts = new Set<string>();
     for (const state of r.candidates) for (const c of state.candidate.cost?.unknownCosts ?? []) unknownCosts.add(c);
     if (unknownCosts.size) {

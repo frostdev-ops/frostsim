@@ -1,6 +1,7 @@
 # Upstream reference checkout. 360 MB, read-only, restored by scripts/bootstrap-engine.sh
 # from the SHA in engine.lock.json. Never commit it, never edit it in place.
 vendor/simc/
+.rimewire/journal/
 
 # Build trees and outputs. Regenerate with npm run engine:build / npm run build.
 build/

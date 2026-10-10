@@ -56,3 +56,11 @@ export function characterBlocks(profile: string): { name: string; text: string }
   }
   return blocks.map((b) => ({ name: b.name, text: b.lines.join('\n') }))
 }
+
+/** Concatenates independent actor reports; never combines their statistics. */
+export function mergeCharacters(first: ArrayBuffer, second: ArrayBuffer): ArrayBuffer {
+  const decode = (bytes: ArrayBuffer): { sim: { players?: unknown[] } & Record<string, unknown> } => JSON.parse(new TextDecoder().decode(bytes))
+  const merged = decode(first)
+  merged.sim.players = [...(merged.sim.players ?? []), ...(decode(second).sim.players ?? [])]
+  return new TextEncoder().encode(JSON.stringify(merged)).buffer as ArrayBuffer
+}

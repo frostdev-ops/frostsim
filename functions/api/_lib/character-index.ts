@@ -3,7 +3,7 @@
 // expire at Blizzard's 30-day retention limit and are refreshed whenever the character is seen again.
 // ponytail: a linear scan of up to MAX entries per search (a few ms at 100k); add a sorted name index if searches get slow.
 
-import { MAX_RETENTION_SECONDS, type CharacterMatch, type Region } from '../../../src/lib/battlenet/contract';
+import { isAllowedRegion, MAX_RETENTION_SECONDS, type CharacterMatch, type Region } from '../../../src/lib/battlenet/contract';
 import { CLASSES } from '../../../src/lib/import/armory';
 
 const MAX = 100_000;
@@ -15,6 +15,7 @@ type Json = Record<string, unknown>;
 const obj = (v: unknown): Json => (v && typeof v === 'object' && !Array.isArray(v) ? v as Json : {});
 const str = (v: unknown) => (typeof v === 'string' ? v : null);
 const int = (v: unknown) => (Number.isSafeInteger(v) ? v as number : null);
+const nullableInt = (v: unknown) => v === null || (Number.isSafeInteger(v) && (v as number) >= 0);
 
 /** The index entry for a profile API character summary (requested with locale en_US), or null when it lacks a name, realm or class. */
 export function matchFromSummary(region: Region, summary: unknown, seenAt: number): CharacterMatch | null {
@@ -51,6 +52,7 @@ export class CharacterIndex {
   /** Up to `limit` live entries in `region` whose name starts with `q`, in `realmSlug` when given: exact names first, then most
    *  recently seen. */
   search(region: Region, q: string, realmSlug: string | null, limit = 8): CharacterMatch[] {
+    this.purge();
     const needle = fold(q);
     const oldest = this.now() - MAX_RETENTION_SECONDS * 1000;
     const hits: CharacterMatch[] = [];
@@ -63,19 +65,41 @@ export class CharacterIndex {
 
   /** Live entries, oldest first, for a snapshot on disk. */
   toJSON(): CharacterMatch[] {
-    const oldest = this.now() - MAX_RETENTION_SECONDS * 1000;
-    return [...this.entries.values()].filter((c) => c.seenAt > oldest);
+    this.purge();
+    return [...this.entries.values()];
+  }
+
+  /** Expiry changes the snapshot even when no new lookup has occurred. */
+  purge(): void {
+    const now = this.now();
+    const oldest = now - MAX_RETENTION_SECONDS * 1000;
+    for (const [key, c] of this.entries) {
+      if (!Number.isFinite(c.seenAt) || c.seenAt <= oldest || c.seenAt > now) {
+        this.entries.delete(key);
+        this.dirty = true;
+      }
+    }
   }
 
   /** Restores a snapshot; entries past retention or of the wrong shape are dropped. */
   load(list: unknown): void {
+    this.entries.clear();
+    const now = this.now();
+    const oldest = now - MAX_RETENTION_SECONDS * 1000;
+    let discarded = !Array.isArray(list);
+    let accepted = 0;
     for (const raw of Array.isArray(list) ? list : []) {
       const c = obj(raw);
-      if (typeof c.name === 'string' && typeof c.realmSlug === 'string' && typeof c.region === 'string' && typeof c.seenAt === 'number') {
+      if (typeof c.name === 'string' && c.name.length > 0 && c.name.length <= 24 &&
+          typeof c.realmSlug === 'string' && c.realmSlug.length > 0 && typeof c.realm === 'string' && c.realm.length > 0 &&
+          isAllowedRegion(c.region) && typeof c.className === 'string' && Object.values(CLASSES).includes(c.className) &&
+          (c.spec === null || typeof c.spec === 'string') && nullableInt(c.level) && nullableInt(c.itemLevel) &&
+          typeof c.seenAt === 'number' && Number.isFinite(c.seenAt) && c.seenAt > oldest && c.seenAt <= now) {
         this.add(c as unknown as CharacterMatch);
-      }
+        accepted++;
+      } else discarded = true;
     }
-    this.dirty = false;
+    this.dirty = discarded || this.entries.size < accepted;
   }
 
   get size(): number { return this.entries.size; }

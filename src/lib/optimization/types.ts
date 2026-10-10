@@ -17,10 +17,19 @@ export interface CandidateDelta {
 export interface CandidateCost {
   /** Currency costs by id; absent means unknown (catalog has no data), not 0. */
   currencies?: Record<number, number>;
+  /** Verified vendor upgrade gold in copper; absent means unknown. */
+  money?: number;
   /** Catalyst charges this candidate consumes. */
   catalystCharges?: number;
   /** Fields whose cost could not be determined. */
   unknownCosts: string[];
+}
+
+export interface UpgradeBudget {
+  /** Omitted currency IDs are unbounded, never an assumed zero balance. */
+  currencies?: Record<number, number>;
+  /** Optional explicit gold limit in copper. */
+  money?: number;
 }
 
 export interface Candidate {

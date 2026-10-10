@@ -38,6 +38,20 @@ jobs:
       - name: Production build
         run: npm run build
 
+      - name: Locked catalog source
+        uses: actions/cache@v4
+        with:
+          path: vendor/simc
+          key: simc-source-${{ hashFiles('engine.lock.json') }}
+
+      - name: Catalog schemas, identities, hashes and references
+        run: |
+          npm run engine:bootstrap
+          npm run catalog:build -- --channel live --out build/catalog-live
+          node scripts/catalog/validate-catalogs.mjs build/catalog-live
+          npm run catalog:build -- --channel ptr --out build/catalog-ptr
+          node scripts/catalog/validate-catalogs.mjs build/catalog-ptr
+
       # Accounts and cloud compute are opt-in (CLAUDE.md D14, D15): the flag-off build must be today's app.
       # The merge base is built with this job's node_modules; a base whose lockfile differs is measured
       # with the new dependencies, which isolates the source change.

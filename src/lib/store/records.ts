@@ -2,6 +2,7 @@
 
 import type { ImportedCharacter } from '../import/character'
 import { engineChannelLabel, type EngineChannel } from '../simc/channel'
+import type { SearchCheckpoint } from './search-checkpoint'
 
 export interface EngineIdentity {
   engineChannel?: EngineChannel
@@ -78,6 +79,7 @@ export interface StoredSetup {
   settings: unknown
   createdAt: number
   updatedAt: number
+  checkpoint?: SearchCheckpoint
 }
 
 export interface RawBlob {
@@ -119,6 +121,9 @@ export function makePortable(
   engine?: EngineIdentity,
   redacted = false,
 ): PortableFile {
+  if (kind === 'setup' && payload && typeof payload === 'object') {
+    payload = portableSetup(payload as StoredSetup)
+  }
   return {
     format: PORTABLE_FORMAT,
     version: PORTABLE_VERSION,
@@ -165,7 +170,16 @@ export function readPortable(text: string): PortableCheck {
   if (f.payload === undefined || f.payload === null) {
     return { ok: false, reason: 'File has no contents.' }
   }
+  if (f.kind === 'setup' && typeof f.payload === 'object') {
+    f.payload = portableSetup(f.payload as StoredSetup)
+  }
   return { ok: true, file: f as PortableFile }
+}
+
+export function portableSetup(setup: StoredSetup): Omit<StoredSetup, 'checkpoint'> {
+  const portable = { ...setup }
+  delete portable.checkpoint
+  return portable
 }
 
 /** Removes three fields identifying real person's character (P11.4). */

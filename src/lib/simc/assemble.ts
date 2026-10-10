@@ -24,6 +24,7 @@ import {
 import { isEngineChannel, resolveEngineChannel, type EngineChannel } from './channel'
 import type { SeasonRules } from '../catalog/rules'
 import { characterBlocks } from './multi-actor'
+import { profilesetCount, workPlan } from './profileset-workers'
 
 export interface JobLimits {
   /** Worker start through engine module instantiation, which includes wasm download. */
@@ -128,8 +129,12 @@ export function assembleRun(req: SimRequest, maxThreads: number, rules?: SeasonR
       .map((part) => part.replace(/\n+$/, ''))
       .join('\n') + '\n'
 
+  const iterations = req.accuracy.mode === 'iterations' ? req.accuracy.iterations : req.accuracy.mode === 'targetError' ? req.accuracy.maxIterations : null
+  // One thread per parallel browser candidate; nested pthread creation deadlocks in callMain.
+  const plan = workPlan({ threads, candidates: profilesetCount(profile), pool: maxThreads,
+    iterations: mode === 'guided' ? iterations : null, simSeconds: req.settings.maxTime })
   const args = buildArgs({
-    settings: req.settings,
+    settings: { ...req.settings, threads: plan.threads },
     accuracy: req.accuracy,
     extraOptions: req.extraOptions,
     maxThreads,
@@ -138,5 +143,6 @@ export function assembleRun(req: SimRequest, maxThreads: number, rules?: SeasonR
   })
   // Must precede the profile: ptr changes DBC identity when each actor is created.
   args.unshift(`ptr=${resolveEngineChannel(req.engineChannel) === 'ptr' ? 1 : 0}`)
-  return { profile, args, warnings, threads }
+  if (plan.workThreads) args.splice(args.findIndex((a) => a.startsWith('threads=')) + 1, 0, `profileset_work_threads=${plan.workThreads}`)
+  return { profile, args, warnings, threads: plan.threads }
 }

@@ -19,6 +19,8 @@ export interface AdaptiveContext {
   runBatch: RunBatch;
   cache?: ResultCache;
   ledger?: SearchLedger;
+  requestIdentity?: string;
+  onCheckpoint?: (ledger: SearchLedger) => Promise<void>;
   onProgress?: (p: OptimizationProgress) => void;
   batchTimeoutMs?: number;
   abortGraceMs?: number;
@@ -364,7 +366,7 @@ export async function runAdaptiveSearch(
     : undefined;
   const warnings: string[] = [];
   let budgetExhausted = false;
-  let verified = false;
+  let verified = ctx.ledger?.stagesRun?.some(s => s.label === 'Verify') ?? false;
 
   /** Verify cost (for progress bar to include upfront). */
   const verifyCost = (chosen: CandidateMeasurement[]): number =>
@@ -499,6 +501,8 @@ export async function runAdaptiveSearch(
       runBatch: ctx.runBatch,
       cache: ctx.cache ?? memoryCache(),
       ledger: ctx.ledger,
+      requestIdentity: JSON.stringify([ctx.requestIdentity, opts, 'adaptive-v2']),
+      onCheckpoint: ctx.onCheckpoint,
       signal,
       onProgress: ctx.onProgress,
       batchTimeoutMs: ctx.batchTimeoutMs,
@@ -530,7 +534,7 @@ export async function runAdaptiveSearch(
       samples: s.samples ?? 0,
     })),
     budgetExhausted,
-    verified,
+    verified: verified || result.stagesRun.some(s => s.label === 'Verify'),
     samplesSpent: result.stagesRun.reduce((n, s) => n + (s.samples ?? 0), 0),
   };
 }

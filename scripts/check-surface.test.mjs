@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
-import { BASELINE, accountBlockConfined, checkSurface, stripAccountBlock } from './check-surface.mjs';
+import { BASELINE, accountBlockConfined, checkSurface, stripAccountBlock, guideAdsPolicy } from './check-surface.mjs';
 
 const repo = fileURLToPath(new URL('..', import.meta.url));
 const hasDeploy = existsSync(join(repo, 'deploy'));
@@ -134,7 +134,8 @@ describe.skipIf(!hasDeploy)('checkSurface on the nginx vhost (needs the local-on
   it('strips exactly the account-server block back to the baseline text', () => {
     const text = readFileSync(join(repo, vhost), 'utf8');
     expect(text).toContain('location ^~ /api/v1/ {');
-    expect(stripAccountBlock(text)).not.toContain('/api/v1/');
+    // The reviewed editorial ads.txt proxy is separate from application routing.
+    expect(guideAdsPolicy(stripAccountBlock(text)).app).not.toContain('/api/v1/');
   });
 
   it('fails on an edit outside the block, a CSP inside it, or a CSP drift from public/_headers', () => {

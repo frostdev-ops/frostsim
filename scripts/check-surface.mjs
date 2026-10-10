@@ -13,17 +13,17 @@ import { gzipSync } from 'node:zlib';
 // sha256 at e384736; functions/api, api-server.mjs and the api unit since the Armory lookup and character search. deploy/ is excluded from git (.git/info/exclude), so `git diff` cannot guard it and a hash must.
 // A deliberate change to one of these files updates its hash here in the same change.
 export const BASELINE = {
-  'server/api-server.mjs': 'd777c0cead6ca4e4eb8fe48ed87c16b78ec0d784373d20346fb9f79eae6d79c8',
-  'functions/api/[[path]].ts': '975cf8826b511d84108eabd2c85a6ae8ab6442d01cbacf97b05e6c58c493769d',
+  'server/api-server.mjs': '3e35efb0ebe292fc18e327626c1df2c95c5f72c5026ea9651d24d0073d7e7c43',
+  'functions/api/[[path]].ts': '4b4c4f6d944b77bb45e79420bcc6f8d833bde72bd5b6ab326e750f2f2d944504',
   'functions/api/_lib/battlenet.test.ts': '4420ceaff4c7011c0d47dfae2463bb727087676b447b2d6bf805025e31e0ec02',
-  'functions/api/_lib/character-index.test.ts': 'e47c7e0bb06ef5f31b257217e91ea27cd2266fcf1fe4ab3f8820ca9c23c9e497',
-  'functions/api/_lib/character-index.ts': '934b37d825c58cd171fc7366261b16d6474dc17473886918ea030ba6675774ce',
+  'functions/api/_lib/character-index.test.ts': 'f2f419e82b91701a3155da621d2b54537f9a1d9c9eef147af745b459af482980',
+  'functions/api/_lib/character-index.ts': '73d10b58a3c5120f6abc9752ecbb13dd9717c19971bfa6e5595dee94980dcde3',
   'functions/api/_lib/security.ts': '9c8960a2b4284a09c577decf7fad6607a2ec5907ef95e3f50e6ce84e6da17f18',
-  'functions/api/_lib/upstream.ts': 'aabe952a193f843a4d2773dea425393ad6c793a64d4daed34ef76465c6fe32ac',
+  'functions/api/_lib/upstream.ts': '030338512cdc5cbe04fa1623a0eebc946b1d01ea7de1b1217f61ae2078d4e96f',
   'deploy/systemd/frostsim-api.service': 'cc8e21197aefe829be407090611f0916e64c9edafaa7ff0f4f8b8ed53802eb01',
   'public/sw.js': '5b2cedfdb3c53af99fa971d71f1a88bd82877241f18732b368506b73b426c42f',
   // Hashed with the account-server block stripped: that block is the only change the vhost may gain.
-  'deploy/nginx/sim.frostdev.io.conf': '0ef731925113d19e1d666446a122bd4dfed3fbf7929b5062d4299cb284c499b3',
+  'deploy/nginx/sim.frostdev.io.conf': 'e71dd1f842602bf5bf22475d2ddf948bb588dea5d6fe2a8af491a20edfb6d1ab',
 };
 const GUARDED_DIR = 'functions/api';
 const VHOST = 'deploy/nginx/sim.frostdev.io.conf';
@@ -55,6 +55,28 @@ export function accountBlockConfined(text) {
     else if (code[i] === '}' && --depth === 0) return i === code.length - 1;
   }
   return false;
+}
+
+// Reviewed editorial policy is confined to the marked guide location. The full vhost
+// (minus its opt-in account block) is still hash-protected above, including this block.
+const GUIDE_CSP = "default-src 'self'; script-src 'nonce-$request_id' 'strict-dynamic' 'self'; worker-src 'none'; connect-src 'self' https:; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; frame-src https:; object-src 'none'; base-uri 'self'; form-action 'none'; frame-ancestors 'none'";
+export function guideAdsPolicy(text) {
+  const markers = text.match(/^ *# (?:BEGIN|END) guide-ads\b[^\n]*$/gm) ?? [];
+  if (!markers.length) return { ok: true, app: text };
+  const blocks = [...text.matchAll(/^ *# BEGIN guide-ads\n([\s\S]*?)^ *# END guide-ads\n/gm)];
+  if (markers.length !== 2 || blocks.length !== 1) return { ok: false, app: text };
+  const block = blocks[0][1];
+  const tokens = /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|#[^\n]*/g;
+  const uncommented = block.replace(tokens, m => m[0] === '#' ? '' : m).trim();
+  const code = uncommented.replace(tokens, '""');
+  const locations = /^location\s+\^~\s+\/guides\/\s*\{([^{}]*)\}\s*location\s*=\s*\/ads\.txt\s*\{([^{}]*)\}$/.exec(code);
+  const rawLocations = /^location\s+\^~\s+\/guides\/\s*\{([^{}]*)\}\s*location\s*=\s*\/ads\.txt\s*\{([^{}]*)\}$/.exec(uncommented);
+  const csps = [...(rawLocations?.[1] ?? '').matchAll(/add_header\s+content-security-policy\s+(["'])(.*?)\1/gi)].map(m => m[2]);
+  const ok = !!locations && !!rawLocations && csps.length === 1 && csps[0] === GUIDE_CSP
+    && !/content-security-policy/i.test(rawLocations[2])
+    && !/cross-origin-opener-policy|cross-origin-embedder-policy/i.test(code)
+    && /proxy_pass\s+http:\/\/127\.0\.0\.1:3012\/api\/v1\/ads\.txt\s*;/.test(locations[2]);
+  return { ok, app: ok ? text.replace(blocks[0][0], '') : text };
 }
 
 /** gzip -9 bytes of what dist/index.html loads up front: the entry script, modulepreloads and stylesheets. */
@@ -91,9 +113,11 @@ export function checkSurface({ root, dist, base, allowEntryGrowth = false }) {
   if (hasDeploy && existsSync(join(root, VHOST))) {
     const vhost = readFileSync(join(root, VHOST), 'utf8');
     if (!accountBlockConfined(vhost)) failures.push(`${VHOST}: the account-server block must be exactly one location ^~ /api/v1/ { ... }`);
+    const guides = guideAdsPolicy(vhost);
+    if (!guides.ok) failures.push(`${VHOST}: guide-ads markers, routes or editorial CSP differ from the reviewed confined policy`);
     const expected = readFileSync(join(root, 'public/_headers'), 'utf8').match(/^\s*Content-Security-Policy: (.*)$/m)?.[1];
     // Header names are case-insensitive, and nginx takes either quote.
-    const served = [...vhost.matchAll(/add_header\s+content-security-policy\s+(["'])(.*?)\1/gi)].map((m) => m[2]);
+    const served = [...guides.app.matchAll(/add_header\s+content-security-policy\s+(["'])(.*?)\1/gi)].map((m) => m[2]);
     if (!expected || served.length !== 1 || served[0] !== expected) {
       failures.push(`${VHOST}: expected exactly one CSP equal to public/_headers', found ${served.length}${served.length === 1 ? ' that differs' : ''}`);
     } else notes.push('vhost CSP equals public/_headers');

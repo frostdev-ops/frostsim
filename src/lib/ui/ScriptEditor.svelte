@@ -21,6 +21,8 @@
   let caseSensitive = $state(false)
   let hitIndex = $state(0)
   let fullscreen = $state(false)
+  const id = $props.id()
+  let escapeTab = false
 
   const lines = $derived(value.split('\n'))
   const diagnostics = $derived<Diagnostic[]>(diagnose(value))
@@ -73,21 +75,26 @@
   }
 
   function onKeydown(event: KeyboardEvent): void {
+    if (event.key === 'Escape') {
+      escapeTab = true
+      if (findOpen) {
+        event.preventDefault()
+        findOpen = false
+        area?.focus()
+      }
+      return
+    }
+    const leaveEditor = escapeTab
+    escapeTab = false
     // Ctrl/Cmd-F opens editor find (not browser's, which can't see textarea contents).
     if ((event.ctrlKey || event.metaKey) && event.key === 'f') {
       event.preventDefault()
       findOpen = true
-      queueMicrotask(() => document.getElementById('script-find')?.focus())
-      return
-    }
-    if (event.key === 'Escape' && findOpen) {
-      event.preventDefault()
-      findOpen = false
-      area?.focus()
+      queueMicrotask(() => document.getElementById(`${id}-find`)?.focus())
       return
     }
     // Tab indents (not leaves field); Escape-then-Tab still moves focus (not a keyboard trap, P12.11).
-    if (event.key === 'Tab' && !event.shiftKey && !readonly) {
+    if (event.key === 'Tab' && !event.shiftKey && !readonly && !leaveEditor) {
       event.preventDefault()
       const el = event.currentTarget as HTMLTextAreaElement
       const { selectionStart: a, selectionEnd: b } = el
@@ -99,7 +106,7 @@
 
 <div class="editor stack-sm" class:fullscreen>
   <div class="spread wrap">
-    <label class="small" for="script-area">{label}</label>
+    <label class="small" for="{id}-area">{label}</label>
     <div class="row-tight">
       <span class="xs muted" aria-live="off">{fmtInt(lines.length)} lines</span>
       <button class="ghost sm" type="button" onclick={() => (findOpen = !findOpen)}>
@@ -117,11 +124,12 @@
   {#if findOpen}
     <div class="find row-tight wrap" role="search">
       <input
-        id="script-find"
+        id="{id}-find"
         type="search"
         placeholder="Find in script"
+        aria-label="Find in {label}"
         bind:value={needle}
-        onkeydown={(e) => { if (e.key === 'Enter') { e.preventDefault(); jumpTo(hitIndex + (e.shiftKey ? -1 : 1)) } }}
+        onkeydown={(e) => { if (e.key === 'Escape') onKeydown(e); else if (e.key === 'Enter') { e.preventDefault(); jumpTo(hitIndex + (e.shiftKey ? -1 : 1)) } }}
       />
       <label class="xs row-tight">
         <input type="checkbox" bind:checked={caseSensitive} /> Match case
@@ -157,7 +165,7 @@
       <!-- Decoration only. The textarea below carries the real text. -->
       <pre class="hl" bind:this={overlay} aria-hidden="true"><code>{#each lines as line, i (i)}<span class="row">{#each tokenizeLine(line) as t, j (j)}<span class={t.kind}>{t.text}</span>{/each}{'\n'}</span>{/each}</code></pre>
       <textarea
-        id="script-area"
+        id="{id}-area"
         bind:this={area}
         bind:value
         {rows}
@@ -165,15 +173,16 @@
         spellcheck="false"
         autocapitalize="off"
         autocomplete="off"
-        aria-describedby={hint ? 'script-hint' : undefined}
+        aria-describedby={hint ? `${id}-hint` : undefined}
         aria-invalid={worst === 'error' ? 'true' : undefined}
         onscroll={syncScroll}
         onkeydown={onKeydown}
+        onblur={() => escapeTab = false}
       ></textarea>
     </div>
   </div>
 
-  {#if hint}<p id="script-hint" class="xs muted">{hint}</p>{/if}
+  {#if hint}<p id="{id}-hint" class="xs muted">{hint}</p>{/if}
 
   {#if diagnostics.length}
     <details class="disclosure" open={worst === 'error'}>

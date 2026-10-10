@@ -240,7 +240,7 @@
   {/if}
 {/snippet}
 
-<input type="file" accept=".simc,.txt,.json,text/plain,application/json" bind:this={fileInput} onchange={onFile} class="sr-only" />
+<input type="file" accept=".simc,.txt,.json,text/plain,application/json" bind:this={fileInput} onchange={onFile} hidden />
 
 <div class="stack">
   <CatalogStatus />

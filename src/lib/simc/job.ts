@@ -22,6 +22,8 @@ import { candidatesDone, latestProgress, type EngineProgress } from './progress'
 import { acquireEngineSlot, type EngineSlot } from '../engine-budget'
 import { rulesMatch, type SeasonRules } from '../catalog/rules'
 import type { CatalogManifest } from '../catalog/types'
+import { roleGroups, roleNote } from './role-share'
+import { SequenceWorker } from './sequence-worker'
 
 /** Engine worker message protocol; bump it and public/engine/sim-worker.js together. */
 export const WORKER_PROTOCOL = 1
@@ -577,9 +579,11 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
     }
   }
 
-  async function start(req: SimRequest): Promise<void> {
+  async function start(whole: SimRequest): Promise<void> {
     try {
       emit('validating')
+      const groups = roleGroups(whole)
+      const req = groups?.length === 1 ? groups[0].request : whole
 
       const capability = await resolveCapability()
       if (settled) return
@@ -613,11 +617,12 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
 
       // Pool ceiling from artifact not request; warnings in one synchronous loop keep the old event order.
       const { profile: profileText, args, warnings, threads } = assembleRun(req, capability.maxThreads, rules)
-      inputWarnings = warnings
+      inputWarnings = groups ? [...warnings, roleNote(groups)] : warnings
       // assembleRun puts the clamp first.
       if (threads !== req.settings.threads) clampWarning = warnings[0]
       for (const warning of inputWarnings) emit(state, { warning })
-      effectiveProfile = profileText
+      const starts = groups && groups.length > 1 ? groups.map(group => assembleRun(group.request, capability.maxThreads, rules)) : null
+      effectiveProfile = starts ? starts.map((group, i) => `# Frostsim role group ${i + 1} of ${starts.length}\n${group.profile}`).join('\n\n') : profileText
       effectiveArgs = args
 
       const limits = { ...DEFAULT_LIMITS, ...(remote ? { initTimeoutMs: REMOTE_INIT_TIMEOUT_MS } : {}), ...req.limits }
@@ -636,7 +641,9 @@ export function runJob(request: SimRequest, onEvent?: (e: JobEvent) => void, dep
       slot = acquired
 
       emit('acquiring')
-      engineWorker = (deps.createEngineWorker ?? remote ?? defaultDeps.createEngineWorker)(capability.artifact, capability.engineDir)
+      engineWorker = starts
+        ? new SequenceWorker(starts, i => (deps.createEngineWorker ?? (remote ? remoteEngine?.(groups![i].request, capability.engineDir) : null) ?? defaultDeps.createEngineWorker)(capability.artifact, capability.engineDir)) as unknown as Worker
+        : (deps.createEngineWorker ?? remote ?? defaultDeps.createEngineWorker)(capability.artifact, capability.engineDir)
       wireEngineWorker(req, requestedIds, capability)
       armTimers(limits)
 

@@ -248,8 +248,13 @@ function verifyPack(pack, commit, channel = 'live') {
 
 /** Season data without its provenance stamps: what the app actually uses. */
 export function seasonBody(data) {
-  const { build: _build, engineCommit: _commit, engineChannel: _channel, sources: _sources, ...body } = data;
-  return body;
+  const { build: _build, engineCommit: _commit, engineChannel: _channel, sources: _sources,
+    generatedAt: _generated, capSearch: _capSearch, watermarkSource, ...body } = data;
+  if (!watermarkSource) return body;
+  return { ...body, watermarkSource: {
+    enum: watermarkSource.enum ? { count: watermarkSource.enum.count } : null,
+    addon: watermarkSource.addon ? { fields: watermarkSource.addon.fields, range: watermarkSource.addon.range } : null,
+  } };
 }
 
 /**
@@ -257,12 +262,14 @@ export function seasonBody(data) {
  * regenerate both from that build and compare: identical data is stamped into the pack's catalog manifest
  * as `seasonDataBuild` (the app's build it is proven equal to); different data blocks the pack.
  */
-function seasonData(work, lock, cacheRoot) {
+export function seasonData(work, lock, cacheRoot) {
   const build = lock.expected.clientDataWowVersion;
-  const files = ['src/lib/catalog/generated/upgrades.json', 'src/lib/catalog/generated/raid-rewards.json'];
+  const files = ['src/lib/catalog/generated/upgrades.json', 'src/lib/catalog/generated/raid-rewards.json', 'src/lib/catalog/generated/upgrade-costs.json'];
   const shipped = files.map(file => json(join(work, file)));
   const seasonDataBuild = shipped[0].build;
-  if (build !== seasonDataBuild) {
+  let costsVerified = shipped[2].build === build && shipped[2].engineCommit === lock.upstream.commit;
+  const revisionChanged = shipped.some(data => data.build !== build || data.engineCommit !== lock.upstream.commit);
+  if (revisionChanged) {
     const catalogs = join(work, 'public/catalogs');
     mkdirSync(catalogs, { recursive: true });
     // The generators read the engine-pinned catalog by id; point that id at this pack's catalog.
@@ -273,23 +280,56 @@ function seasonData(work, lock, cacheRoot) {
     run(work, 'ln', ['-sfn', join(cacheRoot, `upgrade-data-${build}`), join(work, 'build', `upgrade-data-${build}`)]);
     run(work, 'node', ['scripts/catalog/generate-upgrades.mjs']);
     run(work, 'node', ['scripts/catalog/generate-raid-rewards.mjs']);
-    files.forEach((file, i) => {
+    files.slice(0, 2).forEach((file, i) => {
       try { assert.deepEqual(seasonBody(json(join(work, file))), seasonBody(shipped[i])); }
       catch { throw new GateError(`Game build ${build} changed ${file.split('/').pop()}; Frostsim needs regenerated season data`); }
     });
+    try {
+      run(work, 'node', ['scripts/catalog/generate-upgrade-costs.mjs']);
+      assert.deepEqual(seasonBody(json(join(work, files[2]))), seasonBody(shipped[2]));
+      costsVerified = true;
+    } catch (error) {
+      costsVerified = false;
+      console.warn(`Upgrade costs unavailable for this pack: ${error.message}`);
+    }
   }
   const manifest = join(work, 'public/engine/catalog/manifest.json');
   const generated = name => json(join(work, 'src/lib/catalog/generated', `${name}.json`));
   const policy = generated('reward-policy');
   const costs = generated('upgrade-costs');
+  const upgrades = generated('upgrades');
+  const raid = generated('raid-rewards');
+  const policyMatches = policy.engineChannel === 'live' && policy.build === build && policy.seasonId === upgrades.season.id;
+  if (upgrades.build !== build || upgrades.engineCommit !== lock.upstream.commit
+    || raid.build !== build
+    || raid.seasonId !== upgrades.season.id) throw new GateError('Regenerated season data does not match this engine pack');
   const rulesFile = join(work, 'public/engine/catalog/rules.json');
-  const rules = { ...json(rulesFile), upgrades: { ...generated('upgrades'), build }, costs: costs.build === build ? costs : null,
-    raid: { ...generated('raid-rewards'), build, bonusRollRanks: policy.raidBonusRollRanks }, mplus: policy.mplus, vault: policy.vault,
-    weekly: json(join(work, 'src/lib/simc/generated/weekly-defaults.json')),
-    unavailable: costs.build === build ? [] : ['Verified LIVE upgrade cost data is unavailable for this pack.'] };
+  const previous = json(rulesFile);
+  const weekly = json(join(work, 'src/lib/simc/generated/weekly-defaults.json'));
+  const sections = { upgrades, costs: costsVerified && costs.build === build && costs.engineCommit === lock.upstream.commit ? costs : null,
+    raid: policyMatches ? { ...raid, engineCommit: lock.upstream.commit, bonusRollRanks: policy.raidBonusRollRanks } : null,
+    mplus: policyMatches ? policy.mplus : null, vault: policyMatches ? policy.vault : null,
+    weekly: weekly.engine.commit === lock.upstream.commit ? weekly : null };
+  const rules = { ...previous, ...sections, unavailable: Object.entries(sections).filter(([, value]) => !value)
+    .map(([name]) => `Verified LIVE ${name} data is unavailable for this pack.`) };
   writeJson(rulesFile, rules);
   const catalog = json(manifest);
-  catalog.files = catalog.files.map(f => f.path === 'rules.json' ? { ...f, bytes: statSync(rulesFile).size, sha256: sha256(readFileSync(rulesFile)) } : f);
+  const bytes = readFileSync(rulesFile);
+  catalog.files = catalog.files.map(f => f.path === 'rules.json' ? { ...f, bytes: bytes.length, sha256: sha256(bytes),
+    brotliBytes: brotliCompressSync(bytes, { params: { [zlib.BROTLI_PARAM_QUALITY]: 9 } }).length } : f);
+  catalog.totals = { bytes: catalog.files.reduce((n, f) => n + f.bytes, 0),
+    brotliBytes: catalog.files.reduce((n, f) => n + f.brotliBytes, 0), fileCount: catalog.files.length };
+  catalog.coverage = catalog.coverage.map(entry => {
+    const section = entry.field.startsWith('item upgrade track') ? 'upgrades'
+      : entry.field.startsWith('upgrade currency') ? 'costs'
+      : entry.field === 'Great Vault reward levels' ? 'vault'
+      : entry.field.startsWith('Mythic+ end-of-run') ? 'mplus' : null;
+    if (!section) return entry;
+    return { ...entry, status: sections[section] ? section === 'mplus' ? 'verified' : 'partial' : 'unavailable',
+      source: sections[section] ? `rules.json: reviewed ${section} data for this engine revision` : 'none',
+      notes: sections[section] ? `The regenerated ${section} table agrees with reviewed application season data. Individual eligibility and unavailable fields remain separate gates.`
+        : `Verified LIVE ${section} data is unavailable for this pack.` };
+  });
   writeJson(manifest, { ...catalog, seasonDataBuild });
 }
 

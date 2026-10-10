@@ -1,0 +1,37 @@
+name: isolated local account integration
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  staging-local:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Local service binaries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql redis-server
+          echo "$(pg_config --bindir)" >> "$GITHUB_PATH"
+      - name: Independent disposable services and retained integration tests
+        run: npm run check:staging-local
+      - name: Evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: staging-local-${{ github.sha }}
+          path: |
+            build/staging-local-*/staging-check.json
+            build/staging-local-*/integration-tests.json
+          if-no-files-found: warn

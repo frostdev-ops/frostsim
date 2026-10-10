@@ -1,0 +1,92 @@
+name: production browser and engine package
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: engine-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  engine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        channel: [live, ptr]
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: 2
+      EMCC_CORES: 2
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_MAXSIZE: 2G
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - name: Pinned Emscripten installer
+        uses: actions/checkout@v4
+        with:
+          repository: emscripten-core/emsdk
+          ref: 5eb0bde7585670252e8ba05e9d361627bffd08b5
+          path: build/emsdk
+      - name: Source and compiler caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            vendor/simc
+            .ccache
+            build/emsdk/upstream
+            build/emsdk/node
+          key: engine-${{ runner.os }}-${{ matrix.channel }}-${{ hashFiles('engine.lock.json', 'scripts/build-engine.sh', 'scripts/engine-manifest.mjs', 'patches/**') }}
+      - name: Locked source and SDK
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ccache ninja-build
+          npm run engine:bootstrap
+          sdk="$(node -p 'JSON.parse(require("fs").readFileSync("engine.lock.json")).toolchain.emsdk.version')"
+          node --input-type=module -e '
+            import assert from "node:assert/strict"; import {readFileSync} from "node:fs";
+            const {emsdk}=JSON.parse(readFileSync("engine.lock.json")).toolchain;
+            const {releases}=JSON.parse(readFileSync("build/emsdk/emscripten-releases-tags.json"));
+            assert.equal(releases[emsdk.version],emsdk.releaseHash,"SDK version must resolve to the locked release hash");'
+          build/emsdk/emsdk install "$sdk"
+          build/emsdk/emsdk activate "$sdk"
+      - name: Both real artifacts
+        run: |
+          source build/emsdk/emsdk_env.sh
+          npm run engine:build -- --channel ${{ matrix.channel }}
+          npm run engine:build -- --channel ${{ matrix.channel }} --fallback
+      - name: Matching catalog and byte validation
+        run: |
+          if [ '${{ matrix.channel }}' = ptr ]; then engine_dir=public/engine/ptr; else engine_dir=public/engine; fi
+          npm run catalog:build -- --channel ${{ matrix.channel }} --out "$engine_dir/catalog"
+          node scripts/catalog/validate-catalogs.mjs "$engine_dir/catalog" --engine "$engine_dir/manifest.json"
+          catalog_id="$(node -p "JSON.parse(require('fs').readFileSync('$engine_dir/catalog/manifest.json')).catalogId")"
+          mkdir -p public/catalogs
+          cp -R "$engine_dir/catalog" "public/catalogs/$catalog_id"
+      - name: Reproducible package with exact corresponding source
+        run: npm run check:engine-package -- --channel ${{ matrix.channel }}
+      - name: Production app and real Chromium
+        run: |
+          npm run build
+          npx playwright install --with-deps --no-shell chromium
+          npm run check:browser -- --channels ${{ matrix.channel }} --output build/browser-${{ matrix.channel }}.json
+      - name: Preserve evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-browser-${{ matrix.channel }}-${{ github.sha }}
+          path: |
+            build/browser-${{ matrix.channel }}.json
+            build/engine-package-${{ matrix.channel }}/package-check.json
+          if-no-files-found: warn

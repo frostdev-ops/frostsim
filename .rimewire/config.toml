@@ -1,0 +1,171 @@
+name = "Frostsim"
+tracker = ".rimewire/tracker.md"
+idPattern = "P[0-9]{2}\\.[0-9]+|RW-SETUP"
+branchPrefix = "dev"
+branchAliases = []
+journalDir = ".rimewire/journal"
+logo = "public/brand/favicon-64.png"
+stylesheet = ".rimewire/board.css"
+
+[palette]
+mode = "auto"
+
+[palette.colors]
+[palette.light]
+background = "#eef3f9"
+surface = "#ffffff"
+surfaceAlt = "#f3f7fb"
+border = "#bccddd"
+borderSoft = "#dbe6f0"
+text = "#0c1a2b"
+textSecondary = "#40566f"
+muted = "#526880"
+accent = "#0369a1"
+accentSoft = "#e6f7ff"
+highlight = "#e0f2fe"
+done = "#047857"
+active = "#0f5fc2"
+spec = "#7a2fc0"
+planned = "#526880"
+blocked = "#c62424"
+aside = "#64748b"
+onSolid = "#ffffff"
+
+[palette.dark]
+background = "#0a0c11"
+surface = "#1b1f27"
+surfaceAlt = "#12151c"
+border = "#343c4b"
+borderSoft = "#292f3b"
+text = "#eef3f8"
+textSecondary = "#a9b3c2"
+muted = "#99a4b6"
+accent = "#65cbe5"
+accentSoft = "#1b343e"
+highlight = "#243e48"
+done = "#62d5a1"
+active = "#8fb8ff"
+spec = "#bf88f5"
+planned = "#99a4b6"
+blocked = "#f87171"
+aside = "#8a94a5"
+onSolid = "#06121a"
+
+[fonts]
+sans = "\"Inter Variable\", ui-sans-serif, system-ui, sans-serif"
+mono = "ui-monospace, \"SF Mono\", Menlo, Consolas, monospace"
+
+[hooks]
+enabled = false
+
+[statuses]
+[roadmap]
+fewRows = 0
+
+[[roadmap.platforms]]
+id = "shared"
+label = "Frostsim"
+tokens = []
+note = "Browser application and optional cloud services; no OS-specific task split."
+
+[[roadmap.milestones]]
+id = "setup"
+kind = "track"
+title = "Board setup"
+lane = "^Board setup$"
+
+[[roadmap.milestones]]
+id = "p00"
+kind = "phase"
+title = "P00 — Lock a reproducible baseline"
+lane = "^P00 — Lock a reproducible baseline$"
+
+[[roadmap.milestones]]
+id = "p01"
+kind = "phase"
+title = "P01 — Make simulation execution dependable"
+lane = "^P01 — Make simulation execution dependable$"
+
+[[roadmap.milestones]]
+id = "p02"
+kind = "phase"
+title = "P02 — Prove engine capabilities and resource limits"
+lane = "^P02 — Prove engine capabilities and resource limits$"
+
+[[roadmap.milestones]]
+id = "p03"
+kind = "phase"
+title = "P03 — Establish the product shell and visual language"
+lane = "^P03 — Establish the product shell and visual language$"
+
+[[roadmap.milestones]]
+id = "p04"
+kind = "phase"
+title = "P04 — Parse full addon exports and build the character workspace"
+lane = "^P04 — Parse full addon exports and build the character workspace$"
+
+[[roadmap.milestones]]
+id = "p05"
+kind = "phase"
+title = "P05 — Supply trustworthy versioned game data"
+lane = "^P05 — Supply trustworthy versioned game data$"
+
+[[roadmap.milestones]]
+id = "p06"
+kind = "phase"
+title = "P06 — Finish Quick Sim and detailed reports"
+lane = "^P06 — Finish Quick Sim and detailed reports$"
+
+[[roadmap.milestones]]
+id = "p07"
+kind = "phase"
+title = "P07 — Add direct equipment and talent comparisons"
+lane = "^P07 — Add direct equipment and talent comparisons$"
+
+[[roadmap.milestones]]
+id = "p08"
+kind = "phase"
+title = "P08 — Build full Top Gear and staged optimization"
+lane = "^P08 — Build full Top Gear and staged optimization$"
+
+[[roadmap.milestones]]
+id = "p09"
+kind = "phase"
+title = "P09 — Build full Droptimizer"
+lane = "^P09 — Build full Droptimizer$"
+
+[[roadmap.milestones]]
+id = "p10"
+kind = "phase"
+title = "P10 — Complete Advanced, Expert Mode, stat weights, and presets"
+lane = "^P10 — Complete Advanced, Expert Mode, stat weights, and presets$"
+
+[[roadmap.milestones]]
+id = "p11"
+kind = "phase"
+title = "P11 — Add history, sharing, and offline use"
+lane = "^P11 — Add history, sharing, and offline use$"
+
+[[roadmap.milestones]]
+id = "p12"
+kind = "phase"
+title = "P12 — Finish animation, accessibility, and performance polish"
+lane = "^P12 — Finish animation, accessibility, and performance polish$"
+
+[[roadmap.milestones]]
+id = "p13"
+kind = "phase"
+title = "P13 — Conditional Armory integration"
+lane = "^P13 — Conditional Armory integration$"
+
+[[roadmap.milestones]]
+id = "p14"
+kind = "phase"
+title = "P14 — Deliver, verify, and operate production"
+lane = "^P14 — Deliver, verify, and operate production$"
+
+[[roadmap.milestones]]
+id = "p15"
+kind = "phase"
+title = "P15 — Optional accounts, billing, cloud compute, hosted shares, and Discord"
+lane = "^P15 — Optional accounts, billing, cloud compute, hosted shares, and Discord$"

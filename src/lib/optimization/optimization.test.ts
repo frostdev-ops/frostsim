@@ -971,10 +971,13 @@ describe('staged runner', () => {
   // cancel against an adapter that ignores it hung with no warning at all.
   it('applies the grace to a caller cancel even with no batch timeout set', async () => {
     const controller = new AbortController();
-    const ignores: RunBatch = () => new Promise(() => {});
+    let batchStarted!: () => void;
+    const started = new Promise<void>(resolve => { batchStarted = resolve; });
+    const ignores: RunBatch = () => { batchStarted(); return new Promise(() => {}); };
     const promise = runStagedSearch([candidate('a')], {
       ...base, plan: ONE_STAGE, runBatch: ignores, signal: controller.signal, abortGraceMs: 30,
     });
+    await started;
     controller.abort();
     const r = await promise;
     expect(r.warnings.join(' ')).toMatch(/cancellation was not honoured/);
@@ -1406,10 +1409,9 @@ describe('Droptimizer scenarios', () => {
     expect(warnings[0]).toMatch(/not in the catalog/);
   });
 
-  it('marks every candidate cost as unknown rather than zero', () => {
+  it('charges no upgrade resources for receiving an unmodified outcome', () => {
     const { scenarios } = buildScenarios([{ id: 's1', label: 'S', provenance: 'user', items: [ring] }], opts);
-    expect(scenarios[0].candidate.cost.unknownCosts).toContain('upgrade currency');
-    expect(scenarios[0].candidate.cost.currencies).toBeUndefined();
+    expect(scenarios[0].candidate.cost).toMatchObject({ currencies: {}, money: 0, unknownCosts: [] });
   });
 });
 

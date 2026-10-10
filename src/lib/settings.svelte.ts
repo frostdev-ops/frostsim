@@ -6,6 +6,8 @@ import {
 import { FIGHT_PRESETS, findPreset, presetForStyle } from './simc/client'
 import { RAID_BUFFS, type RaidBuff, type RaidBuffSelection } from './simc/raid-buffs'
 import { scenarioLines } from './simc/quick-request'
+import { maxThreads } from './app.svelte'
+import { effectiveThreads, type ThreadPolicy } from './simc/thread-policy'
 
 const KEY = 'frostsim.settings'
 
@@ -17,6 +19,8 @@ export interface SettingsSnapshot {
   maxTime: number
   targets: number
   threads: number
+  threadPolicy?: ThreadPolicy
+  manualThreads?: number
   accuracyMode: AccuracyMode
   targetError: number
   maxIterations: number
@@ -35,7 +39,15 @@ export class ToolSettings {
   fightStyle = $state<FightStyle>(DEFAULT_SETTINGS.fightStyle)
   maxTime = $state(DEFAULT_SETTINGS.maxTime)
   targets = $state(DEFAULT_SETTINGS.targets)
-  threads = $state(DEFAULT_SETTINGS.threads)
+  threadPolicy = $state<ThreadPolicy>('balanced')
+  manualThreads = $state(DEFAULT_SETTINGS.threads)
+  get threads(): number {
+    return effectiveThreads(this.threadPolicy, this.manualThreads, maxThreads(), globalThis.navigator?.hardwareConcurrency)
+  }
+  set threads(value: number) {
+    this.manualThreads = isNum(value) ? clampInt(value, 1, 64) : 1
+    this.threadPolicy = 'manual'
+  }
   /** P06.10: off by default; HTML report is 2.6x JSON and costs engine time, so user request signals worth producing. */
   htmlReport = $state(false)
   accuracyMode = $state<AccuracyMode>('targetError')
@@ -87,6 +99,8 @@ export class ToolSettings {
       maxTime: this.maxTime,
       targets: this.targets,
       threads: this.threads,
+      threadPolicy: this.threadPolicy,
+      manualThreads: this.manualThreads,
       accuracyMode: this.accuracyMode,
       targetError: this.targetError,
       maxIterations: this.maxIterations,
@@ -137,7 +151,11 @@ export class ToolSettings {
     if (s.fightStyle && FIGHT_STYLES.includes(s.fightStyle)) this.fightStyle = s.fightStyle
     if (isNum(s.maxTime)) this.maxTime = clampInt(s.maxTime, 10, LIMITS.maxTimeSeconds)
     if (isNum(s.targets)) this.targets = clampInt(s.targets, 1, LIMITS.targets)
-    if (isNum(s.threads)) this.threads = clampInt(s.threads, 1, 64)
+    if (isNum(s.manualThreads)) this.manualThreads = clampInt(s.manualThreads, 1, 64)
+    else if (isNum(s.threads)) this.manualThreads = clampInt(s.threads, 1, 64)
+    if (s.threadPolicy === 'balanced' || s.threadPolicy === 'maximum' || s.threadPolicy === 'manual') {
+      this.threadPolicy = s.threadPolicy
+    } else if (isNum(s.threads)) this.threadPolicy = 'manual'
     if (s.accuracyMode === 'iterations' || s.accuracyMode === 'targetError'
       || s.accuracyMode === 'script') {
       this.accuracyMode = s.accuracyMode

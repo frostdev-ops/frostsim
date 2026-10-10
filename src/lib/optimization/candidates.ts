@@ -5,8 +5,9 @@ import { serializeItem } from '../catalog/serialize';
 import { INVTYPE } from '../catalog/enums';
 import type { Catalog } from '../catalog/catalog';
 import { GEAR_SLOTS, type GearSlot, type ItemInstance, type ResolvedItem } from '../catalog/types';
-import type { Candidate, CandidateCost, CandidateDelta } from './types';
+import type { Candidate, CandidateCost, CandidateDelta, UpgradeBudget } from './types';
 import { VAULT_SOCKET_REWARD_ID } from '../catalog/vaultRewards';
+import { budgetProblem, itemUpgradeCost, type SlotWatermarks } from '../catalog/upgradeCosts';
 
 /** One axis of the search: the alternatives selected for a single decision. */
 export interface Dimension {
@@ -44,6 +45,9 @@ export interface SetBonusRequirement {
 }
 
 export interface GenerateOptions {
+  ownedItems?: ItemInstance[];
+  highWatermarks?: SlotWatermarks['watermarks'];
+  budget?: UpgradeBudget;
   /** Hard ceiling on candidates produced. Generation stops here, honestly reported. */
   workCap: number;
   character: CharacterConstraints;
@@ -74,6 +78,8 @@ export interface GenerateOptions {
 }
 
 export interface GenerationReport {
+  /** Binding affordability constraints, counted before simulation. */
+  rejectedBudget?: Record<string, number>;
   /** Candidates actually produced. */
   produced: number;
   /** Combinations examined, including rejected ones. */
@@ -145,17 +151,18 @@ function fnv1a(s: string): number {
 }
 
 function emptyCost(): CandidateCost {
-  return { unknownCosts: [] };
+  return { currencies: {}, money: 0, unknownCosts: [] };
 }
 
-function mergeCost(into: CandidateCost, from?: CandidateCost): CandidateCost {
+export function mergeCost(into: CandidateCost, from?: CandidateCost): CandidateCost {
   if (!from) return into;
   const currencies = { ...into.currencies };
   for (const [id, n] of Object.entries(from.currencies ?? {})) {
     currencies[Number(id)] = (currencies[Number(id)] ?? 0) + n;
   }
   return {
-    currencies: Object.keys(currencies).length ? currencies : undefined,
+    currencies: into.currencies === undefined || from.currencies === undefined ? undefined : currencies,
+    money: into.money === undefined || from.money === undefined ? undefined : into.money + from.money,
     catalystCharges: (into.catalystCharges ?? 0) + (from.catalystCharges ?? 0) || undefined,
     unknownCosts: [...new Set([...into.unknownCosts, ...from.unknownCosts])],
   };
@@ -167,6 +174,7 @@ export function* generate(
   opts: GenerateOptions,
 ): Generator<Candidate, GenerationReport, undefined> {
   const bound = upperBound(dimensions);
+  budgetProblem(emptyCost(), opts.budget);
   const report: GenerationReport = {
     produced: 0, examined: 0, rejectedIllegal: 0, duplicatesCollapsed: 0, capped: false,
     upperBound: bound.value, upperBoundExceedsSafeInteger: bound.overflow,
@@ -219,15 +227,21 @@ export function* generate(
     const built = buildCandidate(picks, opts, resolve);
 
     if (built) {
-      // Equal sims with different rewards stay separate but share simulation cache.
-      const choiceKey = `${built.canonical}\nreward=${built.provenance.vaultRewardId ?? ''}`;
-      if (seen.has(choiceKey) || (!built.provenance.vaultRewardId && seen.has(built.canonical))) {
-        report.duplicatesCollapsed++;
+      const binding = budgetProblem(built.cost, opts.budget);
+      if (binding) {
+        report.rejectedBudget ??= {};
+        report.rejectedBudget[binding] = (report.rejectedBudget[binding] ?? 0) + 1;
       } else {
-        seen.add(choiceKey);
-        report.produced++;
-        yield { ...built, id: candidateId(built.canonical, report.produced) };
-        if (report.produced >= opts.workCap) { report.capped = true; return report; }
+        // Equal sims with different rewards stay separate but share simulation cache.
+        const choiceKey = `${built.canonical}\nreward=${built.provenance.vaultRewardId ?? ''}`;
+        if (seen.has(choiceKey) || (!built.provenance.vaultRewardId && seen.has(built.canonical))) {
+          report.duplicatesCollapsed++;
+        } else {
+          seen.add(choiceKey);
+          report.produced++;
+          yield { ...built, id: candidateId(built.canonical, report.produced) };
+          if (report.produced >= opts.workCap) { report.capped = true; return report; }
+        }
       }
     } else {
       report.rejectedIllegal++;
@@ -371,6 +385,16 @@ function buildCandidate(
   }
 
   // Only changed items are provenance.
+  const owned = opts.ownedItems ?? [...opts.baselineGear.values()].filter((item): item is ItemInstance => !!item);
+  const charged = new Set<string>();
+  for (const item of gear.values()) {
+    if (!item) continue;
+    const identity = item.originalInstanceId ?? item.instanceId;
+    if (charged.has(identity)) continue;
+    charged.add(identity);
+    const origin = owned.find(original => original.instanceId === identity);
+    cost = mergeCost(cost, itemUpgradeCost(item, origin, opts.catalog.rules, opts.highWatermarks));
+  }
   const items: ResolvedItem[] = [];
   const names = new Map<number, string>();
   for (const [slot, item] of gear) {

@@ -36,7 +36,9 @@ if (INDEX_PATH) {
 
 /** Writes the index when it changed: temp file, then rename, so a crash mid-write keeps the last good file. */
 function saveIndex() {
-  if (!INDEX_PATH || !characterIndex.dirty) return;
+  if (!INDEX_PATH) return;
+  characterIndex.purge();
+  if (!characterIndex.dirty) return;
   try {
     writeFileSync(`${INDEX_PATH}.tmp`, JSON.stringify(characterIndex));
     renameSync(`${INDEX_PATH}.tmp`, INDEX_PATH);

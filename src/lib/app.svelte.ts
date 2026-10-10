@@ -16,6 +16,7 @@ import { expert, persistDrafts } from './advanced.svelte'
 import { forgetCharacterSelections, hasGearDrafts } from './selection.svelte'
 import { uniqueLoadoutNames, type ImportedCharacter, type ItemInstance } from './import/character'
 import * as db from './store/db'
+import { readSearchCheckpoint, type SearchCheckpoint } from './store/search-checkpoint'
 import {
   makePortable, newId, type EngineIdentity, type RawBlob, type ReportSummary,
   type StoredCharacter, type StoredReport, type StoredSetup, type ToolId,
@@ -516,7 +517,7 @@ export function planOptions(
 }
 
 export function maxThreads(): number {
-  return app.capability?.ok ? app.capability.maxThreads : 8
+  return app.capability?.ok ? app.capability.maxThreads : 1
 }
 
 export function profilesetsSupported(): boolean {
@@ -764,6 +765,35 @@ export async function saveSetup(tool: ToolId, label: string, settings: unknown):
   if (!out.ok) { noteFailure(out.failure); toast('bad', storageMessage(out.failure)); return }
   app.setups.unshift(record)
   toast('good', `Saved “${label}”.`)
+}
+
+/** Commit one batch to the existing setup store; a failed save leaves the in-memory search usable. */
+export async function saveSearchCheckpoint(
+  tool: 'gear' | 'droptimizer', label: string, characterId: string | undefined,
+  settings: unknown, checkpoint: SearchCheckpoint, id?: string,
+): Promise<string | null> {
+  const safe = readSearchCheckpoint(checkpoint)
+  if (!safe) { toast('bad', 'This search checkpoint could not be saved. The search continues in this tab.'); return null }
+  const prior = id ? app.setups.find(s => s.id === id) : undefined
+  if (id && !prior) return null
+  const record: StoredSetup = plain({
+    ...prior, id: id ?? newId(), tool, label, characterId, settings,
+    createdAt: prior?.createdAt ?? Date.now(), updatedAt: Date.now(), checkpoint: safe,
+  })
+  const out = await db.put('setups', record)
+  if (!out.ok) { noteFailure(out.failure); toast('bad', `Search resume is unavailable. ${storageMessage(out.failure)}`); return null }
+  app.setups = [record, ...app.setups.filter(s => s.id !== record.id)]
+  return record.id
+}
+
+export async function clearSearchCheckpoint(id: string): Promise<void> {
+  const prior = app.setups.find(s => s.id === id)
+  if (!prior) return
+  const record = plain(prior)
+  delete record.checkpoint
+  const out = await db.put('setups', record)
+  if (!out.ok) { noteFailure(out.failure); return }
+  app.setups = app.setups.map(s => s.id === id ? record : s)
 }
 
 export async function deleteSetup(id: string): Promise<void> {

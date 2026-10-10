@@ -449,7 +449,7 @@ describe.skipIf(gate)('catalog worker protocol' + gate, () => {
       // A ring is eligible in both finger slots, and the duplicate source collapses.
       expect(r.scenarios).toHaveLength(2);
       expect(new Map(r.sourcesFor).get(r.scenarios[0].candidate.id)).toEqual(['raid', 'vault']);
-      expect(r.scenarios[0].candidate.cost.unknownCosts).toContain('upgrade currency');
+      expect(r.scenarios[0].candidate.cost).toMatchObject({ currencies: {}, money: 0, unknownCosts: [] });
     }
   });
 

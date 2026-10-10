@@ -24,10 +24,13 @@ const item: ItemInstance = { instanceId: 'vault-reward', source: 'vault', vaultR
 
 describe.skipIf(gate)('engine-pinned upgrade identities' + gate, () => {
   it('resolves boss-specific raid drops and keeps restricted Myth drops through max upgrades and planning', () => {
-    const loot = { schemaVersion: 1, generatedAt: '', expiresAt: null, provenance: [], warnings: [],
+    const loot = { schemaVersion: 1, generatedAt: '2026-09-14T00:00:00.000Z', expiresAt: null,
+      provenance: [{ provider: 'test', description: 'Synthetic raid membership fixture', retention: 'Test fixture only',
+        attribution: 'Synthetic fixture; not Blizzard API data', limitations: ['No live-source acceptance'],
+        sourceCount: raidRewards.rewards.length, itemCount: 0 }], warnings: [],
       season: { id: raidRewards.seasonId, name: 'Midnight Season 2' },
       sources: raidRewards.rewards.map(reward => ({ id: reward.id, name: reward.name, instanceId: reward.instanceId,
-        kind: 'raid' as const, seasonId: raidRewards.seasonId, provider: 'blizzard-journal',
+        kind: 'raid' as const, seasonId: raidRewards.seasonId, provider: 'test',
         itemIds: [...Object.keys(reward.byDifficulty.heroic).map(Number), ...reward.ignoredItemIds] })) };
     catalog.registerLoot(loot);
     const sources = sourceAvailability(catalog).available;
