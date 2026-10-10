@@ -270,13 +270,7 @@ p { margin: 0; }
 a { color: var(--accent); text-underline-offset: 2px; }
 a:hover { color: var(--accent-hi); }
 
-a:focus-visible,
-button:focus-visible,
-input:focus-visible,
-select:focus-visible,
-textarea:focus-visible,
-summary:focus-visible,
-[tabindex]:focus-visible {
+:root :is(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
   outline: none;
   box-shadow: var(--focus);
   border-radius: var(--r1);
@@ -344,7 +338,12 @@ kbd {
 @media (forced-colors: active) {
   body::before { display: none; }
   button, input, select, textarea { border: 1px solid ButtonBorder; }
-  *:focus-visible { outline: 2px solid Highlight; box-shadow: none; }
+  :root :is(a, button, input, select, textarea, summary, [tabindex]):focus-visible,
+  :root .segmented label:has(input:focus-visible) {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+    box-shadow: none;
+  }
 }
 
 /* ---- Layout and shared patterns ------------------------------------------
@@ -494,7 +493,7 @@ button.sm { min-height: 1.8rem; padding: 0.15rem 0.6rem; font-size: var(--fs-sm)
   font-weight: 620;
   box-shadow: inset 0 -2px 0 var(--accent);
 }
-.segmented label:has(input:focus-visible) { box-shadow: inset var(--focus); }
+.segmented label:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
 .segmented input { position: absolute; opacity: 0; width: 0; height: 0; }
 
 /* Chips: status, counts, provenance. Always carry text, never colour alone. */
