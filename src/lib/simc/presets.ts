@@ -125,6 +125,30 @@ export function presetForStyle(fightStyle: FightStyle): FightPreset | undefined 
   return FIGHT_PRESETS.find((p) => p.fightStyle === fightStyle)
 }
 
+function presetBlockAt(lines: readonly string[], at: number, preset: FightPreset): boolean {
+  return !!preset.profileLines?.length && preset.profileLines.every((line, offset) => lines[at + offset] === line)
+}
+
+/** Recover synthetic presets whose reported upstream style is always Patchwerk. */
+export function presetForProfileLines(fightStyle: FightStyle, lines: readonly string[] = []): FightPreset | undefined {
+  for (let at = 0; at < lines.length; at++) {
+    const preset = FIGHT_PRESETS.find(p => p.fightStyle === fightStyle && presetBlockAt(lines, at, p))
+    if (preset) return preset
+  }
+  return presetForStyle(fightStyle)
+}
+
+/** Replace inherited application preset blocks through current settings; preserve other authored lines. */
+export function withoutPresetLines(lines: readonly string[]): string[] {
+  const remaining: string[] = []
+  for (let at = 0; at < lines.length;) {
+    const preset = FIGHT_PRESETS.find(p => presetBlockAt(lines, at, p))
+    if (preset) at += preset.profileLines!.length
+    else remaining.push(lines[at++])
+  }
+  return remaining
+}
+
 /** Sanity: every upstream style should be reachable through some preset. */
 export const UNMAPPED_FIGHT_STYLES = FIGHT_STYLES.filter((s) => !presetForStyle(s))
 
