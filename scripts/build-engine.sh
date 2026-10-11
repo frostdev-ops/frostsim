@@ -103,7 +103,8 @@ if [ "$VARIANT" = threaded ]; then
   ENGINE_DIR=$ENGINE_ROOT
   THREAD_CMAKE=-DSC_NO_THREADING=OFF
   CXX_FLAGS="-DSC_USE_PTR=$USE_PTR -pthread -fwasm-exceptions -flto"
-  LINK_FLAGS="-pthread -sPTHREAD_POOL_SIZE=16 -flto -sMALLOC=mimalloc $COMMON_LINK"
+  # Measured 2026-10-11 (P01.4): binaryen's memory-packing splits the DBC data into 100k passive segments whose 3.3 MB init function V8 tiers up for ~22 s and 1.4 GB per cold load. Skipping it keeps 3 segments, same DPS.
+  LINK_FLAGS="-pthread -sPTHREAD_POOL_SIZE=16 -flto -sMALLOC=mimalloc -sBINARYEN_EXTRA_PASSES=--skip-pass=memory-packing $COMMON_LINK"
 else
   BUILD_DIR=build/wasm$SUFFIX-fallback
   ENGINE_DIR=$ENGINE_ROOT/fallback
