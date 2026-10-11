@@ -272,10 +272,15 @@ export function parseNotes(text) {
   return banner || changelog.length ? { banner, changelog } : null;
 }
 
-const NOTES_PROMPT = 'You write short release notes for Frostsim, a browser simulator built on SimulationCraft, from a list of upstream commit subjects. '
-  + `${UNTRUSTED} Reply with exactly: a first line of at most 180 characters saying what changes for players' DPS numbers, then up to 6 lines, each starting `
-  + 'with "- ", each naming one change a player could notice (class or spec changes, talents, items, fixes). Skip build, CI, test and documentation commits. '
-  + 'State only what the subjects say. Plain text: no URLs, no markup. If nothing is player-visible, reply with the first line "No player-visible changes." and no bullets.';
+const NOTES_PROMPT = 'Write concise update notes for Frostsim, a browser simulator built on SimulationCraft, from upstream commit subjects. '
+  + `${UNTRUSTED} Write for players who already know the game. Use familiar terms like AoE, DPS and rotation without explaining them. `
+  + 'Reply with exactly: a first line of at most 180 characters summarizing the main simulator change, then up to 6 lines starting with "- ", '
+  + 'each at most 160 characters naming a specific change (classes, specs, talents, items, fixes). Use direct patch-note wording: '
+  + 'for a Beast Mastery AoE rotation update, write "Updated the Beast Mastery AoE rotation." '
+  + 'No greetings, hype, gamer slang or filler like "which can change their area-of-effect DPS numbers". '
+  + 'Describe changes to the simulator; do not present them as buffs or nerfs to the live game. State only what the subjects say, '
+  + 'without inventing DPS effects or advice to rerun sims. Skip build, CI, test and documentation commits. Plain text: no URLs, no markup. '
+  + 'If nothing is player-visible, reply with the first line "No player-visible changes." and no bullets.';
 
 /** The changelog for a pack, and a banner when Jev thinks players would notice the change. null when there is nothing to say. */
 export async function releaseNotes({ key, range, channel = 'live', decideFn = decide, chatFn = chat }) {
