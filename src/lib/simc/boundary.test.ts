@@ -221,6 +221,16 @@ describe('real worker boundary', () => {
     expect(h.engine.terminated).toBe(true)
   }, 20_000)
 
+  it('releases the engine at once when the worker confirms its stop before an error', async () => {
+    // Without the shutdown first, the page waits out the reap grace and blocks the engine until reload.
+    const h = launch({}, 'engine-init-error.mjs', 5_000)
+    await expect(h.handle.result).rejects.toMatchObject({ name: 'SimEngineError', code: 'engine-init' })
+    expect(h.engine.terminated).toBe(true)
+    expect(lastThreadReap()).toMatchObject({ confirmed: true, reason: 'init-failed' })
+    expect(engineBusy()).toBe(false)
+    expect(engineAvailability()).toEqual({ available: true })
+  }, 20_000)
+
   it('stops a job cancelled before the engine ever reached ready', async () => {
     // No print = no callback to check flag; worker reads at next phase boundary.
     const h = launch({}, 'engine-init-cancel.mjs', 300)
