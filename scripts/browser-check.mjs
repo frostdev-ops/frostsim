@@ -45,7 +45,7 @@ try {
   cpSync(sourceDist, dist, { recursive: true, mode: constants.COPYFILE_FICLONE });
   mkdirSync(join(dist, '__ci__'), { recursive: true });
   await build({ entryPoints: [join(root, 'scripts/browser-suite.mjs')], bundle: true, format: 'esm', platform: 'browser',
-    outfile: join(dist, '__ci__/suite.mjs'), define: { __ENGINE_COMPAT__: JSON.stringify(report.engineCompat), 'import.meta.env.DEV': 'false' } });
+    outfile: join(dist, '__ci__/suite.mjs'), define: { __ENGINE_COMPAT__: JSON.stringify(report.engineCompat), 'import.meta.env.DEV': 'false', 'import.meta.env.VITE_FEATURE_ACCOUNTS': 'false' } });
   await build({ entryPoints: [join(root, 'src/lib/simc/report-worker.ts')], bundle: true, format: 'esm', platform: 'browser', outfile: join(dist, '__ci__/report-worker.mjs') });
   writeFileSync(join(dist, '__ci__/index.html'), '<!doctype html><html><head><title>Frostsim CI engine harness</title></head><body><main>Production-policy engine validation</main></body></html>');
   writeFileSync(join(dist, '__ci__/observer-child.js'), "setInterval(()=>{},1000); postMessage('child-ready');");
