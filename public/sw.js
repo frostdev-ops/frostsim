@@ -5,7 +5,7 @@ const SHELL = ['/', '/index.html', '/favicon.svg', '/manifest.webmanifest']
 
 // Large optional assets; keep variants in step with engineWorkerUrl() in simc/job.ts.
 const BIG = {
-  engine: ['/engine/manifest.json', '/engine/simc.js', '/engine/simc.wasm', '/engine/sim-worker.js?worker=3', '/engine/sim-worker.js?variant=fallback&worker=3'],
+  engine: ['/engine/manifest.json', '/engine/simc.js', '/engine/simc.wasm', '/engine/sim-worker.js?worker=4', '/engine/sim-worker.js?variant=fallback&worker=4'],
 }
 
 function engineUrls(base = '/engine/') {

@@ -6,7 +6,9 @@ const VARIANT =
 const ENGINE_BASE = new URL('.', self.location.href).pathname
 const ENGINE_DIR = ENGINE_BASE + (VARIANT === 'fallback' ? 'fallback/' : '')
 
-// Track and reap pthreads before importScripts so allocateUnusedWorker finds the wrapper (measured: orphans consume GBs).
+// Count pthreads before importScripts so allocateUnusedWorker finds the wrapper. Never terminate them from here:
+// a coordinator that terminates its children just before closing intermittently never finishes its own Chromium
+// shutdown and stays resident (P01.4, 9/12 init-only cycles retained vs 0/12). Closing this worker ends them in order.
 const spawnedThreads = new Set()
 if (globalThis.name !== 'em-pthread' && typeof Worker !== 'undefined') {
   const NativeWorker = Worker
@@ -79,23 +81,17 @@ if (globalThis.name !== 'em-pthread') {
     return cancelFlagRef !== null && Atomics.load(cancelFlagRef, 0) !== 0
   }
 
-  /** Reap pool on every terminal path; completed run leaves pool allocated. */
-  function reapPool() {
-    let reaped = 0
-    for (const thread of spawnedThreads) {
-      try {
-        thread.terminate()
-        reaped++
-      } catch {}
-    }
+  /** Hand the pool to this worker's own shutdown on every terminal path; returns how many threads it holds. */
+  function releasePool() {
+    const released = spawnedThreads.size
     spawnedThreads.clear()
-    reapedThreads += reaped
-    return reaped
+    reapedThreads += released
+    return released
   }
 
   /** Cancel from inside print callback (only JS during callMain); signals via SharedArrayBuffer. */
   function requestStop() {
-    const reaped = reapPool()
+    const reaped = releasePool()
     try {
       self.postMessage({ protocol: PROTOCOL, jobId: cancelJobId, type: 'reaping', threads: reaped })
     } catch {
@@ -107,7 +103,7 @@ if (globalThis.name !== 'em-pthread') {
 
   /** Final message sent outside callMain confirming coordinator returned and nothing running. */
   function confirmShutdown(reason) {
-    reapPool()
+    releasePool()
     try {
       self.postMessage({
         protocol: PROTOCOL,
@@ -419,8 +415,8 @@ if (globalThis.name !== 'em-pthread') {
       // A last line without a newline.
       if (stdoutBytes.length) stdoutLine()
       flush()
-      // Reap pool after callMain; completed run must not leave pool resident.
-      reapPool()
+      // Completed run must not leave pool resident; the close in confirmShutdown ends it.
+      releasePool()
 
       // Check for cancel after sim; output might not have carried it.
       if (stopRequested()) {

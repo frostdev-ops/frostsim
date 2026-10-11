@@ -215,7 +215,7 @@ describe('job.ts remote seam', () => {
     const run = start(request())
     await vi.advanceTimersByTimeAsync(0)
     expect(spawned).toHaveLength(1)
-    expect(spawned[0].url).toBe(`${PACK_DIR}sim-worker.js?worker=3`)
+    expect(spawned[0].url).toBe(`${PACK_DIR}sim-worker.js?worker=4`)
     spawned[0].finish()
     const outcome = await run.handle.result
     expect(outcome.placement).toBe('browser')
@@ -378,7 +378,7 @@ describe('remote engine fallback', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(spawned).toHaveLength(1)
     const engine = spawned[0]
-    expect(engine.url).toBe(`${PACK_DIR}sim-worker.js?worker=3`)
+    expect(engine.url).toBe(`${PACK_DIR}sim-worker.js?worker=4`)
     // The controller's own start message, untouched: same job, profile, args and cancel flag.
     expect(engine.sent[0]).toMatchObject({ protocol: WORKER_PROTOCOL, jobId: run.handle.jobId, profilePath: '/profile.simc' })
     expect(engine.sent[0].cancelFlag).toBeInstanceOf(SharedArrayBuffer)
@@ -731,7 +731,7 @@ describe('remote engine eligibility', () => {
     const run = cloudRun(s, request(), { ...capability, engineDir: '/engine/' })
     await vi.advanceTimersByTimeAsync(0)
     expect(s.calls).toHaveLength(0)
-    expect(spawned[0].url).toBe('/engine/sim-worker.js?worker=3')
+    expect(spawned[0].url).toBe('/engine/sim-worker.js?worker=4')
     spawned[0].finish()
     await expect(run.handle.result).resolves.toMatchObject({ placement: 'browser' })
     expect(run.warnings()).toEqual([])
