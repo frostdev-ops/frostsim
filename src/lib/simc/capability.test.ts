@@ -172,9 +172,9 @@ describe('detectEngineCapability', () => {
 
 describe('engineWorkerUrl', () => {
   it('selects the artifact through the worker URL, which is what boots it', () => {
-    expect(engineWorkerUrl('threaded')).toBe('/engine/sim-worker.js?worker=4')
-    expect(engineWorkerUrl('fallback')).toBe('/engine/sim-worker.js?variant=fallback&worker=4')
-    expect(engineWorkerUrl('fallback', '/engine/versions/stable-abc/fallback/')).toBe('/engine/versions/stable-abc/sim-worker.js?variant=fallback&worker=4')
+    expect(engineWorkerUrl('threaded')).toBe('/engine/sim-worker.js?worker=5')
+    expect(engineWorkerUrl('fallback')).toBe('/engine/sim-worker.js?variant=fallback&worker=5')
+    expect(engineWorkerUrl('fallback', '/engine/versions/stable-abc/fallback/')).toBe('/engine/versions/stable-abc/sim-worker.js?variant=fallback&worker=5')
   })
 })
 

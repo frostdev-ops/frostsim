@@ -44,7 +44,7 @@ export const ENGINE_WORKER_URL = '/engine/sim-worker.js'
 export function engineWorkerUrl(variant: EngineVariant, engineDir?: string): string {
   // Version the shim independently so a cached pre-update worker does not survive app reload.
   const base = engineDir?.replace(/fallback\/$/, '') ?? '/engine/'
-  return `${base}sim-worker.js?${variant === 'fallback' ? 'variant=fallback&' : ''}worker=4`
+  return `${base}sim-worker.js?${variant === 'fallback' ? 'variant=fallback&' : ''}worker=5`
 }
 
 export type JobState =

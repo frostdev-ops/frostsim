@@ -275,6 +275,9 @@ if (globalThis.name !== 'em-pthread') {
 
     const problem = validate(data)
     if (problem) {
+      // Confirm the stop first, or the page waits out its reap grace and blocks the engine until reload.
+      cancelJobId = jobId
+      confirmShutdown('protocol')
       fail(jobId, 'protocol', problem)
       return
     }
@@ -371,7 +374,11 @@ if (globalThis.name !== 'em-pthread') {
               } catch {}
               successCallback(result.instance, result.module)
             },
-            (err) => fail(jobId, 'engine-init', 'could not instantiate the engine: ' + err),
+            // createSimc never settles after this, so its catch cannot confirm the stop.
+            (err) => {
+              confirmShutdown('init-failed')
+              fail(jobId, 'engine-init', 'could not instantiate the engine: ' + err)
+            },
           )
           return {}
         }
@@ -380,7 +387,10 @@ if (globalThis.name !== 'em-pthread') {
         moduleArg.instantiateWasm = (imports, successCallback) => {
           WebAssembly.instantiate(compiled, cancellationImports(imports)).then(
             (instance) => successCallback(instance, compiled),
-            (err) => fail(jobId, 'engine-init', 'could not instantiate the cached engine: ' + err),
+            (err) => {
+              confirmShutdown('init-failed')
+              fail(jobId, 'engine-init', 'could not instantiate the cached engine: ' + err)
+            },
           )
           return {}
         }
