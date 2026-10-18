@@ -175,6 +175,12 @@ VITE_FEATURE_ACCOUNTS=1 npm run build && npm run serve:pages
 
 Each feature group needs its own credentials (OAuth apps, Stripe, R2, Hetzner, Discord); a group without them answers `503 unconfigured` instead of failing to start, and startup prints which names are missing. The server tests that need a database run when `FROSTSIM_TEST_PG` and `FROSTSIM_TEST_REDIS` point at disposable instances, and are skipped otherwise.
 
+## Built with AI, by a developer
+
+I'm a software developer, and AI is one of my tools, not a substitute for knowing what I'm doing. Frostsim is written with AI assistance under my direction. I review the code I ship and take responsibility for it, whether I typed it or an AI wrote it for me.
+
+That said, I'm human, and I can miss things. You're welcome to audit the code, ask questions, and [report issues](https://github.com/frostdev-ops/frostsim/issues).
+
 ## Built with
 
 [Svelte 5](https://svelte.dev), TypeScript and [Vite](https://vite.dev) for the application. [SimulationCraft](https://github.com/simulationcraft/simc) compiled with [Emscripten](https://emscripten.org) for the engine, running on pthreads inside a Web Worker. [Vitest](https://vitest.dev) for the translation layer.
