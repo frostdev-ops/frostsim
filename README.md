@@ -143,6 +143,12 @@ Optional online features are developed on the long-lived `cloud` branch: sign-in
 
 `main` stays the browser app described above. It carries only the pieces that change nothing for anyone: the pure request assembly the browser and the server share, an engine hook that does nothing unless account code registers it, and a build flag that is off by default. A build from `main`, or a `cloud` build without `VITE_FEATURE_ACCOUNTS=1`, makes no request to the account server, and CI checks that. The design, its contracts and its risks are in [`server/account/DESIGN.md`](https://github.com/frostdev-ops/frostsim/blob/cloud/server/account/DESIGN.md) on that branch.
 
+## Built with AI, by a developer
+
+I'm a software developer, and AI is one of my tools, not a substitute for knowing what I'm doing. Frostsim is written with AI assistance under my direction. I review the code I ship and take responsibility for it, whether I typed it or an AI wrote it for me.
+
+That said, I'm human, and I can miss things. You're welcome to audit the code, ask questions, and [report issues](https://github.com/frostdev-ops/frostsim/issues).
+
 ## Built with
 
 [Svelte 5](https://svelte.dev), TypeScript and [Vite](https://vite.dev) for the application. [SimulationCraft](https://github.com/simulationcraft/simc) compiled with [Emscripten](https://emscripten.org) for the engine, running on pthreads inside a Web Worker. [Vitest](https://vitest.dev) for the translation layer.
