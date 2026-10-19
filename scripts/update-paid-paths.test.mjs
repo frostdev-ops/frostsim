@@ -6,7 +6,39 @@ import * as updater from './update-engines.mjs';
 
 const dirs = [];
 const temp = () => { const dir = mkdtempSync(join(tmpdir(), 'frostsim-paid-')); dirs.push(dir); return dir; };
-afterEach(() => { vi.unstubAllEnvs(); dirs.splice(0).forEach(dir => rmSync(dir, { recursive: true, force: true })); });
+afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); dirs.splice(0).forEach(dir => rmSync(dir, { recursive: true, force: true })); });
+
+it('explicit local/off modes bypass credential files and reject misspelled modes', () => {
+  const file = join(temp(), 'malformed.env'); writeFileSync(file, 'not a credential');
+  vi.stubEnv('FROSTSIM_R2_ENV_FILE', file); vi.stubEnv('FROSTSIM_OPENROUTER_ENV_FILE', file);
+  vi.stubEnv('FROSTSIM_UPDATER_BUILD_MODE', 'local'); vi.stubEnv('FROSTSIM_UPDATER_AI_MODE', 'off');
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  expect(updater.builders()).toBeNull(); expect(updater.aiKey()).toBeNull();
+  expect(errors).not.toHaveBeenCalled();
+  vi.stubEnv('FROSTSIM_UPDATER_BUILD_MODE', 'locla');
+  expect(() => updater.builders()).toThrow(/mode/i);
+});
+
+it('uses a separate compute-only EC2 maximum and refuses its absence before upload or launch', async () => {
+  const file = join(temp(), 'ledger.json'); writeFileSync(file, JSON.stringify({ schemaVersion: 1, entries: [] }));
+  vi.stubEnv('FROSTSIM_UPDATER_LEDGER', file); vi.stubEnv('FROSTSIM_UPDATER_MONTHLY_USD_CAP', '5'); vi.stubEnv('FROSTSIM_UPDATER_RUN_USD_CAP', '5');
+  for (const [name, value] of Object.entries({ HOURLY_USD: '2', MINIMUM_SECONDS: '3600', BILLING_UNIT_SECONDS: '3600', CLEANUP_SECONDS: '60' })) vi.stubEnv(`FROSTSIM_UPDATER_EC2_${name}`, value);
+  vi.stubEnv('FROSTSIM_UPDATER_EC2_SPOT_MAX_PRICE_USD', '');
+  const fetchFn = vi.fn();
+  const provider = updater.ec2Builders({ region: 'us-east-1', accessKeyId: 'fake', secretAccessKey: 'fake' }, fetchFn);
+  await expect(updater.runOnBuilder(provider, {}, temp(), temp(), { name: 'test', timeoutMs: 1000, fetchFn })).rejects.toThrow(/spot|price/i);
+  expect(fetchFn).not.toHaveBeenCalled(); expect(JSON.parse(readFileSync(file, 'utf8')).entries).toEqual([]);
+  vi.stubEnv('FROSTSIM_UPDATER_EC2_SPOT_MAX_PRICE_USD', '1.9');
+  const requests = [];
+  const ec2Fetch = async (_url, init) => {
+    const params = new URLSearchParams(init.body); requests.push(params);
+    if (init.headers['x-amz-target']) return Response.json({ Parameter: { Value: 'ami-abc' } });
+    if (params.get('Action') === 'DescribeSpotPriceHistory') return new Response('<r><item><instanceType>c7a.8xlarge</instanceType><availabilityZone>us-east-1a</availabilityZone><spotPrice>1</spotPrice></item></r>');
+    return new Response('<r><instanceId>i-abc</instanceId></r>');
+  };
+  await updater.ec2Builders({ region: 'us-east-1', accessKeyId: 'fake', secretAccessKey: 'fake', securityGroup: 'sg-a', types: ['c7a.8xlarge'], subnets: new Map([['us-east-1a', 'subnet-a']]) }, ec2Fetch).launch('test', 'test');
+  expect(requests.find(params => params.get('Action') === 'RunInstances').get('InstanceMarketOptions.SpotOptions.MaxPrice')).toBe('1.9');
+});
 
 it('O4 refuses a paid builder before uploads or launch when updater budget is unconfigured', async () => {
   vi.stubEnv('FROSTSIM_UPDATER_LEDGER', ''); vi.stubEnv('FROSTSIM_UPDATER_MONTHLY_USD_CAP', '');
@@ -33,6 +65,24 @@ it('O4 retains a failed-delete reservation and prevents the next builder from be
   expect(JSON.parse(readFileSync(join(dir, 'ledger.json'))).entries[0].state).toBe('cleanup-failed');
   await expect(updater.runOnBuilder(provider, {}, dir, temp(), options)).rejects.toThrow(/unresolved/i);
   expect(calls).toEqual(['launch']);
+});
+
+it.each([{}, null, { server: { id: 99 } }])('does not settle a Hetzner builder from a malformed or mismatched successful lookup: %j', async response => {
+  const dir = temp(); writeFileSync(join(dir, 'run.sh'), 'true');
+  const file = join(temp(), 'ledger.json'); writeFileSync(file, JSON.stringify({ schemaVersion: 1, entries: [] }));
+  vi.stubEnv('FROSTSIM_UPDATER_LEDGER', file); vi.stubEnv('FROSTSIM_UPDATER_MONTHLY_USD_CAP', '5'); vi.stubEnv('FROSTSIM_UPDATER_RUN_USD_CAP', '5');
+  for (const [name, value] of Object.entries({ HOURLY_USD: '1', MINIMUM_SECONDS: '3600', BILLING_UNIT_SECONDS: '3600', CLEANUP_SECONDS: '60' })) vi.stubEnv(`FROSTSIM_UPDATER_HETZNER_${name}`, value);
+  const fetchFn = async (url, init) => {
+    if (url.includes('api.hetzner.cloud')) return init.method === 'POST' ? Response.json({ server: { id: 9 } }) : init.method === 'GET' ? Response.json(response) : new Response(null, { status: 204 });
+    return new Response(init.method === 'GET' ? '1' : null);
+  };
+  const provider = updater.hetznerBuilders({ token: 'fake' }, fetchFn);
+  await expect(updater.runOnBuilder(provider, { accountId: 'a'.repeat(32), accessKeyId: 'fake', secretAccessKey: 'fake', bucket: 'fake' }, dir, temp(), {
+    name: 'malformed-delete', timeoutMs: 60000, fetchFn, sleep: async () => {},
+  })).rejects.toThrow(/cleanup|lookup|response/i);
+  expect(JSON.parse(readFileSync(file, 'utf8')).entries[0].state).toBe('cleanup-failed');
+  await expect(updater.hetznerBuilders({ token: 'fake' }, async () => Response.json({ server: { id: 99 } })).absent('9')).rejects.toThrow(/lookup|response|server/i);
+  expect(await updater.hetznerBuilders({ token: 'fake' }, async () => new Response(null, { status: 404 })).absent('9')).toBe(true);
 });
 
 it('O4 blocks updater AI calls lacking an enforceable price contract before sending public diffs', async () => {

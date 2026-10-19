@@ -275,7 +275,7 @@ describe('EC2 builds', async () => {
     vi.stubEnv('FROSTSIM_UPDATER_LEDGER', ledger);
     vi.stubEnv('FROSTSIM_UPDATER_MONTHLY_USD_CAP', '100');
     vi.stubEnv('FROSTSIM_UPDATER_RUN_USD_CAP', '100');
-    for (const [name, value] of Object.entries({ HOURLY_USD: '2', MINIMUM_SECONDS: '3600', BILLING_UNIT_SECONDS: '3600', CLEANUP_SECONDS: '60' })) {
+    for (const [name, value] of Object.entries({ HOURLY_USD: '2', SPOT_MAX_PRICE_USD: '1.9', MINIMUM_SECONDS: '3600', BILLING_UNIT_SECONDS: '3600', CLEANUP_SECONDS: '60' })) {
       vi.stubEnv(`FROSTSIM_UPDATER_EC2_${name}`, value);
     }
   });

@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import assert from 'node:assert/strict';
 import { engineCompat } from './engine-compat.mjs';
 import { nativeRetentionReport } from './native-retention.mjs';
-import { BudgetError, buildFailureDetail, updaterBudgetFromEnv } from './update-operations.mjs';
+import { BudgetError, buildFailureDetail, ec2SpotPriceCeiling, updaterBudgetFromEnv, updaterExecutionModes } from './update-operations.mjs';
 export { buildFailureDetail, reconcileNativeRetention } from './update-operations.mjs';
 import { chat as rawChat, openrouterKey } from './openrouter.mjs';
 
@@ -198,7 +198,8 @@ export function crashAlertNeeded(previous, startedAt = Date.now() - 30 * 60_000)
 // All three are optional. Without openrouter.env, or when a call fails, every build runs and reports as before.
 
 /** null = the AI steps are off. A bad key file disables them; it never blocks a build. */
-function aiKey() {
+export function aiKey() {
+  if (updaterExecutionModes().ai === 'off') return null;
   try { return openrouterKey(process.env.FROSTSIM_OPENROUTER_ENV_FILE || '/opt/frostsim/engine-updater/openrouter.env'); }
   catch (err) { console.error(`AI steps off: ${err.message}`); return null; }
 }
@@ -842,7 +843,16 @@ async function hcloudCall(hc, method, path, body, fetchFn) {
   if (!response.ok) throw Object.assign(new Error(`hcloud ${method} ${path.split('?')[0]}: HTTP ${response.status}`),
     { launchRefused: response.status >= 400 && response.status < 500 && response.status !== 408 });
   const text = await response.text();
-  return text ? JSON.parse(text) : {};
+  const data = text ? JSON.parse(text) : {};
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) throw new Error('Invalid hcloud response');
+  return data;
+}
+
+async function hcloudBuilder(hc, id, fetchFn, signal) {
+  const data = await hcloudCall(hc, 'GET', `/servers/${id}`, null, withSignal(fetchFn, signal));
+  if (data === null) return null; // Only a provider 404 proves absence.
+  if (!Number.isSafeInteger(data.server?.id) || String(data.server.id) !== String(id)) throw new Error('hcloud builder lookup returned an invalid or mismatched server response');
+  return data.server;
 }
 
 /** Deletes Hetzner builders a crashed run left behind; returns their ids. */
@@ -866,9 +876,9 @@ export function hetznerBuilders(hc, fetchFn = fetch) {
       console.log(`Builder hcloud ${server.id}: ${hc.serverType} in ${hc.location}`);
       return String(server.id);
     },
-    gone: async (id, { signal } = {}) => { const data = await hcloudCall(hc, 'GET', `/servers/${id}`, null, withSignal(fetchFn, signal)); return !data?.server || data.server.status === 'off'; },
+    gone: async (id, { signal } = {}) => { const server = await hcloudBuilder(hc, id, fetchFn, signal); return server === null || server.status === 'off'; },
     remove: async (id, { signal } = {}) => { await hcloudCall(hc, 'DELETE', `/servers/${id}`, null, withSignal(fetchFn, signal)); },
-    absent: async (id, { signal } = {}) => !(await hcloudCall(hc, 'GET', `/servers/${id}`, null, withSignal(fetchFn, signal)))?.server,
+    absent: async (id, { signal } = {}) => (await hcloudBuilder(hc, id, fetchFn, signal)) === null,
     sweep: () => sweepBuilders(hc, { fetchFn }),
   };
 }
@@ -974,6 +984,7 @@ async function launchBuilder(creds, userData, name, fetchFn, sleep = ms => new P
 
 /** Starts one tagged, terminate-on-shutdown Spot builder from the first pool with capacity. Returns its instance id. */
 async function launchOnce(creds, userData, name, fetchFn) {
+  const spotMaxPrice = ec2SpotPriceCeiling();
   const [ami, pools] = await Promise.all([ubuntuAmi(creds, fetchFn), buildPools(creds, fetchFn)]);
   if (!pools.length) throw new Error('No Spot price for any build instance type in the configured zones');
   let last, ceiling = Infinity;
@@ -985,8 +996,7 @@ async function launchOnce(creds, userData, name, fetchFn) {
         ImageId: ami, InstanceType: pool.type, MinCount: '1', MaxCount: '1', SubnetId: creds.subnets.get(pool.zone),
         'SecurityGroupId.1': creds.securityGroup, 'InstanceMarketOptions.MarketType': 'spot',
         'InstanceMarketOptions.SpotOptions.SpotInstanceType': 'one-time', 'InstanceMarketOptions.SpotOptions.InstanceInterruptionBehavior': 'terminate',
-        ...(Number(process.env.FROSTSIM_UPDATER_EC2_HOURLY_USD) > 0
-          ? { 'InstanceMarketOptions.SpotOptions.MaxPrice': process.env.FROSTSIM_UPDATER_EC2_HOURLY_USD } : {}),
+        'InstanceMarketOptions.SpotOptions.MaxPrice': spotMaxPrice,
         InstanceInitiatedShutdownBehavior: 'terminate', 'MetadataOptions.HttpTokens': 'required',
         // Room for Node, emsdk, the simc checkout and two LTO build trees.
         'BlockDeviceMapping.1.DeviceName': '/dev/sda1', 'BlockDeviceMapping.1.Ebs.VolumeSize': '60',
@@ -1024,6 +1034,7 @@ export function ec2Builders(creds, fetchFn = fetch, sleep = undefined) {
   return {
     name: 'EC2 Spot',
     budget: builderBudgetConfig('EC2'),
+    preflight: () => ec2SpotPriceCeiling(),
     launch: (userData, name, { signal } = {}) => launchBuilder(creds, userData, name, withSignal(fetchFn, signal), sleep),
     gone: async (id, { signal } = {}) => ['shutting-down', 'terminated', 'stopped', 'stopping'].includes(await instanceState(creds, id, withSignal(fetchFn, signal))),
     remove: (id, { signal } = {}) => terminate(creds, id, withSignal(fetchFn, signal)),
@@ -1065,6 +1076,7 @@ export function builderUserData(urls) {
 export async function runOnBuilder(provider, r2, dir, into, { name, timeoutMs, cache, fetchFn = fetch, exec = run, now = Date.now,
   sleep = ms => new Promise(done => setTimeout(done, ms)) }) {
   const budget = updaterBudgetFromEnv();
+  provider.preflight?.();
   for (const pending of budget.pendingBuilders(provider.name)) {
     if (provider.absent && await provider.absent(pending.resourceId)) budget.confirmDeleted(pending.id, { confirmed: true });
   }
@@ -1215,7 +1227,8 @@ export function nativeJobScript(channel = 'live', commit = null) {
 }
 
 /** R2 and the builder providers in fallback order (EC2 Spot, then Hetzner), or null when none is configured: this host builds. */
-function builders(fetchFn = fetch) {
+export function builders(fetchFn = fetch) {
+  if (updaterExecutionModes().build === 'local') return null;
   let r2;
   try { r2 = r2Credentials(); } catch (err) { console.error(`Remote builds off: ${err.message}`); return null; }
   if (!r2) return null;
@@ -1441,6 +1454,7 @@ async function nativeBuilds(output, index, indexPath, channel) {
 }
 
 async function main() {
+  updaterExecutionModes();
   const args = process.argv.slice(2);
   const option = name => { const i = args.indexOf(name); return i === -1 ? undefined : args[i + 1]; };
   const output = resolve(option('--output') ?? 'public');

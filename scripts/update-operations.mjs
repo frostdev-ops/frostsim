@@ -10,6 +10,23 @@ const runIdentity = randomUUID();
 const billed = (ms, rate, minimum, unit) => Math.ceil(Math.max(ms, minimum) / unit) * unit / 3600000 * rate;
 const validMonth = value => typeof value === 'string' && /^\d{4}-(?:0[1-9]|1[0-2])$/.test(value);
 const text = value => typeof value === 'string' && value.length > 0;
+
+/** Explicit operator policy; a typo must never enable remote spending or AI calls. */
+export function updaterExecutionModes(env = process.env) {
+  const build = env.FROSTSIM_UPDATER_BUILD_MODE ?? 'remote';
+  const ai = env.FROSTSIM_UPDATER_AI_MODE ?? 'bounded';
+  if (!['local', 'remote'].includes(build) || !['off', 'bounded'].includes(ai)) throw new BudgetError('Invalid updater mode: build requires local|remote and AI requires off|bounded');
+  return { build, ai };
+}
+
+/** Spot's compute-only maximum leaves operator-approved room for EBS, networking and other builder costs. */
+export function ec2SpotPriceCeiling(env = process.env) {
+  const allIn = Number(env.FROSTSIM_UPDATER_EC2_HOURLY_USD);
+  const spot = Number(env.FROSTSIM_UPDATER_EC2_SPOT_MAX_PRICE_USD);
+  if (!positive(allIn) || !positive(spot) || spot >= allIn) throw new BudgetError('EC2 requires an explicit positive Spot price ceiling below the approved all-in hourly rate, with headroom for ancillary costs');
+  return String(spot);
+}
+
 function validEntry(entry) {
   if (!entry || !text(entry.id) || !text(entry.runId) || !validMonth(entry.month) || !Number.isFinite(entry.createdAt)
     || !positive(entry.reservedUsd) || !['ai', 'builder', 'adjustment'].includes(entry.kind)
@@ -126,7 +143,7 @@ export class UpdaterBudget {
 }
 
 /** Deliberately no budget defaults and no reuse of account-worker allowances. */
-export function updaterBudgetFromEnv(env = process.env, runId = env.INVOCATION_ID || runIdentity) {
+export function updaterBudgetFromEnv(env = process.env, runId = env.INVOCATION_ID || env.FROSTSIM_UPDATER_RUN_ID || runIdentity) {
   return new UpdaterBudget({ file: env.FROSTSIM_UPDATER_LEDGER, runId,
     monthlyUsdCap: Number(env.FROSTSIM_UPDATER_MONTHLY_USD_CAP), runUsdCap: Number(env.FROSTSIM_UPDATER_RUN_USD_CAP) });
 }

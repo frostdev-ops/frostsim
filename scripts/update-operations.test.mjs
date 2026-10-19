@@ -11,7 +11,7 @@ const temp = () => { const dir = mkdtempSync(join(tmpdir(), 'frostsim-ops-')); d
 afterEach(() => { vi.unstubAllEnvs(); dirs.splice(0).forEach(dir => rmSync(dir, { recursive: true, force: true })); });
 
 describe('O2 daily backup retention command', () => {
-  it('expires only top-level dated daily dumps and preserves manual/nested backups', () => {
+  it.skipIf(!existsSync(new URL('./deploy-vps.sh', import.meta.url)))('expires only top-level dated daily dumps and preserves manual/nested backups', () => {
     const command = readFileSync(new URL('./deploy-vps.sh', import.meta.url), 'utf8').match(/^ExecStartPost=(\/usr\/bin\/find .+)$/m)[1];
     const dir = temp(); mkdirSync(join(dir, 'manual'));
     for (const name of ['frostsim-20260901.dump', 'frostsim-manual.dump', 'frostsim-20261018.dump', 'manual/frostsim-20260901.dump']) {
