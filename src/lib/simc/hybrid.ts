@@ -228,6 +228,8 @@ interface Chunk {
   side: Side
   pieces: number[]
   worker: Worker
+  /** A local chunk's own signal: cancelling a race must not cancel later chunks or the controller's whole run. */
+  cancelFlag?: Int32Array
   /** Seconds on this run's clock: sent, first progress. */
   startAt: number
   firstAt?: number
@@ -302,7 +304,10 @@ class HybridWorker {
     const msg = data as Msg
     if (msg?.type === 'cancel') {
       this.stopped = true
-      for (const c of this.running) c.worker.postMessage(msg)
+      for (const c of this.running) {
+        if (c.cancelFlag) Atomics.store(c.cancelFlag, 0, 1)
+        c.worker.postMessage(msg)
+      }
       // Nothing of this run left on this PC: confirm at once, or the controller waits out its grace and blocks the tab.
       if (!this.localEngine) {
         this.shutdownPosted = false
@@ -439,6 +444,7 @@ class HybridWorker {
     if (side === 'local') {
       this.localChunks++
       c.worker = new Worker(engineWorkerUrl(this.variant, this.dir))
+      if (typeof SharedArrayBuffer !== 'undefined') c.cancelFlag = new Int32Array(new SharedArrayBuffer(4))
       this.localEngine = c
     } else {
       this.cloudChunks++
@@ -455,12 +461,17 @@ class HybridWorker {
     this.running.add(c)
     const own = side === 'local' ? this.plan.localStart(start, pieces) : { profile: start.profile, args: start.args }
     // simc's html reports cannot be merged; later engines reuse the first one's compiled module.
-    c.worker.postMessage({ ...start, ...own, htmlPath: undefined, compiledModule: start.compiledModule ?? this.compiled })
+    c.worker.postMessage({
+      ...start, ...own, htmlPath: undefined, compiledModule: start.compiledModule ?? this.compiled,
+      ...(side === 'local' ? { cancelFlag: c.cancelFlag?.buffer } : {}),
+    })
   }
 
   private cancel(c: Chunk): void {
     if (c.cancelled || c.done) return
     c.cancelled = true
+    // callMain blocks the worker's event loop; only shared memory can reach its cancellation callbacks meanwhile.
+    if (c.cancelFlag) Atomics.store(c.cancelFlag, 0, 1)
     c.worker.postMessage({ protocol: WORKER_PROTOCOL, jobId: this.start?.jobId, type: 'cancel' })
     // A cloud job needs nothing more from this run; a local engine is waited for until it shuts down.
     if (c.side === 'cloud') this.running.delete(c)
@@ -602,12 +613,13 @@ class HybridWorker {
   }
   private shown = ''
 
-  /** Posts the merged report once every piece is in, and the shutdown once no engine of this run is left on this PC. */
+  /** Wait for local shutdown before delivering a report: the controller terminates this facade as soon as done arrives. */
   private end(): void {
     if (this.stopped) return
     if (!this.finished && this.done.size === this.plan.names.length) {
-      this.finished = true
       for (const c of this.live_()) this.cancel(c)
+      if (this.localEngine) return
+      this.finished = true
       const ordered = [...this.results].sort((a, b) => Math.min(...a.pieces) - Math.min(...b.pieces)).map((r) => r.report)
       const stats = [...(this.plan.both ?? []), ...this.plan.names]
       let report: ArrayBuffer
@@ -618,10 +630,11 @@ class HybridWorker {
         this.post({ type: 'error', code: 'report-missing', message: 'the parts of a hybrid run could not be merged' })
         return
       }
+      // Confirm first so job.ts retains the shutdown evidence when analyze immediately terminates this facade.
+      this.shutdown('complete')
       // No placement: job.ts then keeps this browser's own assembly of the whole request as the effective profile.
       this.post({ type: 'done', report })
     }
-    if (this.finished && !this.localEngine) this.shutdown('complete')
   }
 
   private shutdownPosted = false

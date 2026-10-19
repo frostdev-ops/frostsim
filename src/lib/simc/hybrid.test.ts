@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { __resetEngineRuntimeForTests, runJob, setRemoteEngine, WORKER_PROTOCOL, type JobEvent, type SimRequest } from './job'
+import { __resetEngineRuntimeForTests, engineAvailability, engineStopping, lastThreadReap, runJob, setRemoteEngine, WORKER_PROTOCOL, type JobEvent, type SimRequest } from './job'
 import { createHybridEngine, mergeCharacters, mergeProfilesets, mergeStats, planOf, priorPaces, splitOf, type RunPlace } from './hybrid'
 import { parseReport } from './report'
 import { DEFAULT_SETTINGS } from './options'
 import type { EngineCapability, EngineManifest } from './capability'
+import { workOf } from './cost'
 
 // Hybrid runs (DESIGN.md C9 seam): mocked fetch and fake workers only.
 
@@ -54,7 +55,8 @@ class LocalEngine {
     this.sent.push(data as Record<string, unknown>)
     if ((data as { type?: string }).type === 'cancel') queueMicrotask(() => this.say({ type: 'shutdown', reason: 'cancelled', threads: 4 }))
   }
-  terminate(): void {}
+  terminated = false
+  terminate(): void { this.terminated = true }
   say(msg: Record<string, unknown>): void {
     this.onmessage?.({ data: { protocol: WORKER_PROTOCOL, jobId: this.sent[0].jobId, ...msg } })
   }
@@ -65,8 +67,22 @@ class LocalEngine {
   finish(): void {
     this.finished = true
     this.say({ type: 'ready' })
-    this.say({ type: 'done', report: new TextEncoder().encode(reportFor(this.ids(), namesIn(String(this.sent[0].profile)))) })
     this.say({ type: 'shutdown', reason: 'complete', threads: 4 })
+    this.say({ type: 'done', report: new TextEncoder().encode(reportFor(this.ids(), namesIn(String(this.sent[0].profile)))) })
+  }
+}
+
+/** callMain owns this worker's event loop. A cancel message stays queued until a shared-memory check unwinds it. */
+class BlockedLocalEngine extends LocalEngine {
+  postMessage(data: unknown): void {
+    this.sent.push(data as Record<string, unknown>)
+  }
+  cancellationFlag(): Int32Array {
+    return new Int32Array(this.sent[0].cancelFlag as SharedArrayBuffer)
+  }
+  unwind(): void {
+    expect(Atomics.load(this.cancellationFlag(), 0)).toBe(1)
+    this.say({ type: 'shutdown', reason: 'cancelled', threads: 4 })
   }
 }
 
@@ -172,6 +188,36 @@ const LOCAL_RUN = { 'frostsim.speed.v1': { runs: { Patchwerk: [{ units: 30_000, 
 const CLOUD_MODEL = { speed: { Patchwerk: { overheadS: 2, secondsPerUnit: 0.001 } }, cv: {} }
 
 describe('hybrid plans', () => {
+  it('keeps interacting characters in one simulation when the final extra option disables actor batching', () => {
+    const interacting = { ...twoCharacters(), extraOptions: ['single_actor_batch=1', 'single_actor_batch=0'] }
+    expect(splitOf(interacting)).toBeNull()
+    expect(planOf(interacting)).toBeNull()
+    expect(workOf(interacting).pieces).toBe(1)
+    expect(planOf({ ...interacting, extraOptions: ['single_actor_batch=0', 'single_actor_batch=1'] })?.kind).toBe('characters')
+  })
+
+  it('uses the guided batch default after profile and slot settings before applying extra options', () => {
+    const req = {
+      ...twoCharacters(), profile: `${twoCharacters().profile}\nsingle_actor_batch=0`,
+      slots: { footer: 'single_actor_batch=0' }, extraProfileLines: ['single_actor_batch=0'],
+    }
+    expect(planOf(req)?.kind).toBe('characters')
+    expect(planOf({ ...req, extraOptions: ['single_actor_batch=0'] })).toBeNull()
+  })
+
+  it('can split stat perturbations while keeping every interacting character in each chunk', () => {
+    const req = {
+      ...twoCharacters(), extraOptions: ['single_actor_batch=0', 'calculate_scale_factors=1', 'scale_only=crit,haste'],
+    }
+    const plan = planOf(req)!
+    expect(plan.kind).toBe('stats')
+    for (const index of [0, 1]) {
+      expect(namesIn(plan.request([index]).profile)).toEqual(['Bob', 'Ann'])
+      expect(plan.request([index]).extraOptions).toContain('single_actor_batch=0')
+      expect(plan.request([index]).extraOptions).toContain(`scale_only=${['crit', 'haste'][index]}`)
+    }
+  })
+
   it('splits candidates, characters of a multi-character run, and stat weights; never one character or a custom script', () => {
     expect(splitOf(request(3))).toEqual({ kind: 'candidates', pieces: 3 })
     expect(splitOf(twoCharacters())).toEqual({ kind: 'characters', pieces: 2 })
@@ -255,6 +301,113 @@ async function drive(s: CloudServer, settled: () => boolean): Promise<void> {
 }
 
 describe('hybrid runs', () => {
+  it('sends interacting characters to one whole cloud job without an isolated local actor', async () => {
+    const s = new CloudServer()
+    const req = { ...twoCharacters(), extraOptions: ['single_actor_batch=0'] }
+    const run = hybridRun(s, req)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(namesIn(s.posted!.profile)).toEqual(['Bob', 'Ann'])
+    expect(s.posted!.extraOptions).toContain('single_actor_batch=0')
+    expect(spawned).toHaveLength(0)
+    s.status = 'done'
+    await vi.advanceTimersByTimeAsync(1000)
+    expect((await run.handle.result).report.players.map((p) => p.name)).toEqual(['Bob', 'Ann'])
+    expect(s.jobs.size).toBe(1)
+  })
+
+  it('signals blocked local WASM when the cloud wins its race and retains ownership until shutdown', async () => {
+    vi.stubGlobal('Worker', BlockedLocalEngine)
+    const s = new CloudServer()
+    s.capacity = { state: 'warm', waitS: 0, model: CLOUD_MODEL }
+    const run = hybridRun(s, twoCharacters(), memoryStore(LOCAL_RUN))
+    let completed = false
+    void run.handle.result.then(() => { completed = true })
+    await vi.advanceTimersByTimeAsync(0)
+    const local = spawned[0] as BlockedLocalEngine
+    local.say({ type: 'ready' })
+    local.say({ type: 'log', stream: 'out', lines: ['Generating\t1\t1\t10\t100\t5\t0'] })
+    s.status = 'running'
+    await vi.advanceTimersByTimeAsync(20_000)
+    s.status = 'done'
+    await vi.advanceTimersByTimeAsync(2000)
+    expect([...s.jobs.values()].map((r) => namesIn(r.profile))).toEqual([['Ann'], ['Bob']])
+    expect(local.sent.some((m) => m.type === 'cancel')).toBe(true)
+    expect(Atomics.load(local.cancellationFlag(), 0)).toBe(1)
+    expect(completed).toBe(false)
+    expect(local.terminated).toBe(false)
+    local.unwind()
+    expect((await run.handle.result).report.players.map((p) => p.name)).toEqual(['Bob', 'Ann'])
+    expect(lastThreadReap()).toMatchObject({ confirmed: true, threads: 4 })
+  })
+
+  it('does not deliver a merged report until its completed local coordinator confirms shutdown', async () => {
+    const s = new CloudServer()
+    const worker = createHybridEngine({ fetch: s.fetch, pollMs: 1000, cloudThreads: 12, speedStore: null })(twoCharacters(), PACK_DIR)!('threaded')
+    const got: Record<string, unknown>[] = []
+    worker.onmessage = (e) => {
+      got.push(e.data)
+      // runJob analyzes done immediately and terminates the facade before parsing the report.
+      if (e.data.type === 'done') worker.terminate()
+    }
+    worker.postMessage({ protocol: WORKER_PROTOCOL, jobId: 'held-local', profile: 'whole', args: [], engineManifest: manifest })
+    await vi.advanceTimersByTimeAsync(0)
+    const local = spawned[0]
+    local.say({ type: 'done', report: enc(JSON.parse(reportFor([], ['Bob']))) })
+    s.status = 'done'
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(got.some((m) => m.type === 'done')).toBe(false)
+    expect(local.terminated).toBe(false)
+    local.say({ type: 'shutdown', reason: 'complete', threads: 4 })
+    expect(got.filter((m) => m.type === 'done' || m.type === 'shutdown').map((m) => m.type)).toEqual(['shutdown', 'done'])
+  })
+
+  it('gives local chunks fresh cancellation flags independent of the whole-run signal', async () => {
+    const s = new CloudServer()
+    s.capacity = { state: 'none' }
+    const globalFlag = new Int32Array(new SharedArrayBuffer(4))
+    const worker = createHybridEngine({ fetch: s.fetch, pollMs: 1000, cloudThreads: 12, speedStore: null })(request(4), PACK_DIR)!('threaded')
+    worker.postMessage({ protocol: WORKER_PROTOCOL, jobId: 'flags', profile: 'whole', args: [], cancelFlag: globalFlag.buffer, engineManifest: manifest })
+    await vi.advanceTimersByTimeAsync(0)
+    const localFlag = new Int32Array(spawned[0].sent[0].cancelFlag as SharedArrayBuffer)
+    expect(localFlag.buffer).not.toBe(globalFlag.buffer)
+    worker.postMessage({ type: 'cancel' })
+    expect(Atomics.load(localFlag, 0)).toBe(1)
+    expect(Atomics.load(globalFlag, 0)).toBe(0)
+    await vi.advanceTimersByTimeAsync(0)
+    worker.terminate()
+  })
+
+  it('keeps global cancellation pending on a blocked local chunk until its shutdown confirms', async () => {
+    vi.stubGlobal('Worker', BlockedLocalEngine)
+    const run = hybridRun(new CloudServer(), request(4))
+    await vi.advanceTimersByTimeAsync(0)
+    const local = spawned[0] as BlockedLocalEngine
+    run.handle.cancel()
+    await expect(run.handle.result).rejects.toMatchObject({ name: 'AbortError' })
+    expect(engineStopping()).toBe(true)
+    expect(local.terminated).toBe(false)
+    local.unwind()
+    expect(engineStopping()).toBe(false)
+    expect(lastThreadReap()).toMatchObject({ confirmed: true, threads: 4 })
+  })
+
+  it('retains the controller deadline and reload block when a blocked local chunk never confirms shutdown', async () => {
+    vi.stubGlobal('Worker', BlockedLocalEngine)
+    const s = new CloudServer()
+    const run = hybridRun(s, { ...request(4), limits: { deadlineMs: 1000 } })
+    const rejected = run.handle.result.catch((error: unknown) => error)
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(await rejected).toMatchObject({ phase: 'deadline' })
+    const local = spawned[0] as BlockedLocalEngine
+    expect(Atomics.load(local.cancellationFlag(), 0)).toBe(1)
+    expect(engineStopping()).toBe(true)
+    expect(local.terminated).toBe(false)
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect(engineAvailability()).toMatchObject({ available: false, reason: 'reload-required' })
+    expect(lastThreadReap()).toMatchObject({ confirmed: false })
+    expect(local.terminated).toBe(true)
+  })
+
   it('runs a multi-character Quick Sim a character each side and returns one report with both, and says so', async () => {
     const s = new CloudServer()
     const run = hybridRun(s, twoCharacters())
@@ -300,7 +453,10 @@ describe('hybrid runs', () => {
     expect(outcome!.report.profilesets.map((p) => p.name).sort()).toEqual(['c-0', 'c-1', 'c-2', 'c-3', 'c-4', 'c-5'])
     expect(outcome!.profilesetStatus.missing).toEqual([])
     // More than one chunk ran on each side.
-    expect(spawned.filter((w) => w.url !== 'report').length).toBeGreaterThan(1)
+    const locals = spawned.filter((w) => w.url !== 'report')
+    expect(locals.length).toBeGreaterThan(1)
+    expect(new Set(locals.map((w) => w.sent[0].cancelFlag)).size).toBe(locals.length)
+    expect(locals.every((w) => Atomics.load(new Int32Array(w.sent[0].cancelFlag as SharedArrayBuffer), 0) === 0)).toBe(true)
     expect(s.jobs.size).toBeGreaterThan(1)
   })
 
@@ -411,7 +567,7 @@ describe('hybrid runs', () => {
     expect(s.deletes).toBe(1)
   })
 
-  it('reports before shutting down, and confirms a cancel at once when nothing is left running', async () => {
+  it('confirms shutdown before reporting, and confirms a cancel at once when nothing is left running', async () => {
     const s = new CloudServer()
     const worker = createHybridEngine({ fetch: s.fetch, pollMs: 1000, cloudThreads: 12, speedStore: null })(request(4), PACK_DIR)!('threaded') as unknown as LocalEngine
     const got: Record<string, unknown>[] = []
@@ -419,7 +575,7 @@ describe('hybrid runs', () => {
     worker.postMessage({ protocol: WORKER_PROTOCOL, jobId: 'j1', profile: 'x', args: [], engineManifest: capability.ok ? capability.manifest : undefined })
     await vi.advanceTimersByTimeAsync(0)
     await drive(s, () => got.some((m) => m.type === 'shutdown'))
-    expect(got.filter((m) => m.type === 'done' || m.type === 'shutdown').map((m) => m.type)).toEqual(['done', 'shutdown'])
+    expect(got.filter((m) => m.type === 'done' || m.type === 'shutdown').map((m) => m.type)).toEqual(['shutdown', 'done'])
     worker.postMessage({ type: 'cancel' })
     expect(got.at(-1)).toMatchObject({ type: 'shutdown', reason: 'cancelled' })
   })
