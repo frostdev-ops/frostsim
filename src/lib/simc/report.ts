@@ -503,10 +503,19 @@ export function parseReport(raw: unknown): SimReport {
   const gameData = parseGameData(obj(sim.options, 'sim.options'))
   const versionUsed = optStr(optObj(optObj(sim.options)?.dbc)?.version_used)
 
-  const relativeErrors = players
-    .map((p) => p.dpsConfidence?.relativePct)
-    .filter((v): v is number => v !== undefined)
-  const worstRelativeErrorPct = relativeErrors.length ? Math.max(...relativeErrors) : undefined
+  const profilesets = parseProfilesets(sim.profilesets)
+  const relativeErrors = [
+    ...players.map((p) => p.dpsConfidence?.relativePct),
+    ...profilesets.map((p) => {
+      // mean_error already includes the confidence estimator; only the standard
+      // error spelling needs conversion. Missing uncertainty remains unknown.
+      const margin = p.meanError ?? confidenceOf(p.mean, p.meanStdDev, options.confidence, options.confidenceEstimator)?.margin
+      return margin !== undefined && p.mean !== 0 ? margin / Math.abs(p.mean) * 100 : undefined
+    }),
+  ]
+  const knownErrors = relativeErrors.filter((v): v is number => v !== undefined)
+  const worstRelativeErrorPct = relativeErrors.length && knownErrors.length === relativeErrors.length
+    ? Math.max(...knownErrors) : undefined
 
   const report: SimReport = {
     engine: {
@@ -524,7 +533,7 @@ export function parseReport(raw: unknown): SimReport {
     options,
     scaling: parseScaling(obj(sim.options, 'sim.options')),
     players,
-    profilesets: parseProfilesets(sim.profilesets),
+    profilesets,
     profilesetMetric: optStr(optObj(sim.profilesets)?.metric),
     raidDps: statistics.raid_dps === undefined ? undefined : toDistribution(statistics.raid_dps, 'sim.statistics.raid_dps'),
     timings: {

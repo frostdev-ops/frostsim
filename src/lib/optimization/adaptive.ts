@@ -366,13 +366,17 @@ export async function runAdaptiveSearch(
     : undefined;
   const warnings: string[] = [];
   let budgetExhausted = false;
-  let verified = ctx.ledger?.stagesRun?.some(s => s.label === 'Verify') ?? false;
+  // A scheduled (or partly checkpointed) Verify pass is not a completed one.
+  let verificationIds = ctx.ledger?.pass?.plan.label === 'Verify'
+    ? ctx.ledger.pass.plan.restrictTo ?? ctx.ledger.activeIds : undefined;
 
   /** Verify cost (for progress bar to include upfront). */
   const verifyCost = (chosen: CandidateMeasurement[]): number =>
     chosen.reduce((n, m) => n + projectedSamples(m, verifyTargetError, maxIterations), 0);
 
-  const verifyPass = (ids: string[], stageCount: number, estimatedSamplesRemaining?: number): PassPlan => ({
+  const verifyPass = (ids: string[], stageCount: number, estimatedSamplesRemaining?: number): PassPlan => {
+    verificationIds = ids;
+    return {
     estimatedSamplesRemaining,
     label: 'Verify',
     accuracy: accuracyFor(verifyTargetError, maxIterations),
@@ -385,7 +389,8 @@ export async function runAdaptiveSearch(
     noCache: true,
     stageCount,
     looks,
-  });
+    };
+  };
 
   /** Independent verification pass, or null if nothing left. */
   const finalPass = (survivors: CandidateMeasurement[]): PassPlan | null => {
@@ -399,7 +404,6 @@ export async function runAdaptiveSearch(
         `${ranked.length} candidates were still inseparable, so only the top ${finalists} were re-measured independently; the rest keep their measurement from the racing passes`,
       );
     }
-    verified = true;
     // maxPasses (not stageIndex+1): planned ceiling is stable; shows as "up to N".
     return verifyPass([...ids], maxPasses, verifyCost(ranked.slice(0, finalists)));
   };
@@ -411,7 +415,6 @@ export async function runAdaptiveSearch(
 
     if (opts.verifyOnly) {
       if (stageIndex > 0) return null;
-      verified = true;
       return verifyPass(active.map((c) => c.id), 1, active.length * samplesForTargetError(verifyTargetError, maxIterations));
     }
 
@@ -523,6 +526,17 @@ export async function runAdaptiveSearch(
     );
   }
 
+  const verificationIndex = result.stagesRun.findLastIndex(s => s.label === 'Verify');
+  const expectedVerification = verificationIds ?? result.candidates
+    .filter(s => s.measurement?.stageIndex === verificationIndex || s.status === 'missing')
+    .map(s => s.candidate.id);
+  const finalStates = new Map(result.candidates.map(s => [s.candidate.id, s]));
+  const verified = result.incomplete === null && verificationIndex >= 0 && expectedVerification.length > 0 &&
+    expectedVerification.every(id => {
+      const state = finalStates.get(id);
+      return state?.status === 'measured' && state.measurement?.stageIndex === verificationIndex && Number.isFinite(state.measurement.mean);
+    });
+
   return {
     ...result,
     comparisonLooks: looks,
@@ -534,7 +548,7 @@ export async function runAdaptiveSearch(
       samples: s.samples ?? 0,
     })),
     budgetExhausted,
-    verified: verified || result.stagesRun.some(s => s.label === 'Verify'),
+    verified,
     samplesSpent: result.stagesRun.reduce((n, s) => n + (s.samples ?? 0), 0),
   };
 }

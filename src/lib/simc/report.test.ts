@@ -252,6 +252,29 @@ describe('parseReport metrics', () => {
 })
 
 describe('confidence and iteration semantics', () => {
+  it.each([
+    { mean: 1000, mean_error: 20, expectedWorst: 2 },
+    { mean: 1000, mean_stddev: 20, expectedWorst: 3.919927970817763 },
+    { mean: 1000, expectedWorst: undefined },
+    { mean: 0, mean_error: 20, expectedWorst: undefined },
+  ])('requires profileset candidate uncertainty to meet accuracy: %o', ({ expectedWorst, ...candidate }) => {
+    const raw = withOptions({ target_error: 1 })
+    const report = parseReport({ ...raw, sim: { ...raw.sim, profilesets: {
+      metric: 'Damage per Second', results: [{ name: 'volatile', min: 0, max: 2000, iterations: 100, ...candidate }],
+    } } })
+    expect(report.targetReached).toBe(false)
+    if (expectedWorst === undefined) expect(report.worstRelativeErrorPct).toBeUndefined()
+    else expect(report.worstRelativeErrorPct).toBeCloseTo(expectedWorst)
+  })
+
+  it('accepts accurate candidates without counting the confidence estimator twice', () => {
+    const raw = withOptions({ target_error: 1 })
+    const report = parseReport({ ...raw, sim: { ...raw.sim, profilesets: {
+      results: [{ name: 'accurate', mean: 1000, mean_error: 5, min: 900, max: 1100, iterations: 100 }],
+    } } })
+    expect(report.targetReached).toBe(true)
+  })
+
   it('computes the margin from the report estimator, matching the engine text report', () => {
     // The engine printed "DPS-Error=2137.5520223315034/0.95%" for this run.
     const ci = parseReport(realReport).players[0].dpsConfidence

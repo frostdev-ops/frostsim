@@ -5,8 +5,8 @@
 // baseline, characters, stat weight runs) of `iterations` each, every iteration simulating about `maxTime` seconds. A side's
 // speed is a fixed start-up plus seconds per unit per thread, fitted from its own finished runs.
 
-import type { SimRequest } from './assemble'
-import type { Accuracy } from './options'
+import { simcTokens, type Accuracy } from './options'
+import { assembleRun, type SimRequest } from './assemble'
 import type { EngineProgress } from './progress'
 import type { SimReport } from './report'
 import { characterBlocks } from './multi-actor'
@@ -38,6 +38,7 @@ export function splitOf(req: SimRequest): { kind: SplitKind; pieces: number } | 
   if (req.mode === 'raw' || req.profilesets?.length) return null
   const stats = scaleStats(req.extraOptions ?? [])
   if (stats) return stats.stats.length >= 2 ? { kind: 'stats', pieces: stats.stats.length } : null
+  if (!canSplitCharacters(req)) return null
   const characters = characterBlocks(req.profile).length
   return characters >= 2 ? { kind: 'characters', pieces: characters } : null
 }
@@ -111,6 +112,26 @@ export function fitSpeed(samples: readonly SpeedSample[]): Speed | null {
   // A negative start-up or a flat rate is noise from runs of one size: the median rate explains them no worse.
   if (!(slope > 0) || intercept < 0 || intercept > Math.min(...pts.map((p) => p.y))) return fallback
   return { overheadS: intercept, secondsPerUnit: slope }
+}
+
+/** Character/role decomposition is valid only when the effective engine options make actors independent. */
+export function canSplitCharacters(req: SimRequest): boolean {
+  // Use the actual assembly order: profile/slots first, guided defaults next,
+  // expert arguments last. A single_actor_batch=0 argument wins in guided mode.
+  const run = assembleRun(req, 1, 'wasm', null)
+  let independent = false
+  for (const text of [run.profile, ...run.args]) {
+    for (const line of text.split('\n')) {
+      if (line.trimStart().startsWith('#')) continue
+      for (const token of simcTokens(line)) {
+        if (token.startsWith('single_actor_batch=')) {
+          // Unknown/template-dependent values cannot establish independence.
+          independent = token.slice('single_actor_batch='.length) === '1'
+        }
+      }
+    }
+  }
+  return independent
 }
 
 /** How far a run is, 0 to 1, from its latest progress line: finished phases plus this phase's share. A target error phase's share

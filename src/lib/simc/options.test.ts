@@ -19,8 +19,10 @@ import {
   LIMITS,
   maxUsefulThreads,
   profilesetLines,
+  PROTECTED_OPTIONS,
   sanitizeProfile,
   validateExtraOptions,
+  validateExtraProfileLines,
   validateProfile,
   validateProfilesets,
   validateSettings,
@@ -371,6 +373,59 @@ describe('validateExtraOptions', () => {
   it('refuses multi-line and oversized entries', () => {
     expect(validateExtraOptions(['a=1\nb=2'])).toHaveLength(1)
     expect(validateExtraOptions(['x'.repeat(LIMITS.optionLineChars + 1)])).toHaveLength(1)
+  })
+})
+
+describe('profileset infrastructure ownership (audit E2)', () => {
+  it('validates bounded deeply nested profilesets without overflowing the call stack', () => {
+    const prefix = 'profileset.x+='.repeat(10_000)
+    expect(prefix.length).toBeLessThan(LIMITS.profileBytes)
+    expect(() => validateProfile(`mage=Fixture\n${prefix}threads=64`)).not.toThrow()
+    expect(validateProfile(`mage=Fixture\n${prefix}threads=64`)[0].message).toContain('application-owned')
+    expect(validateProfile(`mage=Fixture\n${prefix}ptr=1`)[0].message).toContain('engine selector')
+    expect(validateProfile(`mage=Fixture\n${prefix}talents=ABC`)).toEqual([])
+  })
+
+  it.each(PROTECTED_OPTIONS)('rejects candidate %s overrides at every request entry', (name) => {
+    const assignment = `${name}=64`
+    const nested = `profileset."overpool"+=${assignment}`
+    expect(validateProfilesets([{ id: 'overpool', lines: [assignment] }])).toEqual([
+      expect.objectContaining({ field: 'profilesets[0].lines', message: expect.stringContaining('application-owned') }),
+    ])
+    expect(validateProfile(`mage=Fixture\n${nested}`)).toEqual([
+      expect.objectContaining({ field: 'profile', message: expect.stringContaining('application-owned') }),
+    ])
+    expect(validateExtraOptions([nested])).toHaveLength(1)
+    expect(validateExtraProfileLines([nested])).toHaveLength(1)
+    for (const slot of ['header', 'preActor', 'postActor', 'footer']) {
+      expect(validateSlots({ [slot]: nested })).toHaveLength(1)
+    }
+  })
+
+  it.each([
+    'profileset.x=threads=64',
+    'profileset."quoted candidate"+="threads=64"',
+    'profileset.outer+=profileset.inner+=threads=64',
+    '\uFEFFprofileset.x+=threads=64',
+    'profileset.x+=talents=ABC profileset.x+=threads=64',
+    'profileset.x+=THREADS=64',
+  ])('rejects nested protected assignments through parser spelling %s', (line) => {
+    expect(validateProfile(`mage=Fixture\n${line}`)).toHaveLength(1)
+    expect(validateExtraOptions([line])).toHaveLength(1)
+    expect(validateProfilesets([{ id: 'outer', lines: [line] }])).toHaveLength(1)
+    const cleaned = sanitizeProfile(line, 'raw')
+    expect(cleaned.text.trimStart().startsWith('# frostsim removed')).toBe(true)
+    expect(cleaned.warnings).toEqual([expect.stringContaining('threads')])
+  })
+
+  it('keeps legal candidate settings, quoted values, comments and channel checks', () => {
+    const lines = ['talents=ABC', 'trinket1=fixture,id=123', 'actions+=/spell,if=variable.threads=64', 'name="threads=64"', 'target_error=0.25']
+    expect(validateProfilesets([{ id: 'legal', lines }])).toEqual([])
+    const profile = ['mage=Fixture', '# profileset.bad+=threads=64', ...lines.map((line) => `profileset."legal"+=${line}`)].join('\n')
+    expect(validateProfile(profile)).toEqual([])
+    expect(sanitizeProfile(profile, 'raw')).toEqual({ text: profile, warnings: [] })
+    expect(validateExtraOptions(['profileset.x+=ptr=1'])[0].message).toContain('engine selector')
+    expect(validateProfile('mage=Fixture\nprofileset.x+=$(option)=64')[0].message).toContain('Template variables')
   })
 })
 

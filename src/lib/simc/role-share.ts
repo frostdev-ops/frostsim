@@ -7,6 +7,7 @@
 
 import type { SimRequest } from './assemble'
 import { characterBlocks } from './multi-actor'
+import { canSplitCharacters } from './cost'
 
 export type Role = 'dps' | 'tank' | 'heal'
 
@@ -41,7 +42,7 @@ export interface RoleGroup { role: Role; names: string[]; request: SimRequest }
 /** A Dungeon Route run of two or more characters, split by role with each tank and healer group's route health scaled; null when
  *  nothing changes (another fight, one character, or every character a damage dealer). Damage dealers first. */
 export function roleGroups(req: SimRequest): RoleGroup[] | null {
-  if (req.settings.fightStyle !== 'DungeonRoute' || req.mode === 'raw' || req.profilesets?.length) return null
+  if (req.settings.fightStyle !== 'DungeonRoute' || req.mode === 'raw' || req.profilesets?.length || !canSplitCharacters(req)) return null
   const blocks = characterBlocks(req.profile)
   if (blocks.length < 2) return null
   const by = new Map<Role, typeof blocks>()

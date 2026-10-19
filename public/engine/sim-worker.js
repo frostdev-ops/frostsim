@@ -127,15 +127,24 @@ if (globalThis.name !== 'em-pthread') {
   async function acquireBinary(engine, onProgress) {
     if (typeof caches === 'undefined' || typeof crypto === 'undefined' || !crypto.subtle) return null
 
-    const cacheKey = engine.wasmUrl + '#' + (engine.sha256 || 'unhashed')
+    // Cache matching ignores fragments, so the digest must be part of the query.
+    const cacheUrl = new URL(engine.wasmUrl, self.location.href)
+    cacheUrl.hash = ''
+    cacheUrl.searchParams.set('frostsim-sha256', engine.sha256 || 'unhashed')
+    const cacheKey = cacheUrl.href
     let cache = null
     try {
       cache = await caches.open(CACHE_NAME)
       const hit = await cache.match(cacheKey)
       if (hit) {
         const bytes = await hit.arrayBuffer()
-        onProgress(bytes.byteLength, bytes.byteLength, true)
-        return bytes
+        // A matching key does not prove the stored bytes are intact. Evict any
+        // corrupt response and let the normal verified download replace it.
+        if (engine.sha256 && await sha256Hex(bytes) === engine.sha256) {
+          onProgress(bytes.byteLength, bytes.byteLength, true)
+          return bytes
+        }
+        await cache.delete(cacheKey)
       }
     } catch {
       // Storage denied or evicted mid-flight. Fall through and download.

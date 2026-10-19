@@ -1,6 +1,7 @@
 // Run cost model (cost.ts): work, iterations for a target, speed fits and whole-run progress.
 import { describe, expect, it } from 'vitest'
-import { cvOf, fitSpeed, iterationsFor, remainingSeconds, reportUnits, runFraction, secondsFor, unitsOf, workOf, Z } from './cost'
+import { canSplitCharacters, cvOf, fitSpeed, iterationsFor, remainingSeconds, reportUnits, runFraction, secondsFor, unitsOf, workOf, Z } from './cost'
+import { DEFAULT_SETTINGS } from './options'
 import type { SimRequest } from './assemble'
 import type { EngineProgress } from './progress'
 
@@ -74,5 +75,33 @@ describe('run progress', () => {
   it('projects the time left from the pace so far, once there is enough to go on', () => {
     expect(remainingSeconds(0.25, 30)).toBe(90)
     expect(remainingSeconds(0.01, 30)).toBeUndefined()
+  })
+})
+
+const independentRequest = (over: Partial<SimRequest> = {}): SimRequest => ({
+  schemaVersion: 1, profile: 'mage=One\npriest=Two', settings: { ...DEFAULT_SETTINGS, threads: 1 },
+  accuracy: { mode: 'iterations', iterations: 1000 }, ...over,
+})
+
+describe('effective character independence (audit E4)', () => {
+  it('requires independent batches after the guided default and final expert arguments', () => {
+    expect(canSplitCharacters(independentRequest())).toBe(true)
+    expect(canSplitCharacters(independentRequest({ extraOptions: ['single_actor_batch=0'] }))).toBe(false)
+    expect(canSplitCharacters(independentRequest({ extraOptions: ['single_actor_batch=0', 'single_actor_batch=1'] }))).toBe(true)
+    expect(canSplitCharacters(independentRequest({ profile: 'mage=One\nsingle_actor_batch=0\npriest=Two' }))).toBe(true)
+  })
+
+  it('uses all assembled raw sources in engine order', () => {
+    expect(canSplitCharacters(independentRequest({ mode: 'raw' }))).toBe(false)
+    expect(canSplitCharacters(independentRequest({ mode: 'raw', profile: 'single_actor_batch=1\nmage=One\npriest=Two' }))).toBe(true)
+    expect(canSplitCharacters(independentRequest({ mode: 'raw', slots: { header: 'single_actor_batch=1', footer: 'single_actor_batch=0' } }))).toBe(false)
+    expect(canSplitCharacters(independentRequest({ mode: 'raw', extraProfileLines: ['single_actor_batch=1'], slots: { footer: '# single_actor_batch=0' } }))).toBe(true)
+    expect(canSplitCharacters(independentRequest({ mode: 'raw', extraProfileLines: ['single_actor_batch=1'], extraOptions: ['single_actor_batch=0'] }))).toBe(false)
+  })
+
+  it('does not interpret a candidate or a quoted actor name as a global batch setting', () => {
+    expect(canSplitCharacters(independentRequest({ extraOptions: ['name="single_actor_batch=0"'] }))).toBe(true)
+    expect(canSplitCharacters(independentRequest({ mode: 'raw', profile: 'mage="single_actor_batch=1"' }))).toBe(false)
+    expect(canSplitCharacters(independentRequest({ extraOptions: ['single_actor_batch=$(batch)'] }))).toBe(false)
   })
 })
