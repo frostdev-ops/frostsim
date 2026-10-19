@@ -490,8 +490,10 @@ if (globalThis.name !== 'em-pthread') {
         message.html = html
         transfer.push(html.buffer)
       }
-      self.postMessage(message, transfer)
+      // The page terminates this coordinator immediately when it receives done.
+      // Preserve the shutdown evidence first, as on every error terminal path.
       confirmShutdown('complete')
+      self.postMessage(message, transfer)
     } catch (err) {
       flush()
       // Cancel unwind reached here: callMain returned, so shutdown confirmation is valid.
