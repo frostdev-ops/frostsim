@@ -10,6 +10,9 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import assert from 'node:assert/strict';
 import { engineCompat } from './engine-compat.mjs';
+import { nativeRetentionReport } from './native-retention.mjs';
+import { buildFailureDetail } from './update-operations.mjs';
+export { buildFailureDetail, reconcileNativeRetention } from './update-operations.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const api = 'https://api.github.com/repos/simulationcraft/simc';
@@ -21,6 +24,17 @@ const writeJson = (file, value) => writeFileSync(file, JSON.stringify(value, nul
 const run = (cwd, command, args, extra = {}) => execFileSync(command, args, {
   cwd, stdio: 'inherit', env: { ...process.env, CMAKE_BUILD_PARALLEL_LEVEL: process.env.CMAKE_BUILD_PARALLEL_LEVEL || '1' }, ...extra,
 });
+
+export function runBuildPhase(phase, cwd, command, args, extra = {}) {
+  try {
+    const output = run(cwd, command, args, { ...extra, stdio: 'pipe', maxBuffer: 64 * 1024 * 1024 });
+    if (output?.length) process.stdout.write(output);
+  } catch (error) {
+    const detail = { ...buildFailureDetail([error.stdout, error.stderr].filter(Boolean).join('\n') || error.message), phase };
+    console.error(detail.logTail);
+    throw Object.assign(new Error(`Engine ${phase} failed: ${detail.reason}`), { detail, cause: error });
+  }
+}
 
 /** Upstream changed something only an application update can absorb. Reported as `blocked`. */
 export class GateError extends Error {}
@@ -136,9 +150,16 @@ export function retainedPacks(packs, now = Date.now()) {
 
 /** What the single alert issue should do, given the open issue (if any), the last and the new status. */
 export function issueAction(openIssue, previous, status) {
+  status = alertStatus(status);
+  previous = previous ? alertStatus(previous) : null;
   if (status.state === 'current' || status.state === 'building') return openIssue ? 'close' : null;
   if (!openIssue) return 'open';
   return previous?.state === status.state && previous?.reason === status.reason ? null : 'comment';
+}
+
+function alertStatus(status) {
+  return status.budgetHealth?.state === 'blocked'
+    ? { ...status, state: 'failed', reason: `Updater budget blocked: ${status.budgetHealth.reason}` } : status;
 }
 
 /** A completed channel is not a crash, even when the other channel/native phase took hours. */
@@ -386,8 +407,8 @@ async function build(candidate, commit, output, id, channel) {
     } catch { throw new GateError('Upstream changed the guided consumable defaults (generate-weekly-defaults.mjs); Frostsim needs an update'); }
     const talentCache = join(process.env.FROSTSIM_TALENT_CACHE || join(root, 'build'), `talent-layout-${channel}-${lock.expected.clientDataWowVersion}`);
     const env = { ...process.env, FROSTSIM_ENGINE_DIR: 'public/engine' };
-    run(work, 'bash', ['scripts/build-engine.sh', '--channel', channel], { env });
-    run(work, 'bash', ['scripts/build-engine.sh', '--channel', channel, '--fallback'], { env });
+    runBuildPhase('threaded-build', work, 'bash', ['scripts/build-engine.sh', '--channel', channel], { env });
+    runBuildPhase('fallback-build', work, 'bash', ['scripts/build-engine.sh', '--channel', channel, '--fallback'], { env });
     const dataEnv = process.env.FROSTSIM_DATA_ENV_FILE;
     if (channel === 'live' && (!dataEnv || !existsSync(dataEnv))) throw new Error('FROSTSIM_DATA_ENV_FILE must name the protected Blizzard data credential file');
     const dataArgs = channel === 'live' ? [`--env-file=${resolve(dataEnv)}`] : [];
@@ -409,7 +430,7 @@ async function build(candidate, commit, output, id, channel) {
     cpSync(join(work, 'public/presentation.json'), join(work, 'public/engine/presentation.json'));
     for (const variant of ['', '--fallback']) {
       const report = join(work, variant ? 'fallback-report.json' : 'threaded-report.json');
-      run(work, 'bash', ['scripts/engine-smoke.sh', '--channel', channel, ...(variant ? [variant] : []),
+      runBuildPhase(variant ? 'fallback-smoke' : 'threaded-smoke', work, 'bash', ['scripts/engine-smoke.sh', '--channel', channel, ...(variant ? [variant] : []),
         'vendor/simc/profiles/MID2/MID2_Mage_Frost.simc', 'iterations=50', `threads=${variant ? 1 : 4}`, `json=${report},version=2`],
       { env: { ...process.env, FROSTSIM_ENGINE_DIR: 'public/engine' } });
       const dps = json(report).sim.players[0].collected_data.dps;
@@ -491,22 +512,30 @@ function describe(status) {
     `**Checked:** ${status.checkedAt}`, '', 'Logs: `journalctl -u frostsim-engine-update.service` on the VPS.'].join('\n');
 }
 
-async function notify(previous, status, label = ALERT_LABEL) {
+export async function notify(previous, status, label = ALERT_LABEL, send = alertApi) {
+  status.alertHealth = { state: 'failed', delivered: false, checkedAt: new Date().toISOString() };
+  try {
   const token = githubToken();
-  if (!token) { console.log('Alerts disabled: no GitHub token file (FROSTSIM_GITHUB_ENV_FILE)'); return; }
-  const [open] = await alertApi(token, `/issues?labels=${label}&state=open&per_page=1`);
+  if (!token) {
+    status.alertHealth.state = 'unconfigured';
+    throw new Error('Updater alert configuration missing: FROSTSIM_GITHUB_ENV_FILE must provide a delivery token');
+  }
+  const [open] = await send(token, `/issues?labels=${label}&state=open&per_page=1`);
   const action = issueAction(open, previous, status);
+  const effective = alertStatus(status);
   if (action === 'open') {
-    const issue = await alertApi(token, '/issues', { method: 'POST', body: JSON.stringify({
-      title: `Engine updater ${status.state}: ${status.reason}`.slice(0, 200), labels: [label], body: describe(status) }) });
+    const issue = await send(token, '/issues', { method: 'POST', body: JSON.stringify({
+      title: `Engine updater ${effective.state}: ${effective.reason}`.slice(0, 200), labels: [label], body: describe(effective) }) });
     status.issueUrl = issue.html_url;
   } else if (action === 'comment') {
-    await alertApi(token, `/issues/${open.number}/comments`, { method: 'POST', body: JSON.stringify({ body: describe(status) }) });
+    await send(token, `/issues/${open.number}/comments`, { method: 'POST', body: JSON.stringify({ body: describe(effective) }) });
     status.issueUrl = open.html_url;
   } else if (action === 'close') {
-    await alertApi(token, `/issues/${open.number}/comments`, { method: 'POST', body: JSON.stringify({ body: `Recovered.\n\n${describe(status)}` }) });
-    await alertApi(token, `/issues/${open.number}`, { method: 'PATCH', body: JSON.stringify({ state: 'closed' }) });
-  } else if (open && status.state !== 'current') status.issueUrl = open.html_url;
+    await send(token, `/issues/${open.number}/comments`, { method: 'POST', body: JSON.stringify({ body: `Recovered.\n\n${describe(status)}` }) });
+    await send(token, `/issues/${open.number}`, { method: 'PATCH', body: JSON.stringify({ state: 'closed' }) });
+  } else if (open && effective.state !== 'current') status.issueUrl = open.html_url;
+  Object.assign(status.alertHealth, { state: 'healthy', delivered: action !== null, action: action ?? 'unchanged' });
+  } catch (error) { status.alertHealth.reason = error.message; throw error; }
 }
 
 // Native simc for the compute workers (CLAUDE.md D14): built from each pack's own source archive with
@@ -554,6 +583,14 @@ async function r2Put(creds, key, body, headers, fetchFn) {
   signed.authorization = sigV4({ method: 'PUT', url, headers: signed, payloadHash: signed['x-amz-content-sha256'] }, { ...creds, region: 'auto', service: 's3' });
   const response = await fetchFn(url, { method: 'PUT', headers: signed, body, signal: AbortSignal.timeout(300_000) });
   if (!response.ok) throw new Error(`R2 PUT ${key}: HTTP ${response.status}`);
+}
+
+async function r2Delete(creds, key) {
+  const url = `https://${creds.accountId}.r2.cloudflarestorage.com/${creds.bucket}/${key}`;
+  const headers = { 'x-amz-content-sha256': sha256(''), 'x-amz-date': new Date().toISOString().replace(/[-:]|\.\d{3}/g, '') };
+  headers.authorization = sigV4({ method: 'DELETE', url, headers, payloadHash: headers['x-amz-content-sha256'] }, { ...creds, region: 'auto', service: 's3' });
+  const response = await fetch(url, { method: 'DELETE', headers, signal: AbortSignal.timeout(30000) });
+  if (!response.ok && response.status !== 404) throw new Error(`R2 DELETE ${key}: HTTP ${response.status}`);
 }
 
 const NATIVE_CMAKE = ['-S', 'vendor/simc', '-B', 'build/native', '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', '-DBUILD_GUI=OFF',
@@ -662,7 +699,7 @@ async function nativeBuilds(output, index, indexPath, channel) {
     if (failures.length) Object.assign(status, { state: 'failed', reason: `Native build failed for ${failures.join('; ')}` });
   } catch (err) { Object.assign(status, { state: 'failed', reason: `Native builds: ${err.message}` }); }
   try { await notify(index.nativeStatusByChannel?.[channel] ?? null, status, `${NATIVE_ALERT_LABEL}${channel === 'ptr' ? '-ptr' : ''}`); }
-  catch (err) { console.error(`Native alert failed: ${err.message}`); }
+  catch (err) { console.error(`Native alert failed: ${err.message}`); process.exitCode = 1; }
   try { writeNativeStatus(indexPath, status, channel); }
   catch (err) { console.error(`Native status not recorded: ${err.message}`); }
 }
@@ -671,6 +708,16 @@ async function main() {
   const args = process.argv.slice(2);
   const option = name => { const i = args.indexOf(name); return i === -1 ? undefined : args[i + 1]; };
   const output = resolve(option('--output') ?? 'public');
+  if (args.includes('--native-retention')) {
+    const file = option('--native-retention');
+    if (!file || file.startsWith('--')) throw new Error('--native-retention requires a complete inventory JSON file');
+    const purge = args.includes('--purge-native');
+    const creds = purge ? r2Credentials() : null;
+    if (purge && !creds) throw new Error('Native purge requires R2 credentials');
+    console.log(JSON.stringify(await nativeRetentionReport(output, json(resolve(file)), { purge, deleteObject: key => r2Delete(creds, key) }), null, 2));
+    return;
+  }
+  if (args.includes('--purge-native')) throw new Error('--purge-native requires --native-retention <inventory.json>');
   const channel = option('--channel') ?? 'live';
   if (args.includes('--channel') && option('--channel') === undefined) throw new Error('--channel requires live or ptr');
   if (!['live', 'ptr'].includes(channel)) throw new Error('--channel requires live or ptr');
@@ -684,7 +731,7 @@ async function main() {
   if (args.includes('--alert-crash')) {
     const marker = join(output, '.engine-update-started-at');
     const startedAt = existsSync(marker) ? Number(readFileSync(marker, 'utf8')) : undefined;
-    if (!crashAlertNeeded(previous, Number.isFinite(startedAt) ? startedAt : undefined)) return;
+    if (!crashAlertNeeded(previous, Number.isFinite(startedAt) ? startedAt : undefined) && previous?.alertHealth?.state === 'healthy') return;
     await notify(previous, { checkedAt: new Date().toISOString(), engineChannel: channel, state: 'failed', upstreamHead: previous?.upstreamHead,
       reason: 'The updater exited before recording a result' }, alertLabel);
     return;
@@ -761,7 +808,8 @@ async function main() {
       if (!args.includes('--discover')) await publish(candidate, commit, ref !== undefined);
     }
   } catch (err) {
-    Object.assign(status, { state: err instanceof GateError ? 'blocked' : 'failed', reason: err.message });
+    Object.assign(status, { state: err instanceof GateError ? 'blocked' : 'failed', reason: err.message,
+      ...(err.detail ? { failurePhase: err.detail.phase, failureLogTail: err.detail.logTail } : {}) });
     console.error(err.stack ?? err.message);
   }
   if (args.includes('--discover')) return;
