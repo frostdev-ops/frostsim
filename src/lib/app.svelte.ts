@@ -535,13 +535,40 @@ export function candidateComparisonsSupported(): boolean {
 
 // --- characters --------------------------------------------------------------
 
-export async function saveCharacter(
+const characterWrites = new Map<string, Promise<unknown>>()
+const characterRevisions = new Map<string, number>()
+/** Changes when a write is requested and when it finishes, including writes awaiting persistence. */
+export const characterRevision = (id: string): number => characterRevisions.get(id) ?? 0
+const touchCharacter = (id: string): void => { characterRevisions.set(id, characterRevision(id) + 1) }
+
+function writeCharacter<T>(id: string, fn: () => Promise<T>, expected?: number): Promise<T | undefined> {
+  if (expected === undefined) touchCharacter(id)
+  const next = (characterWrites.get(id) ?? Promise.resolve()).catch(() => {}).then(async () => {
+    if (expected !== undefined && characterRevision(id) !== expected) return undefined
+    touchCharacter(id)
+    try { return await fn() } finally { touchCharacter(id) }
+  })
+  characterWrites.set(id, next)
+  void next.finally(() => { if (characterWrites.get(id) === next) characterWrites.delete(id) }).catch(() => {})
+  return next
+}
+
+export function saveCharacter(
   character: ImportedCharacter,
   label?: string,
   id = newId(),
 ): Promise<StoredCharacter> {
-  const now = Date.now()
+  return writeCharacter(id, () => persistCharacter(character, label, id)) as Promise<StoredCharacter>
+}
+
+/** Apply an external read only if no mutation started or finished since that read began. */
+export function saveCharacterIfUnchanged(character: ImportedCharacter, label: string, id: string, revision: number): Promise<StoredCharacter | undefined> {
+  return writeCharacter(id, () => persistCharacter(character, label, id), revision)
+}
+
+async function persistCharacter(character: ImportedCharacter, label: string | undefined, id: string): Promise<StoredCharacter> {
   const existing = app.characters.find((c) => c.id === id)
+  const now = Math.max(Date.now(), (existing?.updatedAt ?? 0) + 1)
   const record: StoredCharacter = plain({
     id,
     label: label ?? existing?.label ?? character.name ?? 'Character',
@@ -568,6 +595,15 @@ export async function saveCharacter(
 }
 
 export async function deleteCharacter(id: string): Promise<void> {
+  await writeCharacter(id, () => removeCharacter(id))
+}
+
+/** The deletion counterpart of saveCharacterIfUnchanged. */
+export async function deleteCharacterIfUnchanged(id: string, revision: number): Promise<boolean> {
+  return await writeCharacter(id, async () => { await removeCharacter(id); return true }, revision) ?? false
+}
+
+async function removeCharacter(id: string): Promise<void> {
   const out = await db.del('characters', id)
   if (!out.ok) noteFailure(out.failure)
   app.characters = app.characters.filter((c) => c.id !== id)
@@ -581,10 +617,14 @@ export async function deleteCharacter(id: string): Promise<void> {
 }
 
 export async function renameCharacter(id: string, label: string): Promise<void> {
+  await writeCharacter(id, () => relabelCharacter(id, label))
+}
+
+async function relabelCharacter(id: string, label: string): Promise<void> {
   const rec = app.characters.find((c) => c.id === id)
   if (!rec) return
   rec.label = label
-  rec.updatedAt = Date.now()
+  rec.updatedAt = Math.max(Date.now(), rec.updatedAt + 1)
   const out = await db.put('characters', $state.snapshot(rec))
   if (!out.ok) noteFailure(out.failure)
 }
