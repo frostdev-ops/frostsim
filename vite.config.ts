@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import type { Plugin } from 'vite'
 import { fileURLToPath } from 'node:url'
+import { resolve } from 'node:path'
 import { engineCompat } from './scripts/engine-compat.mjs'
 import { stripAccountBlocks } from './scripts/strip-account-blocks.mjs'
 import { isAccountApi, proxyAccountApi } from './scripts/account-proxy.mjs'
@@ -27,13 +28,17 @@ function productionCsp(): string | null {
 }
 
 // Service worker updates only on byte change; stamp emitted asset names so worker updates when app changes.
-function stampServiceWorker(): Plugin {
+export function stampServiceWorker(): Plugin {
   // Chunks (and their CSS) reachable only through a dynamic import of src/lib/account/ (VITE_FEATURE_ACCOUNTS builds, CLAUDE.md D15)
   // load on use and stay out of the precache.
   const accountOnly = new Set<string>()
+  let outputDir: string | undefined
   return {
     name: 'frostsim-stamp-service-worker',
     apply: 'build',
+    configResolved(config) {
+      outputDir = resolve(config.root, config.build.outDir)
+    },
     generateBundle(_, bundle) {
       const chunk = (f: string) => {
         const o = bundle[f]
@@ -62,8 +67,9 @@ function stampServiceWorker(): Plugin {
       }
     },
     closeBundle() {
-      const swPath = new URL('./dist/sw.js', import.meta.url)
-      const htmlPath = new URL('./dist/index.html', import.meta.url)
+      if (!outputDir) return
+      const swPath = resolve(outputDir, 'sw.js')
+      const htmlPath = resolve(outputDir, 'index.html')
       if (!existsSync(swPath) || !existsSync(htmlPath)) return
 
       // Stamp is hash of index.html (names all hashed assets); earlier version missed CSS-only changes.
@@ -71,7 +77,7 @@ function stampServiceWorker(): Plugin {
 
       // Full asset list, not just index.html (which misses dynamic chunks); emitted here not in worker.
       // Per-spec Power Infusion details (~70 KB each) load on demand and are cached on first open.
-      const assets = readdirSync(new URL('./dist/assets/', import.meta.url))
+      const assets = readdirSync(resolve(outputDir, 'assets'))
         .filter((f) => !f.startsWith('pi-detail-') && !accountOnly.has(`assets/${f}`))
         .map((f) => `/assets/${f}`)
         .sort()
