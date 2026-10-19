@@ -2,8 +2,11 @@
 // game build changes, a baseline without a run, a skipped build on a plan refusal, a retry on a full queue, and results as history.
 
 import { readFileSync } from 'node:fs';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { randomBytes } from 'node:crypto';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppCtx } from './app';
+import { connectDb, type Sql } from './db';
+import { migrate } from './migrate';
 
 const enqueueJob = vi.fn();
 const defaultPackInfo = vi.fn();
@@ -71,13 +74,44 @@ describe('patchResims', () => {
     expect(enqueueJob).toHaveBeenCalledTimes(2);
   });
 
-  it('turns finished patch jobs into history points with the build the character was claimed for', async () => {
+  it('turns finished patch jobs into history points using their frozen engine build after the character advances', async () => {
     const finished = new Date('2026-09-23T00:00:00Z');
     const a = app([], [{ id: 'job1', character_id: 'c1', summary: { dps: 210000, dpsError: 300 }, request: { settings: { fightStyle: 'Patchwerk', targets: 1 } },
-      finished_at: finished, patch_build: '12.1.5.70000' }, { id: 'job2', character_id: 'c1', summary: {}, request: {}, finished_at: finished, patch_build: 'x' }]);
+      payload: { engineIdentity: { clientDataVersion: '12.1.5.70000' } },
+      finished_at: finished, patch_build: '12.2.0.80000' }, { id: 'job2', character_id: 'c1', summary: {}, request: {}, finished_at: finished, patch_build: 'x' }]);
     await patchResims(a.ctx);
     const inserts = a.calls.filter((c) => c.query.includes('insert into character_sims'));
     expect(inserts).toHaveLength(1);
     expect(inserts[0].values).toEqual(['c1', finished, 210000, 300, 'Patchwerk', 1, '12.1.5.70000', 'job1']);
+  });
+});
+
+const PG = process.env.FROSTSIM_TEST_PG;
+describe.skipIf(!PG)('patch history immutable engine identity postgres integration', () => {
+  const schema = `t_patch_history_${randomBytes(4).toString('hex')}`;
+  let admin: Sql;
+  let sql: Sql;
+  beforeAll(async () => {
+    admin = connectDb(PG!);
+    await admin.unsafe(`create schema ${schema}`);
+    sql = connectDb(PG!, { connection: { search_path: schema } });
+    await migrate(sql, new URL('./migrations/', import.meta.url));
+  });
+  afterAll(async () => {
+    await sql?.end();
+    await admin?.unsafe(`drop schema if exists ${schema} cascade`);
+    await admin?.end();
+  });
+  it('records the completed old job build after a newer pack already claimed its character', async () => {
+    const [user] = await sql`insert into users (display_name) values ('Patch history') returning id`;
+    const [character] = await sql`insert into cloud_characters (user_id, label, raw, bytes, patch_build)
+      values (${user.id}, 'Character', ${EXPORT}, ${EXPORT.length}, '12.1.5.70000') returning id`;
+    const [job] = await sql`insert into compute_jobs (user_id, source, pack_id, threads, status, character_id, finished_at, summary, payload, request)
+      values (${user.id}, 'patch', 'old-pack', 1, 'done', ${character.id}, now(), ${sql.json({ dps: 1234 })},
+        ${sql.json({ engineIdentity: { clientDataVersion: '12.1.5.70000' } })}, ${sql.json({ settings: { fightStyle: 'Patchwerk', targets: 1 } })}) returning id`;
+    await sql`update cloud_characters set patch_build = '12.2.0.80000' where id = ${character.id}`;
+    defaultPackInfo.mockResolvedValue(null);
+    await patchResims({ sql, now: () => new Date(), log: () => {} } as unknown as AppCtx);
+    expect(await sql`select game_build from character_sims where job_id = ${job.id}`).toEqual([{ game_build: '12.1.5.70000' }]);
   });
 });

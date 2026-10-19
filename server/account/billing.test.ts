@@ -41,6 +41,7 @@ interface Row {
   items: SubscriptionItem[];
   guild_id: string | null;
   stripe_updated: number;
+  resync_attempted_at?: Date;
 }
 interface User { id: string; stripe_customer_id: string | null; suspended_at?: Date | null; discord?: string }
 interface Call { method: string; path: string; query: URLSearchParams; form: URLSearchParams; headers: Headers }
@@ -135,7 +136,7 @@ function memoryDb(users: User[]) {
       const [id, userId, status, start, end, items, guildId, updated] = v as [string, string, string, Date | null, Date | null, SubscriptionItem[], string | null, number];
       const old = subs.get(id);
       if (!old || old.stripe_updated <= updated) {
-        subs.set(id, { stripe_subscription_id: id, user_id: userId, status, current_period_start: start, current_period_end: end, items, guild_id: guildId, stripe_updated: updated });
+        subs.set(id, { ...old, stripe_subscription_id: id, user_id: userId, status, current_period_start: start, current_period_end: end, items, guild_id: guildId, stripe_updated: updated });
       }
       return [];
     }
@@ -146,9 +147,13 @@ function memoryDb(users: User[]) {
     }
     if (q.includes('from subscriptions where user_id')) return [...subs.values()].filter((s) => s.user_id === v[0]);
     if (q.includes('current_period_end <')) {
-      return [...subs.values()]
+      const rows = [...subs.values()]
         .filter((s) => ['active', 'trialing', 'past_due'].includes(s.status) && s.current_period_end && s.current_period_end < (v[0] as Date))
-        .sort((a, b) => a.stripe_updated - b.stripe_updated).slice(0, v[1] as number);
+        .filter((s) => !s.resync_attempted_at || s.resync_attempted_at <= (v[1] as Date))
+        .sort((a, b) => (a.resync_attempted_at?.getTime() ?? 0) - (b.resync_attempted_at?.getTime() ?? 0) || a.stripe_updated - b.stripe_updated)
+        .slice(0, v[2] as number);
+      for (const row of rows) row.resync_attempted_at = v[3] as Date;
+      return rows;
     }
     if (q.includes('comp_core_seconds')) return [{ core_seconds: 0, max_threads: null }];
     if (q.includes('sum(core_seconds)')) return [{ used: 1234 }];
@@ -175,7 +180,7 @@ function harness(users: User[] = [{ id: USER, stripe_customer_id: null }], { sql
     stripe.state.held = { arrived, released: new Promise<void>((resolve) => (release = resolve)) };
     return { arrived: reached, release };
   };
-  const resync = () => tasks.find((t) => t.name === 'billing-resync')!.run(app);
+  const resync = (now?: Date) => tasks.find((t) => t.name === 'billing-resync')!.run(now ? { ...app, now: () => now } : app);
   return { ...stripe, ...db, users, lines, send, hold, resync, webhook: (payload: object) => send(signedWebhook(payload)) };
 }
 
@@ -428,8 +433,10 @@ describe('billing-resync task', () => {
     expect(h.state.calls.map((c) => c.path)).toEqual(['/subscriptions/sub_stuck', '/subscriptions/sub_1']);
     expect(h.lines).toEqual(['billing: resync of sub_stuck failed (StripeError: Stripe answered 500 api_error)']);
     expect(h.subs.get('sub_1')!.status).toBe('canceled');
-    // Never re-read successfully, so it stays first in line for the next run.
+    // A failed read waits an hour without being recorded as fresh provider state.
     await h.resync();
+    expect(h.state.calls.map((c) => c.path).slice(2)).toEqual([]);
+    await h.resync(new Date(clock.ms + 3_600_000));
     expect(h.state.calls.map((c) => c.path).slice(2)).toEqual(['/subscriptions/sub_stuck']);
     expect(h.subs.get('sub_stuck')!.status).toBe('canceled');
   });
@@ -706,5 +713,52 @@ describe.skipIf(!PG)('billing postgres integration (needs FROSTSIM_TEST_PG)', ()
     expect(h.state.calls.map((c) => c.path)).toEqual(['/subscriptions/sub_due', '/subscriptions/sub_later']);
     expect(await sql`select status, current_period_end from subscriptions where stripe_subscription_id = 'sub_due'`)
       .toEqual([{ status: 'active', current_period_end: new Date(END_S * 1000) }]);
+  });
+
+  it('rotates past a saturated failed batch without advancing failed provider freshness or hot-looping it', async () => {
+    await sql`delete from subscriptions`;
+    const failedIds = Array.from({ length: 50 }, (_, i) => `sub_failed${String(i).padStart(2, '0')}`);
+    for (const [i, id] of [...failedIds, 'sub_recovered'].entries()) {
+      await sql`insert into subscriptions (stripe_subscription_id, user_id, status, current_period_end, stripe_updated)
+        values (${id}, ${USER}, 'active', ${new Date(clock.ms - 86_400_000)}, ${i + 1})`;
+    }
+    const calls: string[] = [];
+    const fetchFn = (async (input: RequestInfo | URL) => {
+      const id = new URL(String(input)).pathname.split('/').at(-1)!;
+      calls.push(id);
+      return new Response(JSON.stringify(id === 'sub_recovered' ? stripeSub('active') : { error: { type: 'api_error' } }), {
+        status: id === 'sub_recovered' ? 200 : 500, headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof fetch;
+    const task = tasks.find((t) => t.name === 'billing-resync')!;
+    const app = { config, sql, redis: null, fetch: fetchFn, r2: createR2(config, fetchFn), now: () => new Date(clock.ms), log: () => {} };
+    await task.run(app);
+    await task.run(app);
+    expect(calls).toContain('sub_recovered');
+    expect(calls).toHaveLength(51);
+    expect((await sql`select stripe_updated::int from subscriptions where stripe_subscription_id = ${failedIds[0]}`)[0].stripe_updated).toBe(1);
+    await task.run(app);
+    expect(calls).toHaveLength(51);
+    clock.ms += 3_600_000;
+    await task.run(app);
+    expect(calls).toHaveLength(101);
+  });
+
+  it('claims disjoint due batches when two recovery runs overlap', async () => {
+    await sql`delete from subscriptions`;
+    for (let i = 0; i < 60; i++) {
+      await sql`insert into subscriptions (stripe_subscription_id, user_id, status, current_period_end)
+        values (${`sub_overlap${i}`}, ${USER}, 'active', ${new Date(clock.ms - 86_400_000)})`;
+    }
+    const calls: string[] = [];
+    const fetchFn = (async (input: RequestInfo | URL) => {
+      calls.push(new URL(String(input)).pathname);
+      return new Response('{"error":{"type":"api_error"}}', { status: 500, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    const app = { config, sql, redis: null, fetch: fetchFn, r2: createR2(config, fetchFn), now: () => new Date(clock.ms), log: () => {} };
+    const task = tasks.find((t) => t.name === 'billing-resync')!;
+    await Promise.all([task.run(app), task.run(app)]);
+    expect(calls).toHaveLength(60);
+    expect(new Set(calls).size).toBe(60);
   });
 });

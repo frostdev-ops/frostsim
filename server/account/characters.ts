@@ -141,9 +141,9 @@ export async function patchResims(app: AppCtx, env: Record<string, string | unde
   }
 }
 
-/** Finished patch re-sims become history points; the game build is the one the character was claimed for. */
+/** Finished patch re-sims keep the immutable engine identity captured when their job was enqueued. */
 async function recordPatchResults(app: AppCtx): Promise<void> {
-  const jobs = await app.sql`select j.id, j.character_id, j.summary, j.request, j.finished_at, c.patch_build from compute_jobs j
+  const jobs = await app.sql`select j.id, j.character_id, j.summary, j.request, j.payload, j.finished_at from compute_jobs j
     join cloud_characters c on c.id = j.character_id left join character_sims s on s.job_id = j.id
     where j.source = 'patch' and j.status = 'done' and s.id is null and j.finished_at > ${new Date(app.now().getTime() - 7 * 86_400_000)}
     limit 100`;
@@ -153,7 +153,8 @@ async function recordPatchResults(app: AppCtx): Promise<void> {
     const settings = j.request?.settings ?? {};
     await app.sql`insert into character_sims (character_id, created_at, source, dps, dps_error, fight_style, targets, game_build, job_id)
       values (${j.character_id}, ${j.finished_at}, 'patch', ${dps}, ${finite(j.summary?.dpsError, 0, 1e9) ?? null},
-        ${shortText(settings.fightStyle, /^[A-Za-z]{1,32}$/) ?? null}, ${finite(settings.targets, 1, 100) ?? null}, ${j.patch_build}, ${j.id})
+        ${shortText(settings.fightStyle, /^[A-Za-z]{1,32}$/) ?? null}, ${finite(settings.targets, 1, 100) ?? null},
+        ${shortText(j.payload?.engineIdentity?.clientDataVersion, /^[\d.]{1,32}$/) ?? null}, ${j.id})
       on conflict do nothing`;
   }
 }

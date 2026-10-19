@@ -341,11 +341,18 @@ const RESYNC_BATCH = 50;
 
 /** A renewal or cancellation whose webhook never arrived (endpoint down past Stripe's 3 days of retries): the stored period has ended
  *  but the status still grants. Without this the renewal grace lapses a paying user until the next event, a month on, and a missed
- *  deletion keeps granting through the grace. Oldest fetch first, so a subscription that keeps failing cannot starve the rest. */
+ *  deletion keeps granting through the grace. Attempt order rotates even failed reads; provider freshness only advances on success. */
 async function resyncEnded(ctx: AppCtx): Promise<void> {
-  const rows = await ctx.sql`select stripe_subscription_id from subscriptions
-    where status in ('active', 'trialing', 'past_due') and current_period_end < ${ctx.now()}
-    order by stripe_updated nulls first limit ${RESYNC_BATCH}`;
+  const now = ctx.now();
+  // The atomic claim also bounds overlapping scheduler runs. A failed read waits an hour; never-attempted rows go first.
+  const rows = await ctx.sql`with due as (
+      select stripe_subscription_id from subscriptions
+      where status in ('active', 'trialing', 'past_due') and current_period_end < ${now}
+        and (resync_attempted_at is null or resync_attempted_at <= ${new Date(now.getTime() - 3_600_000)})
+      order by resync_attempted_at nulls first, stripe_updated nulls first, stripe_subscription_id
+      limit ${RESYNC_BATCH} for update skip locked
+    ) update subscriptions s set resync_attempted_at = ${now} from due
+      where s.stripe_subscription_id = due.stripe_subscription_id returning s.stripe_subscription_id`;
   for (const { stripe_subscription_id: subId } of rows) {
     try {
       await syncSubscription(ctx, subId);

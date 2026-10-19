@@ -70,13 +70,14 @@ interface State {
   user: { suspended_at: Date | null } | null;
   /** Thrown by the next share insert, like a foreign-key violation from a racing account deletion. */
   insertError: Error | null;
+  objectKey?: string;
 }
 type Call = { query: string; values: unknown[] };
 const LIVE_ROW = { id: ID, title: 'Frost Mage', bytes: 42, created_at: new Date('2026-09-20T00:00:00Z'), expires_at: null };
 
 /** Tagged-template stand-in for postgres.js that answers by query text. */
 function fakeSql(state: State, calls: Call[]): Sql {
-  const answer = (q: string): unknown[] => {
+  const answer = (q: string, values: unknown[]): unknown[] => {
     if (q.includes('from sessions s join users')) {
       return [{ user_id: 'u1', role: 'user', display_name: 'Bob', suspended_at: null, expires_at: new Date(Date.now() + 3600_000), last_seen_at: new Date() }];
     }
@@ -87,22 +88,28 @@ function fakeSql(state: State, calls: Call[]): Sql {
     if (q.includes('comp_core_seconds')) return [{ core_seconds: 0, max_threads: null }];
     if (q.includes('select suspended_at from users')) return state.user ? [state.user] : [];
     if (q.includes('insert into shares') && state.insertError) throw state.insertError;
+    if (q.startsWith('update shares set upload_token = ?')) return state.owned?.bytes === null ? [{ id: ID }] : [];
     if (q.includes('select bytes from shares')) return state.owned ? [state.owned] : [];
-    if (q.includes('update shares set bytes')) return state.stored ? [{ id: ID }] : [];
-    if (q.includes('from shares where id')) return state.live ? [LIVE_ROW] : [];
+    if (q.includes('update shares set bytes')) {
+      if (state.stored) state.objectKey = values[1] as string;
+      return state.stored ? [{ id: ID }] : [];
+    }
+    if (q.includes('from shares where id')) return state.live ? [{ ...LIVE_ROW, object_key: state.objectKey }] : [];
     if (q.includes('from shares where user_id')) return [LIVE_ROW];
     if (q.includes('update shares set revoked_at')) return state.revocable ? [{ id: ID }] : [];
     return [];
   };
-  return ((strings: TemplateStringsArray, ...values: unknown[]) => {
+  const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const query = strings.join('?');
     calls.push({ query, values });
     try {
-      return Promise.resolve(answer(query));
+      return Promise.resolve(answer(query, values));
     } catch (err) {
       return Promise.reject(err);
     }
   }) as unknown as Sql;
+  sql.begin = (async (fn: (tx: Sql) => Promise<unknown>) => fn(sql)) as unknown as Sql['begin'];
+  return sql;
 }
 
 /** Every rate-limit counter comes back far past its limit; the session cache calls it lacks fall back to SQL. */
@@ -156,15 +163,17 @@ describe('hosted shares', () => {
     }
   });
 
-  it('stores a valid upload once, as application/gzip at shares/<id>.json.gz in the data bucket', async () => {
+  it('stores a valid upload once at an immutable attempt key in the data bucket', async () => {
     const { upload, r2, calls } = setup();
     const bytes = gz(REPORT);
     expect((await upload(bytes)).status).toBe(204);
-    expect(r2.seen).toEqual([`PUT ${OBJECT} application/gzip`]);
-    expect(r2.objects.get(OBJECT)).toEqual(bytes);
+    const object = [...r2.objects.keys()][0];
+    expect(object).toMatch(new RegExp(`^/frostsim-data/shares/${ID}/[0-9A-Za-z]{22}\\.json\\.gz$`));
+    expect(r2.seen).toEqual([`PUT ${object} application/gzip`]);
+    expect(r2.objects.get(object)).toEqual(bytes);
     const update = calls.find((c) => c.query.includes('update shares set bytes'))!;
     expect(update.query).toContain('revoked_at is null');
-    expect(update.values).toEqual([bytes.byteLength, ID, 'u1']);
+    expect(update.values.slice(0, 5)).toEqual([bytes.byteLength, object.replace('/frostsim-data/', ''), ID, 'u1', expect.any(String)]);
 
     const again = setup({ owned: { bytes: 42 } });
     expect((await again.upload(bytes)).status).toBe(409);
@@ -206,7 +215,8 @@ describe('hosted shares', () => {
   it('removes its own object when the share was revoked while uploading', async () => {
     const { upload, r2 } = setup({ stored: false });
     expect((await upload(gz(REPORT))).status).toBe(404);
-    expect(r2.seen).toEqual([`PUT ${OBJECT} application/gzip`, `DELETE ${OBJECT}`]);
+    const key = r2.seen[0].split(' ')[1];
+    expect(r2.seen).toEqual([`PUT ${key} application/gzip`, `DELETE ${key}`]);
     expect(r2.objects.size).toBe(0);
   });
 
@@ -287,7 +297,8 @@ describe('hosted shares', () => {
     const bytes = gz(REPORT);
     const { id } = await storeShare(app, { userId: 'u1', title: '  Frost Mage  ', gzipBytes: bytes });
     expect(id).toMatch(/^[0-9A-Za-z]{22}$/);
-    const object = `/frostsim-data/shares/${id}.json.gz`;
+    const object = [...r2.objects.keys()][0];
+    expect(object).toMatch(new RegExp(`^/frostsim-data/shares/${id}/[0-9A-Za-z]{22}\\.json\\.gz$`));
     expect(r2.seen).toEqual([`PUT ${object} application/gzip`]);
     expect(r2.objects.get(object)).toEqual(bytes);
     const at = (text: string) => calls.findIndex((c) => c.query.includes(text));
@@ -295,7 +306,7 @@ describe('hosted shares', () => {
     expect(at('from subscriptions')).toBeLessThan(at('insert into shares'));
     expect(at('insert into shares')).toBeLessThan(at('update shares set bytes'));
     expect(calls[at('insert into shares')].values.slice(0, 3)).toEqual([id, 'u1', 'Frost Mage']);
-    expect(calls[at('update shares set bytes')].values).toEqual([bytes.byteLength, id, 'u1']);
+    expect(calls[at('update shares set bytes')].values.slice(0, 5)).toEqual([bytes.byteLength, object.replace('/frostsim-data/', ''), id, 'u1', expect.any(String)]);
   });
 
   it('storeShare refuses what the routes refuse, before any row or object', async () => {
@@ -370,7 +381,7 @@ describe.skipIf(!PG)('hosted shares postgres integration (needs FROSTSIM_TEST_PG
   beforeEach(() => {
     // The race test revokes its share in R2's PUT window, after the upload's own checks and before it records the size.
     r2 = fakeR2(async (path) => {
-      if (raceRevoke && path.endsWith(`/${raceRevoke}.json.gz`)) await sql`update shares set revoked_at = now() where id = ${raceRevoke}`;
+      if (raceRevoke && path.includes(`/shares/${raceRevoke}/`)) await sql`update shares set revoked_at = now() where id = ${raceRevoke}`;
     });
     app = { config, sql, redis: null, r2: createR2(config, r2.fetchFn), fetch: r2.fetchFn, now: () => new Date(), log: (l) => lines.push(l) };
   });
@@ -423,6 +434,146 @@ describe.skipIf(!PG)('hosted shares postgres integration (needs FROSTSIM_TEST_PG
     expect((await anonymous(`/api/v1/shares/${id}/blob`)).status).toBe(404);
     expect(r2.objects.size).toBe(0);
     expect(await sql`select id from shares where id = ${id}`).toEqual([]);
+  });
+
+  it('allows only one concurrent first upload to publish and never changes its bytes', async () => {
+    const u = await user(true);
+    const id = await u.create();
+    let arrived!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((r) => { arrived = r; });
+    const held = new Promise<void>((r) => { release = r; });
+    let puts = 0;
+    r2 = fakeR2(async () => { if (++puts === 1) { arrived(); await held; } });
+    app.r2 = createR2(config, r2.fetchFn);
+    const winner = gz(portable({ shared: SHARED, rawReport: '{"sim":{"winner":true}}' }));
+    const loser = gz(portable({ shared: SHARED, rawReport: '{"sim":{"loser":true}}' }));
+    const first = u.upload(id, winner);
+    await started;
+    let second: Response;
+    try { second = await u.upload(id, loser); } finally { release(); }
+    expect([(await first).status, second.status]).toEqual([204, 409]);
+    expect(new Uint8Array(await (await anonymous(`/api/v1/shares/${id}/blob`)).arrayBuffer())).toEqual(winner);
+    expect(puts).toBe(1);
+  });
+
+  it('retries invalid and failed uploads, then refuses replacement of the successful retry', async () => {
+    const u = await user(true);
+    const id = await u.create();
+    expect((await u.upload(id, gz({ invalid: true }))).status).toBe(400);
+    let fail = true;
+    const good = fakeR2();
+    app.r2 = createR2(config, (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const req = new Request(input, init);
+      if (req.method === 'PUT' && fail) { fail = false; return new Response(null, { status: 500 }); }
+      return good.fetchFn(req);
+    }) as typeof fetch);
+    expect((await u.upload(id)).status).toBe(500);
+    expect((await u.upload(id)).status).toBe(204);
+    expect((await u.upload(id)).status).toBe(409);
+    expect(new Uint8Array(await (await anonymous(`/api/v1/shares/${id}/blob`)).arrayBuffer())).toEqual(gz(REPORT));
+  });
+
+  it('keeps the published retry when an expired earlier upload finishes and cleans up late', async () => {
+    const u = await user(true);
+    const id = await u.create();
+    let arrived!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((r) => { arrived = r; });
+    const held = new Promise<void>((r) => { release = r; });
+    let puts = 0;
+    r2 = fakeR2(async () => { if (++puts === 1) { arrived(); await held; } });
+    app.r2 = createR2(config, r2.fetchFn);
+    const old = u.upload(id, gz(portable({ shared: SHARED, rawReport: 'old' })));
+    await started;
+    const retryBytes = gz(portable({ shared: SHARED, rawReport: 'retry winner' }));
+    // Simulate recovery after a process stopped responding; no wall-clock sleep is needed.
+    const later = new Date(Date.now() + 6 * 60_000);
+    app.now = () => later;
+    let retry: Response;
+    try { retry = await u.upload(id, retryBytes); } finally { release(); }
+    expect([(await old).status, retry.status]).toEqual([404, 204]);
+    expect(new Uint8Array(await (await anonymous(`/api/v1/shares/${id}/blob`)).arrayBuffer())).toEqual(retryBytes);
+    expect(r2.objects.size).toBe(1);
+    expect(new Set(r2.seen.filter((s) => s.startsWith('PUT')).map((s) => s.split(' ')[1])).size).toBe(2);
+  });
+
+  it('retains a failed cleanup key through a successful retry and sweeps only the old staging object', async () => {
+    const u = await user(true);
+    const id = await u.create();
+    const storage = createR2(config, r2.fetchFn);
+    let failPut = true;
+    let failDelete = true;
+    app.r2 = { ...storage,
+      put: async (...args) => { await storage.put(...args); if (failPut) { failPut = false; throw new Error('acknowledgment lost'); } },
+      delete: async (...args) => { if (failDelete) throw new Error('cleanup unavailable'); await storage.delete(...args); },
+    };
+    expect((await u.upload(id)).status).toBe(500);
+    const staged = await sql`select object_key from share_uploads where share_id = ${id}`;
+    expect(staged).toHaveLength(1);
+    expect(r2.objects.has(`/frostsim-data/${staged[0].object_key}`)).toBe(true);
+    expect((await u.upload(id)).status).toBe(204);
+    const [published] = await sql`select object_key from shares where id = ${id}`;
+    expect(published.object_key).not.toBe(staged[0].object_key);
+    expect(r2.objects.size).toBe(2);
+    failDelete = false;
+    await sql`update share_uploads set started_at = now() - interval '2 days' where share_id = ${id}`;
+    await retention();
+    expect(await sql`select token from share_uploads where share_id = ${id}`).toEqual([]);
+    expect(r2.objects.size).toBe(1);
+    expect(new Uint8Array(await (await anonymous(`/api/v1/shares/${id}/blob`)).arrayBuffer())).toEqual(gz(REPORT));
+  });
+
+  it('keeps a revoked in-flight upload indexed until its own late cleanup succeeds', async () => {
+    const u = await user(true);
+    const id = await u.create();
+    let arrived!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((r) => { arrived = r; });
+    const held = new Promise<void>((r) => { release = r; });
+    r2 = fakeR2(async () => { arrived(); await held; });
+    app.r2 = createR2(config, r2.fetchFn);
+    const uploading = u.upload(id);
+    await started;
+    try {
+      expect((await u.send('DELETE', `/api/v1/shares/${id}`)).status).toBe(204);
+      expect((await sql`select id from shares where id = ${id}`)).toHaveLength(1);
+      expect((await sql`select token from share_uploads where share_id = ${id}`)).toHaveLength(1);
+    } finally { release(); }
+    expect((await uploading).status).toBe(404);
+    await retention();
+    expect(await sql`select id from shares where id = ${id}`).toEqual([]);
+    expect(r2.objects.size).toBe(0);
+  });
+
+  it('continues reading and revoking legacy fixed-key published shares', async () => {
+    const u = await user(true);
+    const id = await u.create();
+    const bytes = gz(REPORT);
+    await sql`update shares set bytes = ${bytes.byteLength} where id = ${id}`;
+    r2.objects.set(`/frostsim-data/shares/${id}.json.gz`, bytes);
+    expect(new Uint8Array(await (await anonymous(`/api/v1/shares/${id}/blob`)).arrayBuffer())).toEqual(bytes);
+    expect((await u.send('DELETE', `/api/v1/shares/${id}`)).status).toBe(204);
+    expect(r2.objects.size).toBe(0);
+  });
+
+  it('preserves a committed winner when the database commit acknowledgment is lost', async () => {
+    const u = await user(true);
+    const id = await u.create();
+    const originalBegin = sql.begin.bind(sql);
+    let transactions = 0;
+    const wrapped = Object.assign((strings: TemplateStringsArray, ...values: unknown[]) => sql(strings, ...values as never[]), {
+      begin: async (fn: (tx: Sql) => Promise<unknown>) => {
+        const result = await originalBegin(async (tx) => fn(tx as unknown as Sql));
+        if (++transactions === 2) throw new Error('commit acknowledgment lost');
+        return result;
+      },
+    }) as unknown as Sql;
+    app.sql = wrapped;
+    expect((await u.upload(id)).status).toBe(500);
+    app.sql = sql;
+    expect(new Uint8Array(await (await anonymous(`/api/v1/shares/${id}/blob`)).arrayBuffer())).toEqual(gz(REPORT));
+    expect((await u.upload(id)).status).toBe(409);
   });
 
   it('refuses to create without hostedShares', async () => {
@@ -527,7 +678,10 @@ describe.skipIf(!PG)('hosted shares postgres integration (needs FROSTSIM_TEST_PG
     await sql`update shares set expires_at = now() - interval '1 second' where id = ${kept}`;
     await retention();
     expect((await sql`select id from shares where user_id = ${u.id}`).map((r) => r.id)).toEqual([fresh]);
-    expect(r2.seen.filter((s) => s.startsWith('DELETE')).map((s) => s.split('/').at(-1))).toEqual([`${stale}.json.gz`, `${kept}.json.gz`]);
+    const deleted = r2.seen.filter((s) => s.startsWith('DELETE'));
+    expect(deleted).toHaveLength(2);
+    expect(deleted[0]).toBe(`DELETE /frostsim-data/shares/${stale}.json.gz`);
+    expect(deleted[1]).toContain(`/frostsim-data/shares/${kept}/`);
     expect(r2.objects.size).toBe(0);
   });
 });

@@ -1,5 +1,5 @@
 // Hosted report shares under /api/v1/shares (CLAUDE.md D15; DESIGN.md C4, C10, P6). Unlisted: anyone holding the id can read
-// the share, and nothing lists it but its owner. The blob is the client's gzip(JSON portable report) in R2 at shares/<id>.json.gz,
+// the share, and nothing lists it but its owner. The blob is the client's gzip(JSON portable report) at an immutable R2 attempt key,
 // proxied through our origin as an attachment under a sandbox CSP, so nothing in it ever runs on this origin.
 //
 // A share is live while it is uploaded, not revoked and not expired. Every other state answers the same 404. Revoking sets revoked_at
@@ -28,6 +28,8 @@ const ID_LENGTH = 22;
 const MAX_TITLE = 200;
 const LAPSE_MS = 30 * 86_400_000;
 const UNUSED_MS = 86_400_000;
+/** Longer than R2's 30-second request timeout; a crashed upload can be retried without reusing its object key. */
+export const UPLOAD_LEASE_MS = 5 * 60_000;
 const WRITES_PER_MINUTE = 10;
 const VIEWS_PER_MINUTE = 120;
 
@@ -124,15 +126,53 @@ async function insertShare(app: AppCtx, userId: string, title: string): Promise<
   return id;
 }
 
-/** The row exists before the object and the size is stored only on a row still live, so a racing revoke never strands an object. */
+/** Claim once before touching R2. A fresh attempt has its own durable key, so a late losing PUT/cleanup cannot touch the winner. */
 async function storeBlob(app: AppCtx, userId: string, id: string, gz: Uint8Array<ArrayBuffer>): Promise<void> {
-  // No Content-Encoding on the object: fetch would inflate it on the way back out.
-  await app.r2.put(bucket(app), objectKey(id), gz, { 'content-type': 'application/gzip' });
-  const [stored] = await app.sql`update shares set bytes = ${gz.byteLength} where id = ${id} and user_id = ${userId}
-    and revoked_at is null returning id`;
+  const token = newId();
+  const key = `shares/${id}/${token}.json.gz`;
+  const now = app.now();
+  await app.sql.begin(async (tx) => {
+    const [claimed] = await tx`update shares set upload_token = ${token}, upload_started_at = ${now}
+      where id = ${id} and user_id = ${userId} and bytes is null and revoked_at is null
+        and (expires_at is null or expires_at > ${now})
+        and (upload_token is null or upload_started_at <= ${new Date(now.getTime() - UPLOAD_LEASE_MS)}) returning id`;
+    if (!claimed) {
+      const [row] = await tx`select id from shares where id = ${id} and user_id = ${userId} and revoked_at is null
+        and (expires_at is null or expires_at > ${now})`;
+      if (!row) throw notFound();
+      throw new HttpError(409, 'conflict', 'This share is already uploaded or an upload is in progress.');
+    }
+    await tx`insert into share_uploads (token, share_id, object_key, started_at) values (${token}, ${id}, ${key}, ${now})`;
+  });
+  const abandon = async () => {
+    // Keep the staged-key index if R2 cleanup fails; retention/revoke/account deletion can retry it.
+    try {
+      await app.r2.delete(bucket(app), key);
+      await app.sql`delete from share_uploads where token = ${token}`;
+    } catch (cleanup) {
+      app.log(`shares: upload cleanup failed (${errorSummary(cleanup)})`);
+    }
+    await app.sql`update shares set upload_token = null, upload_started_at = null where id = ${id} and upload_token = ${token}`;
+  };
+  try {
+    // No Content-Encoding on the object: fetch would inflate it on the way back out.
+    await app.r2.put(bucket(app), key, gz, { 'content-type': 'application/gzip' });
+  } catch (err) {
+    await abandon();
+    throw err;
+  }
+  // A database error may mean COMMIT succeeded but its acknowledgment was lost. Leave the object and its durable index alone:
+  // the next retry observes a completed share or, after the lease, chooses a new key; retention removes uncommitted old staging.
+  const stored = await app.sql.begin(async (tx) => {
+    const [row] = await tx`update shares set bytes = ${gz.byteLength}, object_key = ${key}, upload_token = null, upload_started_at = null
+      where id = ${id} and user_id = ${userId} and upload_token = ${token} and bytes is null
+        and revoked_at is null and (expires_at is null or expires_at > ${app.now()}) returning id`;
+    if (!row) return false;
+    await tx`delete from share_uploads where token = ${token}`;
+    return true;
+  });
   if (!stored) {
-    // Revoked, or its account deleted, while uploading: that path has already removed what it knew of.
-    await app.r2.delete(bucket(app), objectKey(id));
+    await abandon();
     throw notFound();
   }
 }
@@ -159,7 +199,7 @@ export async function storeShare(app: AppCtx, share: { userId: string; title: st
 
 /** The row a public read may serve, or 404. */
 async function live(ctx: RequestCtx) {
-  const [row] = await ctx.sql`select id, title, bytes, created_at, expires_at from shares where id = ${ctx.params.id}
+  const [row] = await ctx.sql`select id, title, bytes, created_at, expires_at, object_key from shares where id = ${ctx.params.id}
     and revoked_at is null and bytes is not null and (expires_at is null or expires_at > ${ctx.now()})`;
   if (!row) throw notFound();
   return row;
@@ -169,7 +209,13 @@ const view = (r: Record<string, unknown>) => ({ id: r.id, title: r.title, bytes:
 
 /** Object first, then row: a row left behind by a failed delete is retried, an object without a row would never be found again. */
 async function purge(app: AppCtx, id: string): Promise<void> {
-  await app.r2.delete(bucket(app), objectKey(id));
+  const [row] = await app.sql`select object_key from shares where id = ${id}`;
+  const staged = await app.sql`select object_key, started_at from share_uploads where share_id = ${id}`;
+  for (const key of new Set([row?.object_key ?? objectKey(id), ...staged.map((r) => r.object_key as string)])) {
+    await app.r2.delete(bucket(app), key);
+  }
+  // A PUT already in flight can finish after this DELETE. Keep its durable key index until it cleans up or its lease expires.
+  if (staged.some((r) => r.started_at > new Date(app.now().getTime() - UPLOAD_LEASE_MS))) return;
   await app.sql`delete from shares where id = ${id}`;
 }
 
@@ -190,6 +236,14 @@ async function retention(app: AppCtx): Promise<void> {
     }
   }
   for (const { id } of await app.sql`select id from shares where revoked_at is not null limit 500`) await purge(app, id);
+  // Failed cleanup can outlive a successful retry. Expire ownership before deleting old staged attempts, never a published key.
+  const stale = new Date(now.getTime() - UNUSED_MS);
+  await app.sql`update shares set upload_token = null, upload_started_at = null where upload_started_at <= ${stale}`;
+  for (const upload of await app.sql`select u.token, u.object_key from share_uploads u join shares s on s.id = u.share_id
+    where u.started_at <= ${stale} and u.object_key is distinct from s.object_key limit 500`) {
+    await app.r2.delete(bucket(app), upload.object_key);
+    await app.sql`delete from share_uploads where token = ${upload.token}`;
+  }
 }
 
 export const routes: Route[] = [
@@ -237,8 +291,8 @@ export const routes: Route[] = [
     method: 'GET', path: BLOB, feature: 'shares', auth: 'public',
     handler: async (ctx) => {
       await limit(ctx, 'share-views', ctx.ip, VIEWS_PER_MINUTE);
-      const { id } = await live(ctx);
-      const object = await ctx.r2.get(bucket(ctx), objectKey(id));
+      const { id, object_key: key } = await live(ctx);
+      const object = await ctx.r2.get(bucket(ctx), key ?? objectKey(id));
       if (!object) throw notFound();
       // Our headers only, never R2's. The app adds nosniff and no-store, so a revoke takes effect at once.
       return new Response(object.body, {
