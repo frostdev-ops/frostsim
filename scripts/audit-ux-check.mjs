@@ -1,19 +1,29 @@
 // Focused real-browser regressions for audit U1/U2/U3/F1. No provider or simulation calls.
 import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { gzipSync } from 'node:zlib';
 
 const arg = (key, fallback) => process.argv.includes(key) ? process.argv[process.argv.indexOf(key) + 1] : fallback;
 const output = resolve(arg('--output', 'build/audit-ux/after'));
 const dist = arg('--dist', 'dist');
+const accounts = process.argv.includes('--accounts');
 const port = arg('--port', '4197');
 const origin = `http://127.0.0.1:${port}`;
 mkdirSync(output, { recursive: true });
+let hostedFixture;
+if (accounts) {
+  // Reuse the frozen sanitized report already verified by the codec tests.
+  const { build } = await import('esbuild');
+  const codec = await build({ entryPoints: [resolve('src/lib/store/report-share.ts')], bundle: true, write: false, platform: 'node', format: 'esm', logLevel: 'silent' });
+  const { decodeReport, DICTIONARY } = await import(`data:text/javascript;base64,${Buffer.from(codec.outputFiles[0].contents).toString('base64')}`);
+  const shared = await decodeReport(readFileSync('tests/fixtures/shared-report-v1.txt', 'utf8').trim(), JSON.parse(readFileSync(`public/share/${DICTIONARY}.json`, 'utf8')));
+  hostedFixture = gzipSync(JSON.stringify({ format: 'frostsim', version: 1, kind: 'report', exportedAt: 0, payload: { shared, rawReport: null } }));
+}
 const server = spawn(process.execPath, ['scripts/serve-pages.mjs', '--dist', dist, '--port', port], { stdio: 'ignore' });
 let browser;
-const report = { scope: 'Chromium production CSP, bundled sample, no provider calls; no physical-device or assistive-technology claim', checks: [], views: [], pageErrors: [] };
+const report = { scope: 'Chromium production CSP, bundled sample, no provider calls; no physical-device or assistive-technology claim', accounts, checks: [], views: [], pageErrors: [] };
 const check = (name, pass, actual) => report.checks.push({ name, pass: !!pass, actual });
 try {
   for (let attempt = 0; ; attempt++) {
@@ -34,7 +44,15 @@ try {
       };
     });
     const requests = [];
-    await context.route('**/api/**', route => { requests.push(route.request().url()); return route.fulfill({ status: 503, contentType: 'application/json', body: '{}' }); });
+    await context.route('**/api/**', route => {
+      const url = new URL(route.request().url());
+      requests.push(url.href);
+      // Local fixtures only: exercise the signed-out account UI without an OAuth or provider call.
+      if (accounts && url.pathname === '/api/v1/auth/providers') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ providers: [{ id: 'battlenet', label: 'Battle.net' }] }) });
+      if (accounts && url.pathname === '/api/v1/me') return route.fulfill({ status: 401, contentType: 'application/json', body: JSON.stringify({ error: 'unauthorized', message: 'Sign in to continue.' }) });
+      if (accounts && url.pathname === '/api/v1/shares/BBBBBBBBBBBBBBBBBBBBBB/blob') return route.fulfill({ status: 200, contentType: 'application/gzip', body: hostedFixture });
+      return route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'unavailable', message: 'Local audit fixture: service unavailable.' }) });
+    });
     const page = await context.newPage();
     const assets = [];
     const scriptBodies = [];
@@ -49,6 +67,7 @@ try {
     check(`${mode}: no decorative WebGL construction`, await page.evaluate(() => window.__webglAttempts === 0), await page.evaluate(() => window.__webglAttempts));
     check(`${mode}: scene chunk not downloaded`, !assets.some(u => /\/scene-[^/]+\.js/.test(u)), assets.filter(u => /\/scene-[^/]+\.js/.test(u)));
     if (mode === 'reduced') {
+      if (accounts) check('accounts: anonymous startup does not request account API', !requests.some(url => new URL(url).pathname.startsWith('/api/v1/')));
       report.initialScripts = await Promise.all(scriptBodies);
       report.initialScriptGzip9 = report.initialScripts.reduce((sum, script) => sum + script.gzip9, 0);
       check('startup: secondary tool chunks load on use', !assets.some(url => /\/(?:TopGear|Droptimizer|CrestSim|Compare|Reports|Advanced)-[^/]+\.js/.test(url)));
@@ -72,9 +91,20 @@ try {
       }
       if (process.argv.includes('--screenshots-only')) { await context.close(); continue; }
       await page.setViewportSize({ width: 320, height: 960 });
+      // Start the menu flow at the top, independently of full-page capture/resize scroll anchoring.
+      await page.evaluate(() => scrollTo({ top: 0, behavior: 'instant' }));
       await page.getByRole('button', { name: 'Menu', exact: true }).click();
       check('mobile: Settings remains accessible in menu', await page.getByRole('button', { name: 'Settings', exact: true }).isVisible());
       check('mobile: menu controls at least44px', await page.getByRole('button', { name: 'Settings', exact: true }).evaluate(e => e.getBoundingClientRect().height >= 44));
+      if (accounts) {
+        const signIn = page.getByRole('button', { name: 'Sign in', exact: true });
+        check('accounts: mobile Sign in remains accessible in menu', await signIn.isVisible());
+        check('accounts: mobile Sign in target at least44px', await signIn.evaluate(e => e.getBoundingClientRect().height >= 44), await signIn.evaluate(e => e.getBoundingClientRect().height));
+        await signIn.click();
+        await page.getByRole('button', { name: 'Continue with Battle.net', exact: true }).waitFor();
+        check('accounts: mobile sign-in dialog fits viewport', await page.getByRole('dialog').evaluate(e => { const rect = e.getBoundingClientRect(); return rect.left >= 0 && rect.right <= innerWidth; }));
+        await page.keyboard.press('Escape');
+      }
       await page.getByRole('button', { name: 'Menu', exact: true }).click();
       await page.setViewportSize({ width: 1440, height: 960 });
       await page.getByRole('button', { name: 'Try the sample character' }).click();
@@ -96,8 +126,38 @@ try {
       await page.getByRole('button', { name: 'Options', exact: true }).click();
       check('Top Gear: reopening preserves settings', await page.getByRole('combobox', { name: /^Fight length/ }).inputValue() === '180');
       await page.goto(`${origin}/#/help`, { waitUntil: 'networkidle' });
-      check('help: local execution scope is explicit', (await page.locator('body').innerText()).includes('Browser simulations run locally.'));
-      check('help: default build excludes optional cloud instructions', !(await page.locator('body').innerText()).includes('AI explanations are opt-in.'));
+      await page.getByRole('heading', { name: 'Help and status', exact: true }).waitFor();
+      const helpCopy = await page.locator('main').innerText();
+      check('help: local execution scope is explicit', helpCopy.includes('Browser simulations run locally.'));
+      check('help: optional cloud instructions follow build feature', accounts === helpCopy.includes('AI explanations are opt-in.'));
+      if (accounts) {
+        check('accounts: Help explains each opt-in data flow', ['Cloud runs are opt-in.', 'Account sync sends saved characters to your account.', 'AI explanations are opt-in.', 'Hosted report'].every(text => helpCopy.includes(text)));
+        check('accounts: footer identifies optional cloud execution', (await page.locator('footer').innerText()).includes('Cloud runs are opt-in.'));
+        await page.goto(`${origin}/#/plans`, { waitUntil: 'networkidle' });
+        await page.getByRole('heading', { level: 1, name: /Sim on our servers/ }).waitFor();
+        await page.getByRole('link', { name: 'See plans', exact: true }).click();
+        check('accounts: See plans preserves plans route', await page.evaluate(() => location.hash === '#/plans'));
+        check('accounts: plans render without import error', await page.getByRole('heading', { name: 'This screen could not be displayed', exact: true }).count() === 0);
+        await page.setViewportSize({ width: 320, height: 960 });
+        check('accounts: plans fit narrow viewport', await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+        await page.screenshot({ path: `${output}/plans-320-light.png`, fullPage: true });
+        await page.setViewportSize({ width: 1440, height: 960 });
+        await page.goto(`${origin}/#/discord`, { waitUntil: 'networkidle' });
+        await page.getByRole('heading', { name: 'Server settings', exact: true }).waitFor();
+        check('accounts: Discord settings route renders signed-out path', await page.getByRole('button', { name: 'Sign in', exact: true }).count() > 0);
+        for (const route of ['r/invalid', 's/invalid', 's/AAAAAAAAAAAAAAAAAAAAAA']) {
+          await page.goto(`${origin}/#/${route}`, { waitUntil: 'networkidle' });
+          await page.getByRole('heading', { name: 'Could not open shared report', exact: true }).waitFor();
+          check(`accounts: ${route} reaches shared-report error state`, await page.getByRole('heading', { name: 'This screen could not be displayed', exact: true }).count() === 0);
+        }
+        check('accounts: valid hosted-share route requests API fixture', requests.some(url => /\/api\/v1\/.*AAAAAAAAAAAAAAAAAAAAAA/.test(url)));
+        await page.goto(`${origin}/#/s/BBBBBBBBBBBBBBBBBBBBBB`, { waitUntil: 'networkidle' });
+        await page.getByRole('heading', { name: 'Quick Sim', exact: true }).waitFor();
+        check('accounts: hosted-share alias renders frozen sanitized report', await page.getByRole('heading', { name: 'Testchar', exact: true }).count() > 0);
+        await page.screenshot({ path: `${output}/hosted-report-1440-light.png`, fullPage: true });
+        await page.goto(`${origin}/#/help`, { waitUntil: 'networkidle' });
+        await page.getByRole('heading', { name: 'Help and status', exact: true }).waitFor();
+      }
       await page.getByRole('button', { name: 'Settings', exact: true }).click();
       await page.getByRole('radiogroup', { name: 'Motion', exact: true }).getByText('Full', { exact: true }).click();
       await page.waitForTimeout(1600);

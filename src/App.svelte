@@ -1244,7 +1244,7 @@
     .flyout-text span { display: none; }
     .trailing { display: none; }
     .menu-open .trailing { display: flex; order: 6; flex-basis: 100%; flex-wrap: wrap; justify-content: flex-end; border-top: 1px solid var(--border); padding-top: var(--s2); }
-    .trailing .icon-btn, .trailing .gear-btn { min-width: 44px; min-height: 44px; }
+    .trailing .icon-btn, .trailing :global(button) { min-width: 44px; min-height: 44px; }
     .subnav a { min-height: 44px; }
     .bar { flex-wrap: wrap; padding-block: var(--s2); gap: var(--s2); }
     @keyframes drop { from { opacity: 0; transform: translateY(-6px); } }
