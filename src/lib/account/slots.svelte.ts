@@ -9,7 +9,7 @@
 
 import { api, AccountError } from './api'
 import { account, signedOut } from './state.svelte'
-import { app, deleteCharacter, saveCharacter, setCharacterSync, toast } from '../app.svelte'
+import { app, characterRevision, deleteCharacterIfUnchanged, saveCharacterIfUnchanged, setCharacterSync, toast } from '../app.svelte'
 import { isSameCharacter, parseAddonExport, type ImportedCharacter } from '../import/character'
 import { newId, type StoredCharacter } from '../store/records'
 
@@ -82,7 +82,7 @@ export function afterLibrary(loaded: Promise<unknown>): void {
   library = loaded
 }
 
-// Every exchange runs in order, so a save made during a sync never races it.
+// Network exchanges run in order. Local writes stay responsive; optimistic revisions protect downloads from those writes.
 let chain: Promise<unknown> = Promise.resolve()
 function queued(fn: () => Promise<void>): Promise<void> {
   const next = chain.then(fn)
@@ -112,24 +112,42 @@ async function reload(): Promise<void> {
   slots.on = true
 }
 
-const labelOf = (c: Pick<StoredCharacter, 'label' | 'character'>) => (c.label.trim() || c.character.name || 'Character').slice(0, 100)
+const labelOf = (c: { label: string; character: { name?: string } }) => (c.label.trim() || c.character.name || 'Character').slice(0, 100)
 
-async function apply(step: Step, saved: Saved): Promise<void> {
+type Upload = Pick<StoredCharacter, 'id' | 'updatedAt' | 'label'> & { character: Pick<ImportedCharacter, 'raw' | 'name'> }
+type ReadState = { locals: Local[]; revisions: Map<string, number> }
+// Only immutable upload fields cross the exchange queue; renames mutate the app record in place.
+const uploadOf = (c: Upload): Upload => ({ id: c.id, updatedAt: c.updatedAt, label: c.label, character: { raw: c.character.raw, name: c.character.name } })
+
+async function apply(step: Step, saved: Saved, reading?: ReadState, snapshot?: Upload): Promise<void> {
   if (step.kind === 'free') {
     await api(`/characters/${step.slotId}`, 'DELETE').catch((e) => { if (!(e instanceof AccountError && e.status === 404)) throw e })
     saved.gone = saved.gone.filter((id) => id !== step.slotId)
   } else if (step.kind === 'forget') {
     delete saved.links[step.localId]
-    await deleteCharacter(step.localId, true)
+    await deleteCharacterIfUnchanged(step.localId, reading!.revisions.get(step.localId) ?? 0)
   } else if (step.kind === 'pull') {
     const got = await api<{ label: string; raw: string; updatedAt: string }>(`/characters/${step.slot.id}`)
     const parsed = parseAddonExport(got.raw)
     if (parsed.diagnostics.some((d) => d.severity === 'error')) throw new Error(`${got.label} in your cloud slots is not a valid export.`)
-    const record = await saveCharacter(parsed, got.label, step.localId ?? newId(), true)
-    saved.links[record.id] = { id: step.slot.id, at: got.updatedAt, local: record.updatedAt }
+    // A first import may arrive while this unlinked slot downloads. Pair it instead of creating a second local character.
+    const current = step.localId ? app.characters.find((c) => c.id === step.localId) : app.characters.find((c) =>
+      (!saved.links[c.id] || saved.links[c.id].id === step.slot.id) && isSameCharacter(c.character, parsed))
+    const id = step.localId ?? current?.id ?? newId()
+    const before = reading!.locals.find((c) => c.id === id)
+    const revision = reading!.revisions.get(id) ?? 0
+    const record = await saveCharacterIfUnchanged(parsed, got.label, id, revision)
+    if (record) saved.links[id] = { id: step.slot.id, at: got.updatedAt, local: record.updatedAt }
+    else if (current) {
+      // Observe the remote revision without marking the intervening edit as uploaded. Its queued snapshot uses this same slot.
+      saved.links[id] = { id: step.slot.id, at: got.updatedAt, local: before?.updatedAt ?? -1 }
+    }
   } else if (step.kind === 'push') {
-    const c = app.characters.find((x) => x.id === step.localId)
-    if (!c) return
+    const current = app.characters.find((x) => x.id === step.localId)
+    if (!current) return
+    if (snapshot && current.updatedAt !== snapshot.updatedAt) return // a newer queued save supersedes this snapshot
+    if (!snapshot && reading && characterRevision(step.localId) !== reading.revisions.get(step.localId)) return
+    const c = snapshot ?? uploadOf(current)
     const body = { label: labelOf(c), raw: c.character.raw }
     const put = step.slotId ? await api<{ id: string; updatedAt: string }>(`/characters/${step.slotId}`, 'PUT', body).catch((e) => {
       if (e instanceof AccountError && e.status === 404) return null
@@ -149,34 +167,36 @@ export function syncSlots(): Promise<void> {
       return
     }
     try {
+      const locals = app.characters.map((c) => ({ id: c.id, updatedAt: c.updatedAt, character: c.character }))
+      const revisions = new Map(locals.map((c) => [c.id, characterRevision(c.id)]))
       await reload()
+      const saved = read()
+      let failed = 0
+      for (const step of planSync(slots.list, slots.total, locals, saved)) {
+        try {
+          await apply(step, saved, { locals, revisions })
+        } catch (e) {
+          // Refused exports stay on this device; transient failures can be retried on the next explicit sync.
+          if (!(e instanceof AccountError && [400, 402, 413].includes(e.status))) failed++
+        }
+      }
+      write(saved)
+      await reload().catch(() => {})
+      if (failed) toast('bad', `${failed} character${failed === 1 ? '' : 's'} did not sync with your cloud slots. Frostsim tries again on your next visit.`)
     } catch (e) {
       if (e instanceof AccountError && e.status === 401) signedOut()
       // 404: the server has slots switched off, so the roster shows none.
       if (e instanceof AccountError && e.status === 404) slots.on = false
       return
     }
-    const saved = read()
-    let failed = 0
-    for (const step of planSync(slots.list, slots.total, app.characters, saved)) {
-      try {
-        await apply(step, saved)
-      } catch (e) {
-        // 402: another device took the last slot first. 400 and 413: the server refuses this export. Either way the character stays
-        // on this device only, and retrying on every visit would only repeat the message.
-        if (!(e instanceof AccountError && [400, 402, 413].includes(e.status))) failed++
-      }
-    }
-    write(saved)
-    await reload().catch(() => {})
-    if (failed) toast('bad', `${failed} character${failed === 1 ? '' : 's'} did not sync with your cloud slots. Frostsim tries again on your next visit.`)
   })
 }
 
 /** Runs one exchange for a save or delete made on this device, and reports what happened to its slot. */
 function exchange(fn: (saved: Saved) => Promise<void>): void {
-  if (!account.me || !slots.on) return
+  if (!account.me) return
   void queued(async () => {
+    if (!account.me || !slots.on) return
     const saved = read()
     try {
       await fn(saved)
@@ -190,14 +210,17 @@ function exchange(fn: (saved: Saved) => Promise<void>): void {
 }
 
 setCharacterSync({
-  saved: (record) => exchange(async (saved) => {
-    try {
-      await apply({ kind: 'push', localId: record.id, slotId: saved.links[record.id]?.id }, saved)
-    } catch (e) {
-      if (!(e instanceof AccountError && e.status === 402)) throw e
-      toast('info', `${labelOf(record)} is on this device only: every character slot is in use. Delete one to make room.`)
-    }
-  }),
+  saved: (record) => {
+    const snapshot = uploadOf(record)
+    exchange(async (saved) => {
+      try {
+        await apply({ kind: 'push', localId: snapshot.id, slotId: saved.links[snapshot.id]?.id }, saved, undefined, snapshot)
+      } catch (e) {
+        if (!(e instanceof AccountError && e.status === 402)) throw e
+        toast('info', `${labelOf(snapshot)} is on this device only: every character slot is in use. Delete one to make room.`)
+      }
+    })
+  },
   deleted: (record) => exchange(async (saved) => {
     const link = saved.links[record.id]
     delete saved.links[record.id]

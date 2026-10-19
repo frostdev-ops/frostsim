@@ -13,6 +13,9 @@ vi.mock('../app.svelte', () => ({
   app: { get characters() { return mocks.characters } },
   deleteCharacter: vi.fn(),
   saveCharacter: vi.fn(),
+  characterRevision: () => 0,
+  deleteCharacterIfUnchanged: vi.fn(),
+  saveCharacterIfUnchanged: vi.fn(),
   toast: mocks.toast,
   setCharacterSync: (s: typeof mocks.sync) => (mocks.sync = s),
 }))
