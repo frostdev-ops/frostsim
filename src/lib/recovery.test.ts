@@ -1,4 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+afterEach(() => {
+  vi.restoreAllMocks()
+  vi.unstubAllGlobals()
+})
 
 // Test recovery states: old banner claim "nothing discarded either way" is false; assert real states.
 
@@ -157,10 +162,8 @@ describe('exportEverything reports what it did, not what it hopes', () => {
       engineAvailability: () => ({ available: true }),
     }))
     const clicked: string[] = []
-    vi.stubGlobal('URL', {
-      createObjectURL: () => 'blob:x',
-      revokeObjectURL: () => {},
-    })
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:x')
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
     vi.stubGlobal('document', {
       createElement: () => ({ set download(v: string) { clicked.push(v) }, href: '', click() {} }),
     })
@@ -177,10 +180,8 @@ describe('exportEverything reports what it did, not what it hopes', () => {
       engineBusy: () => false,
       engineAvailability: () => ({ available: true }),
     }))
-    vi.stubGlobal('URL', {
-      createObjectURL: () => { throw new Error('blob refused') },
-      revokeObjectURL: () => {},
-    })
+    vi.spyOn(URL, 'createObjectURL').mockImplementation(() => { throw new Error('blob refused') })
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
     const m = await import('./app.svelte')
     const result = await m.exportEverything()
     expect(result.ok).toBe(false)
