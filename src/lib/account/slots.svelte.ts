@@ -90,23 +90,33 @@ function queued(fn: () => Promise<void>): Promise<void> {
   return next
 }
 
-const key = () => `frostsim.slots.${account.me!.user.id}`
-function read(): Saved {
+type Owner = NonNullable<typeof account.me>
+const current = (owner: Owner): boolean => account.me === owner
+const key = (owner: Owner) => `frostsim.slots.${owner.user.id}`
+/** Every exchange belongs to the session that requested it, including queued work. */
+async function ownedApi<T = unknown>(owner: Owner, ...args: [path: string, method?: string, body?: unknown]): Promise<T> {
+  if (!current(owner)) throw new Error('Character synchronization belongs to a previous sign-in.')
+  const result = await api<T>(...args)
+  if (!current(owner)) throw new Error('Character synchronization belongs to a previous sign-in.')
+  return result
+}
+function read(owner: Owner): Saved {
   try {
-    const v = JSON.parse(localStorage.getItem(key()) ?? '')
+    const v = JSON.parse(localStorage.getItem(key(owner)) ?? '')
     if (v && typeof v.links === 'object' && Array.isArray(v.gone)) return v
   } catch { /* none yet, or storage blocked */ }
   return { links: {}, gone: [] }
 }
-function write(saved: Saved): void {
+function write(saved: Saved, owner: Owner): void {
+  if (!current(owner)) return
   try {
-    localStorage.setItem(key(), JSON.stringify(saved))
+    localStorage.setItem(key(owner), JSON.stringify(saved))
   } catch { /* Storage blocked: the next sync pairs characters by who they are. */ }
   slots.links = Object.fromEntries(Object.entries(saved.links).map(([id, l]) => [id, l.id]))
 }
 
-async function reload(): Promise<void> {
-  const list = await api<{ slots: number; characters: Slot[] }>('/characters')
+async function reload(owner: Owner): Promise<void> {
+  const list = await ownedApi<{ slots: number; characters: Slot[] }>(owner, '/characters')
   slots.total = list.slots
   slots.list = list.characters
   slots.on = true
@@ -119,15 +129,16 @@ type ReadState = { locals: Local[]; revisions: Map<string, number> }
 // Only immutable upload fields cross the exchange queue; renames mutate the app record in place.
 const uploadOf = (c: Upload): Upload => ({ id: c.id, updatedAt: c.updatedAt, label: c.label, character: { raw: c.character.raw, name: c.character.name } })
 
-async function apply(step: Step, saved: Saved, reading?: ReadState, snapshot?: Upload): Promise<void> {
+async function apply(step: Step, saved: Saved, owner: Owner, reading?: ReadState, snapshot?: Upload): Promise<void> {
+  if (!current(owner)) return
   if (step.kind === 'free') {
-    await api(`/characters/${step.slotId}`, 'DELETE').catch((e) => { if (!(e instanceof AccountError && e.status === 404)) throw e })
+    await ownedApi(owner, `/characters/${step.slotId}`, 'DELETE').catch((e) => { if (!(e instanceof AccountError && e.status === 404)) throw e })
     saved.gone = saved.gone.filter((id) => id !== step.slotId)
   } else if (step.kind === 'forget') {
     delete saved.links[step.localId]
     await deleteCharacterIfUnchanged(step.localId, reading!.revisions.get(step.localId) ?? 0)
   } else if (step.kind === 'pull') {
-    const got = await api<{ label: string; raw: string; updatedAt: string }>(`/characters/${step.slot.id}`)
+    const got = await ownedApi<{ label: string; raw: string; updatedAt: string }>(owner, `/characters/${step.slot.id}`)
     const parsed = parseAddonExport(got.raw)
     if (parsed.diagnostics.some((d) => d.severity === 'error')) throw new Error(`${got.label} in your cloud slots is not a valid export.`)
     // A first import may arrive while this unlinked slot downloads. Pair it instead of creating a second local character.
@@ -149,41 +160,46 @@ async function apply(step: Step, saved: Saved, reading?: ReadState, snapshot?: U
     if (!snapshot && reading && characterRevision(step.localId) !== reading.revisions.get(step.localId)) return
     const c = snapshot ?? uploadOf(current)
     const body = { label: labelOf(c), raw: c.character.raw }
-    const put = step.slotId ? await api<{ id: string; updatedAt: string }>(`/characters/${step.slotId}`, 'PUT', body).catch((e) => {
+    const put = step.slotId ? await ownedApi<{ id: string; updatedAt: string }>(owner, `/characters/${step.slotId}`, 'PUT', body).catch((e) => {
       if (e instanceof AccountError && e.status === 404) return null
       throw e
     }) : null
-    const out = put ?? await api<{ id: string; updatedAt: string }>('/characters', 'POST', body)
+    const out = put ?? await ownedApi<{ id: string; updatedAt: string }>(owner, '/characters', 'POST', body)
     saved.links[c.id] = { id: out.id, at: new Date(out.updatedAt).toISOString(), local: c.updatedAt }
   }
 }
 
 /** Brings this device and the account's slots into line (planSync). Quiet on failure: the next visit or save tries again. */
 export function syncSlots(): Promise<void> {
+  const owner = account.me
   return queued(async () => {
     await library
-    if (!account.me) {
-      Object.assign(slots, { total: 0, list: [], links: {}, on: false })
+    if (!owner || !current(owner)) {
+      if (!account.me) Object.assign(slots, { total: 0, list: [], links: {}, on: false })
       return
     }
     try {
       const locals = app.characters.map((c) => ({ id: c.id, updatedAt: c.updatedAt, character: c.character }))
       const revisions = new Map(locals.map((c) => [c.id, characterRevision(c.id)]))
-      await reload()
-      const saved = read()
+      await reload(owner)
+      const saved = read(owner)
       let failed = 0
       for (const step of planSync(slots.list, slots.total, locals, saved)) {
+        if (!current(owner)) return
         try {
-          await apply(step, saved, { locals, revisions })
+          await apply(step, saved, owner, { locals, revisions })
         } catch (e) {
           // Refused exports stay on this device; transient failures can be retried on the next explicit sync.
           if (!(e instanceof AccountError && [400, 402, 413].includes(e.status))) failed++
         }
       }
-      write(saved)
-      await reload().catch(() => {})
+      if (!current(owner)) return
+      write(saved, owner)
+      await reload(owner).catch(() => {})
+      if (!current(owner)) return
       if (failed) toast('bad', `${failed} character${failed === 1 ? '' : 's'} did not sync with your cloud slots. Frostsim tries again on your next visit.`)
     } catch (e) {
+      if (!current(owner)) return
       if (e instanceof AccountError && e.status === 401) signedOut()
       // 404: the server has slots switched off, so the roster shows none.
       if (e instanceof AccountError && e.status === 404) slots.on = false
@@ -193,40 +209,42 @@ export function syncSlots(): Promise<void> {
 }
 
 /** Runs one exchange for a save or delete made on this device, and reports what happened to its slot. */
-function exchange(fn: (saved: Saved) => Promise<void>): void {
-  if (!account.me) return
+function exchange(fn: (saved: Saved, owner: Owner) => Promise<void>): void {
+  const owner = account.me
+  if (!owner) return
   void queued(async () => {
-    if (!account.me || !slots.on) return
-    const saved = read()
+    if (!current(owner) || !slots.on) return
+    const saved = read(owner)
     try {
-      await fn(saved)
+      await fn(saved, owner)
     } catch (e) {
+      if (!current(owner)) return
       if (e instanceof AccountError && e.status === 401) signedOut()
       else toast('bad', e instanceof Error ? e.message : String(e))
     }
-    write(saved)
-    await reload().catch(() => {})
+    write(saved, owner)
+    await reload(owner).catch(() => {})
   })
 }
 
 setCharacterSync({
   saved: (record) => {
     const snapshot = uploadOf(record)
-    exchange(async (saved) => {
+    exchange(async (saved, owner) => {
       try {
-        await apply({ kind: 'push', localId: snapshot.id, slotId: saved.links[snapshot.id]?.id }, saved, undefined, snapshot)
+        await apply({ kind: 'push', localId: snapshot.id, slotId: saved.links[snapshot.id]?.id }, saved, owner, undefined, snapshot)
       } catch (e) {
         if (!(e instanceof AccountError && e.status === 402)) throw e
         toast('info', `${labelOf(snapshot)} is on this device only: every character slot is in use. Delete one to make room.`)
       }
     })
   },
-  deleted: (record) => exchange(async (saved) => {
+  deleted: (record) => exchange(async (saved, owner) => {
     const link = saved.links[record.id]
     delete saved.links[record.id]
     if (!link) return
     try {
-      await apply({ kind: 'free', slotId: link.id }, saved)
+      await apply({ kind: 'free', slotId: link.id }, saved, owner)
     } catch {
       saved.gone.push(link.id)
     }

@@ -31,6 +31,9 @@ vi.mock('../app.svelte', async (orig) => {
 
 const { app, saveCharacter, deleteCharacter, renameCharacter } = await import('../app.svelte')
 const { slots, syncSlots } = await import('./slots.svelte')
+const { account, signedOut } = await import('./state.svelte')
+const { AccountError } = await import('./api')
+const { put } = await import('../store/db')
 const raw = (version: string) => `mage=Ana\nlevel=90\nrace=human\nregion=us\nserver=area-52\nspec=frost\n# ${version}`
 const cloudAt = '2026-09-21T00:00:00.000Z'
 const remote = { id: 's1', label: 'Ana', bytes: 100, updatedAt: cloudAt, who: { name: 'Ana', className: 'mage', server: 'area-52', region: 'us' } }
@@ -46,6 +49,8 @@ async function save(version: string) {
 }
 
 beforeEach(async () => {
+  account.me = { user: { id: 'u1' } } as typeof account.me
+  vi.mocked(signedOut).mockClear()
   const store = new Map<string, string>()
   vi.stubGlobal('localStorage', { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) })
   mocks.records.clear()
@@ -55,6 +60,111 @@ beforeEach(async () => {
   await syncSlots()
   const initial = await saveCharacter(parseAddonExport(raw('initial')), 'Ana', 'l1', true)
   localStorage.setItem('frostsim.slots.u1', JSON.stringify({ links: { l1: { id: 's1', at: '2026-09-20T00:00:00.000Z', local: initial.updatedAt } }, gone: [] }))
+})
+
+it('discards a cloud download if the signed-in account changes while it is pending', async () => {
+  const started = deferred<void>()
+  const pull = deferred<{ label: string; raw: string; updatedAt: string }>()
+  mocks.api.mockImplementation(async (path: string) => {
+    if (path === '/characters/s1') { started.resolve(); return pull.promise }
+    return { slots: 1, characters: [remote] }
+  })
+  const syncing = syncSlots()
+  await started.promise
+  account.me = { user: { id: 'u2' } } as typeof account.me
+  pull.resolve({ label: 'Previous account', raw: raw('previous account'), updatedAt: cloudAt })
+  await syncing
+  expect(app.characters[0]!.character.raw).toBe(raw('initial'))
+  expect(localStorage.getItem('frostsim.slots.u2')).toBeNull()
+})
+
+it('does not run a queued save exchange under a different account', async () => {
+  const started = deferred<void>()
+  const list = deferred<{ slots: number; characters: typeof remote[] }>()
+  const writes: string[] = []
+  mocks.api.mockImplementation(async (_path: string, method = 'GET') => {
+    if (method !== 'GET') { writes.push(method); return { id: 's1', updatedAt: cloudAt } }
+    started.resolve()
+    return list.promise
+  })
+  const syncing = syncSlots()
+  await started.promise
+  await save('queued local')
+  account.me = { user: { id: 'u2' } } as typeof account.me
+  list.resolve({ slots: 1, characters: [] })
+  await syncing
+  // Drain queued work while signed out; an explicit new-account sync would
+  // intentionally offer the local library to that account.
+  account.me = null
+  await syncSlots()
+  expect(writes).toEqual([])
+  expect(localStorage.getItem('frostsim.slots.u2')).toBeNull()
+})
+
+it('ignores a slot list that returns after sign-out', async () => {
+  const started = deferred<void>()
+  const list = deferred<{ slots: number; characters: typeof remote[] }>()
+  mocks.api.mockImplementation(async () => { started.resolve(); return list.promise })
+  const before = mocks.api.mock.calls.length
+  const syncing = syncSlots()
+  await started.promise
+  account.me = null
+  Object.assign(slots, { total: 0, list: [], links: {}, on: false })
+  list.resolve({ slots: 1, characters: [remote] })
+  await syncing
+  expect(slots.on).toBe(false)
+  expect(slots.list).toEqual([])
+  expect(app.characters[0]!.character.raw).toBe(raw('initial'))
+  expect(mocks.api).toHaveBeenCalledTimes(before + 1)
+})
+
+it('does not sign out a new account when an old request returns unauthorized', async () => {
+  const started = deferred<void>()
+  const answer = deferred<void>()
+  mocks.api.mockImplementation(async () => {
+    started.resolve()
+    await answer.promise
+    throw new AccountError(401, 'unauthorized', 'Old session ended.')
+  })
+  const syncing = syncSlots()
+  await started.promise
+  account.me = { user: { id: 'u2' } } as typeof account.me
+  answer.resolve()
+  await syncing
+  expect(signedOut).not.toHaveBeenCalled()
+  expect(account.me?.user.id).toBe('u2')
+})
+
+it('rejects an old-account download queued behind a local persistence write', async () => {
+  const writing = deferred<void>()
+  const release = deferred<void>()
+  vi.mocked(put).mockImplementationOnce(async (_store, value) => {
+    writing.resolve()
+    await release.promise
+    const record = value as StoredCharacter
+    mocks.records.set(record.id, structuredClone(record))
+    return { ok: true, value: record.id }
+  })
+  const saving = save('pending local')
+  await writing.promise
+  const downloading = deferred<void>()
+  mocks.api.mockImplementation(async (path: string) => {
+    if (path === '/characters/s1') {
+      downloading.resolve()
+      return { label: 'Old cloud', raw: raw('old cloud'), updatedAt: cloudAt }
+    }
+    return { slots: 1, characters: [remote] }
+  })
+  const syncing = syncSlots()
+  await downloading.promise
+  // Let the cloud response queue its optimistic write behind the local one.
+  await Promise.resolve()
+  await Promise.resolve()
+  account.me = { user: { id: 'u2' } } as typeof account.me
+  release.resolve()
+  await Promise.all([saving, syncing])
+  expect(app.characters[0]!.character.raw).toBe(raw('pending local'))
+  expect(mocks.records.get('l1')!.character.raw).toBe(raw('pending local'))
 })
 
 it('preserves a new local export saved while a cloud GET is pending and uploads that export once', async () => {
