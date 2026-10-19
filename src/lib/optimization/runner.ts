@@ -97,6 +97,8 @@ export interface SearchLedger {
   stagesRun?: OptimizationResult['stagesRun'];
   states?: Record<string, Omit<CandidateState, 'candidate'>>;
   activeIds?: string[];
+  /** Adaptive finalists selected for the last verification, retained after its pass plan is cleared. */
+  verificationIds?: string[];
   droppedWhileAlive?: string[];
   warnings?: string[];
   problems?: string[];
@@ -256,6 +258,7 @@ export async function runPassSearch(
     || !Object.entries(ledger.states ?? {}).every(([id, state]) => candidateIds.has(id)
       && (!state.measurement || (state.measurement.candidateId === id && state.measurement.stageIndex <= ledger.stageIndex))
       && state.history.every(m => m.candidateId === id && m.stageIndex <= ledger.stageIndex))
+    || (ledger.verificationIds !== undefined && (!Array.isArray(ledger.verificationIds) || !ledger.verificationIds.every(id => candidateIds.has(id))))
     || ![...(ledger.activeIds ?? []), ...(ledger.droppedWhileAlive ?? [])].every(id => candidateIds.has(id))) {
     throw new Error('This checkpoint has inconsistent candidate records. The saved setup is unchanged.');
   }

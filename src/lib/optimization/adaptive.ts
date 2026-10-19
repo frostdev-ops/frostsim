@@ -1,7 +1,7 @@
 // Adaptive racing search (P08.16): coarse survey → precision-matched re-measuring → verification, stopping when leader is separated or budget exhausted.
 
 import {
-  DEFAULT_MAX_ITERATIONS, memoryCache, runPassSearch,
+  DEFAULT_MAX_ITERATIONS, emptyLedger, memoryCache, runPassSearch,
   type PassPlan, type PassSource, type ResultCache, type RunBatch, type SearchLedger,
 } from './runner';
 import { multiplicityFactor } from './statistics';
@@ -367,8 +367,11 @@ export async function runAdaptiveSearch(
   const warnings: string[] = [];
   let budgetExhausted = false;
   // A scheduled (or partly checkpointed) Verify pass is not a completed one.
-  let verificationIds = ctx.ledger?.pass?.plan.label === 'Verify'
-    ? ctx.ledger.pass.plan.restrictTo ?? ctx.ledger.activeIds : undefined;
+  const ledger = ctx.ledger ?? emptyLedger();
+  let verificationIds = ledger.verificationIds ?? (ledger.pass?.plan.label === 'Verify'
+    ? ledger.pass.plan.restrictTo ?? ledger.activeIds : undefined);
+  // Migrate an interrupted pre-metadata checkpoint before the runner clears its pass plan.
+  if (ledger.verificationIds === undefined && verificationIds) ledger.verificationIds = [...verificationIds];
 
   /** Verify cost (for progress bar to include upfront). */
   const verifyCost = (chosen: CandidateMeasurement[]): number =>
@@ -376,6 +379,7 @@ export async function runAdaptiveSearch(
 
   const verifyPass = (ids: string[], stageCount: number, estimatedSamplesRemaining?: number): PassPlan => {
     verificationIds = ids;
+    ledger.verificationIds = [...ids];
     return {
     estimatedSamplesRemaining,
     label: 'Verify',
@@ -503,7 +507,7 @@ export async function runAdaptiveSearch(
       engineIdentity: ctx.engineIdentity,
       runBatch: ctx.runBatch,
       cache: ctx.cache ?? memoryCache(),
-      ledger: ctx.ledger,
+      ledger,
       requestIdentity: JSON.stringify([ctx.requestIdentity, opts, 'adaptive-v2']),
       onCheckpoint: ctx.onCheckpoint,
       signal,

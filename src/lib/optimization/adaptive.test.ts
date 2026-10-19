@@ -391,6 +391,22 @@ describe('cancellation still loses only the batch in flight', () => {
 });
 
 describe('verifyOnly re-measures exactly what it was given', () => {
+  it('keeps completed verification true after reopening when an earlier non-finalist was missing', async () => {
+    const { runBatch, jobs } = fakeEngine({ a: 200_000, b: 100_000 });
+    let checkpoint: SearchLedger | undefined;
+    const candidates = ['a', 'b', 'missing'].map(candidate);
+    const context = { ...CTX(runBatch), onCheckpoint: async (ledger: SearchLedger) => { checkpoint = ledger; } };
+    const options = { targetError: 0.2, finalists: 1 };
+    const first = await runAdaptiveSearch(candidates, context, options);
+    expect(first.candidates.find(state => state.candidate.id === 'missing')?.status).toBe('missing');
+    expect(first.verified).toBe(true);
+    expect(checkpoint?.finished).toBe(true);
+    const before = jobs.length;
+    const reopened = await runAdaptiveSearch(candidates, { ...context, ledger: checkpoint }, options);
+    expect(reopened.verified).toBe(true);
+    expect(jobs).toHaveLength(before);
+  });
+
   it('marks a resumed verification complete only after every selected candidate returns', async () => {
     const engine = fakeEngine({ a: 200_000, b: 100_000 });
     let checkpoint: SearchLedger | undefined, calls = 0;
