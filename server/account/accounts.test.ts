@@ -486,7 +486,7 @@ describe('deleteAccount', () => {
   const account = (pending = false): Answer => (q) => q.startsWith('update users set suspended_at') ? [{ stripe_customer_id: 'cus_1' }]
     : q.startsWith("select 1 from audit_log") ? (pending ? [{}] : [])
     : q.startsWith('delete from sessions') ? [{ id_hash: 'h1' }]
-    : q.startsWith('select id from shares') ? [{ id: 'AbCdEfGhIj' }]
+    : q.startsWith('select id, object_key from shares') ? [{ id: 'AbCdEfGhIj', object_key: null }]
     : q.startsWith('select id from compute_jobs') ? [{ id: 'job-1' }]
     : q.startsWith('select stripe_customer_id from users') ? [{ stripe_customer_id: 'cus_1' }] : undefined;
 
@@ -550,7 +550,7 @@ describe('deleteAccount', () => {
 
     // Nothing in Stripe or R2: neither is needed.
     const bare = world((q, v) => q.startsWith('update users set suspended_at') || q.startsWith('select stripe_customer_id from users')
-      ? [{ stripe_customer_id: null }] : q.startsWith('select id from') ? [] : account()(q, v));
+      ? [{ stripe_customer_id: null }] : q.startsWith('select id from') || q.startsWith('select id, object_key from') ? [] : account()(q, v));
     expect(await deleteAccount(bare.app, ME, `user:${ME}`)).toBe('deleted');
     expect(bare.has('fetch')).toBe(false);
     expect(bare.has('"stripe":"none","r2":"none","r2Objects":0')).toBe(true);
@@ -563,7 +563,7 @@ describe('deleteAccount', () => {
     expect(lateCustomer.has('delete from users')).toBe(false);
 
     let shareReads = 0;
-    const lateShare = world((q, v) => (q.startsWith('select id from shares')
+    const lateShare = world((q, v) => (q.startsWith('select id, object_key from shares')
       ? (++shareReads === 1 ? [{ id: 'AbCdEfGhIj' }] : [{ id: 'AbCdEfGhIj' }, { id: 'NewShare01' }]) : account()(q, v)), { env });
     expect(await deleteAccount(lateShare.app, ME, `user:${ME}`)).toBe('pending');
     expect(lateShare.has('delete from users')).toBe(false);

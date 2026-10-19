@@ -10,6 +10,7 @@ const LIMITS: Ec2Limits = {
   subnets: new Map([['us-east-1a', 'subnet-a'], ['us-east-1b', 'subnet-b']]), types: ['c8a.4xlarge', 'c8a.16xlarge'], maxVcpu: 64,
 };
 const xml = (body: string) => new Response(`<?xml version="1.0"?><R xmlns="http://ec2.amazonaws.com/doc/2016-11-15/">${body}</R>`);
+const inventory = (body: string) => new Response(`<?xml version="1.0"?><DescribeInstancesResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/">${body}</DescribeInstancesResponse>`);
 const error = (code: string, status = 400) =>
   new Response(`<Response><Errors><Error><Code>${code}</Code><Message>echo of AKIDEXAMPLE</Message></Error></Errors></Response>`, { status });
 const price = (type: string, zone: string, usd: string, ts = '2026-09-25T11:00:00.000Z') =>
@@ -65,8 +66,8 @@ describe('ec2 client', () => {
 
   it('lists tagged instances across pages, and treats a missing instance as terminated', async () => {
     const { fetchFn, calls } = fake((form) => form.get('Action') === 'TerminateInstances' ? error('InvalidInstanceID.NotFound')
-      : form.get('NextToken') ? xml('<reservationSet><item><instancesSet><item><instanceId>i-3</instanceId></item></instancesSet></item></reservationSet>')
-        : xml('<reservationSet><item><instancesSet><item><instanceId>i-1</instanceId></item><item><instanceId>i-2</instanceId></item></instancesSet></item></reservationSet><nextToken>t2</nextToken>'));
+      : form.get('NextToken') ? inventory('<reservationSet><item><instancesSet><item><instanceId>i-3</instanceId></item></instancesSet></item></reservationSet>')
+        : inventory('<reservationSet><item><instancesSet><item><instanceId>i-1</instanceId></item><item><instanceId>i-2</instanceId></item></instancesSet></item></reservationSet><nextToken>t2</nextToken>'));
     const api = ec2(LIMITS, fetchFn);
     expect(await api.workerInstances()).toEqual(['i-1', 'i-2', 'i-3']);
     expect(calls[0].form.get('Filter.1.Name')).toBe('tag:frostsim');
@@ -76,6 +77,22 @@ describe('ec2 client', () => {
   it('reports only the error code, never the body', async () => {
     const { fetchFn } = fake(() => error('UnauthorizedOperation', 403));
     await expect(ec2(LIMITS, fetchFn).terminate('i-1')).rejects.toThrow(/^ec2 TerminateInstances failed with status 403 \(UnauthorizedOperation\)$/);
+  });
+
+  it('refuses incomplete instance inventories and repeated pagination tokens', async () => {
+    for (const body of ['<unexpected/>', '<reservationSet><item><instancesSet><item><instanceId>bad</instanceId></item></instancesSet></item></reservationSet>',
+      '<reservationSet/><nextToken>same</nextToken>']) {
+      const { fetchFn } = fake(() => inventory(body));
+      await expect(ec2(LIMITS, fetchFn).workerInstances()).rejects.toThrow(/inventory/);
+    }
+  });
+
+  it('requires every reservation and instance item to have a complete well-formed inventory', async () => {
+    for (const body of ['<reservationSet><item><ownerId>1</ownerId></item></reservationSet>',
+      '<reservationSet><item><instancesSet><item><instanceId>i-1</instanceId></wrong></instancesSet></item></reservationSet>']) {
+      const { fetchFn } = fake(() => inventory(body));
+      await expect(ec2(LIMITS, fetchFn).workerInstances()).rejects.toThrow(/inventory/);
+    }
   });
 });
 

@@ -22,6 +22,7 @@ import type { Db } from './db';
 import { HttpError, errorSummary, json } from './http';
 import { loothingDetail } from './loothing-detail';
 import { rateLimit } from './ratelimit';
+import { AI_GLOBAL_BUDGET_LOCK, MONEY_SCOPE_LOCK } from './budget-locks';
 
 const KINDS = ['report', 'vault', 'droptimizer', 'topgear', 'weights', 'error'] as const;
 type Kind = (typeof KINDS)[number];
@@ -64,7 +65,6 @@ const TOOL_BUDGET = 60_000;
 const TOOL_MS = 10_000;
 const BURST_PER_MINUTE = 5;
 const NOTES_KEPT = 20;
-const AI_LOCK = 0x61696c6b;
 const TAKEAWAY_DEADLINE_MS = 17_000;
 
 const inflate = promisify(gunzip);
@@ -252,9 +252,8 @@ async function callsToday(db: Db, userId: string, now: Date): Promise<number> {
   return n;
 }
 
-/** Reserves a call at its worst case, or refuses it, all under one advisory lock per scope. Returns the ledger row and, for a metered
- *  call, how many are left today. ponytail: the monthly ceiling is read without a global lock, so a burst can pass it by concurrency x
- *  CALL_USD_CAP; add a global lock if that ever matters. */
+/** Reserve under the global AI ceiling and the same per-plan money lock compute uses, in that order. No upstream work runs
+ *  while these locks are held. Returns the ledger row and, for a metered call, how many are left today. */
 async function reserve(app: AppCtx, o: { userId: string | null; guildId: string | null; source: 'web' | 'discord'; kind: string; dailyLimit: number | null; cap: number;
   pool: (Period & { paidUsd: number; comped?: boolean }) | null }): Promise<{ id: string; remaining: number | null }> {
   const cap = Number(app.config.env.AI_MONTHLY_USD_CAP);
@@ -262,7 +261,8 @@ async function reserve(app: AppCtx, o: { userId: string | null; guildId: string 
   const now = app.now();
   const who = o.guildId ? { guildId: o.guildId } : { userId: o.userId! };
   return app.sql.begin(async (tx) => {
-    await tx`select pg_advisory_xact_lock(${AI_LOCK}::int, hashtext(${o.guildId ? `g:${o.guildId}` : `u:${o.userId}`}::text))`;
+    await tx`select pg_advisory_xact_lock(${AI_GLOBAL_BUDGET_LOCK}::int, 0::int)`;
+    await tx`select pg_advisory_xact_lock(${MONEY_SCOPE_LOCK}::int, hashtext(${o.guildId ? `g:${o.guildId}` : `u:${o.userId}`}::text))`;
     let remaining: number | null = null;
     if (o.dailyLimit !== null) {
       const n = await callsToday(tx, o.userId!, now);

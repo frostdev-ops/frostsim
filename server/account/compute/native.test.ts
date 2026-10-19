@@ -61,8 +61,9 @@ describe('nativeInputProblem', () => {
   it('refuses file-writing and application-owned options in any token', () => {
     expect(problem({ profile: 'warlock=A\nlevel=90 save=/tmp/x\n' })).toMatch(/"save="/);
     expect(problem({ profile: 'warlock=A\nsave_actions=/tmp/x\n' })).toMatch(/"save_actions="/);
-    expect(problem({ profile: 'warlock=A\nlevel=90 threads=64\n' })).toMatch(/"threads="/);
-    expect(problem({ profile: 'warlock=A\nlevel=90 INPUT=/etc/passwd\n' })).toMatch(/"input="/);
+    // Assembly now strips protected assignments; also exercise this boundary with unsanitized worker input.
+    expect(nativeInputProblem({ ...assembleRun(request(), 16), profile: 'warlock=A\nlevel=90 threads=64\n' })).toMatch(/"threads="/);
+    expect(nativeInputProblem({ ...assembleRun(request(), 16), profile: 'warlock=A\nlevel=90 INPUT=/etc/passwd\n' })).toMatch(/"input="/);
     expect(problem({ extraOptions: ['reforge_plot_output_file=/tmp/x'] })).toMatch(/_output_file/);
     expect(problem({ extraOptions: ['/etc/passwd'] })).toMatch(/Extra option/);
   });

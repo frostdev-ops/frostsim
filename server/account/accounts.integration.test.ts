@@ -250,6 +250,52 @@ describe.skipIf(!PG)('accounts postgres integration (needs FROSTSIM_TEST_PG; Red
     expect((await signIn('discord', 'dave')).account).toBe('signed-in');
   });
 
+  it('preserves failed, cancelled and running guild usage on deletion while scrubbing personal job data', async () => {
+    const [user] = await sql`insert into users (display_name) values ('Delete ledger') returning id`;
+    const [worker] = await sql`insert into workers (cores, status, hourly_usd) values (8, 'ready', 1) returning id`;
+    const ids: string[] = [];
+    for (const status of ['done', 'failed', 'cancelled', 'running']) {
+      const [job] = await sql`insert into compute_jobs (user_id, guild_id, source, pack_id, threads, status, core_seconds, cost_usd,
+          claimed_at, worker_id, reserve_usd, request, payload, summary, meta, error)
+        values (${user.id}, 'guild-ledger', 'discord', 'p', 8, ${status}, ${status === 'running' ? 0 : 80}, ${status === 'running' ? 0 : 0.1},
+          ${new Date(app.now().getTime() - 10_000)}, ${worker.id}, 1, ${sql.json({ profile: 'private' })}, ${sql.json({ profile: 'private' })},
+          ${sql.json({ name: 'private' })}, ${sql.json({ name: 'private' })}, 'private error') returning id`;
+      ids.push(job.id);
+    }
+    expect(await deleteAccount(app, user.id, 'system')).toBe('deleted');
+    const kept = await sql`select user_id, status, core_seconds::float8 as seconds, cost_usd::float8 as cost, request, payload, summary, meta, error
+      from compute_jobs where id in ${sql(ids)}`;
+    expect(kept).toHaveLength(4);
+    expect(kept.every((j) => j.seconds >= 80 && j.cost > 0 && j.user_id === null && j.request === null && j.payload === null
+      && j.summary === null && j.meta === null && j.error === null && j.status !== 'running')).toBe(true);
+  });
+
+  it('deletes immutable published and abandoned staged share object keys before deleting their indexes', async () => {
+    const [u] = await sql`insert into users (display_name) values ('Share deletion') returning id`;
+    const shareId = `K${randomBytes(8).toString('hex')}`;
+    const published = `shares/${shareId}/published.json.gz`;
+    const staged = `shares/${shareId}/abandoned.json.gz`;
+    await sql`insert into shares (id, user_id, title, bytes, object_key) values (${shareId}, ${u.id}, 'private', 1, ${published})`;
+    await sql`insert into share_uploads (token, share_id, object_key, started_at)
+      values ('abandoned-token', ${shareId}, ${staged}, ${new Date(app.now().getTime() - 10 * 60_000)})`;
+    const before = r2Deletes.length;
+    expect(await deleteAccount(app, u.id, 'system')).toBe('deleted');
+    expect(r2Deletes.slice(before).sort()).toEqual([`/frostsim-data/${published}`, `/frostsim-data/${staged}`].sort());
+  });
+
+  it('retains a deleting account and staged upload index until its active upload lease expires', async () => {
+    const [u] = await sql`insert into users (display_name) values ('Active share deletion') returning id`;
+    const shareId = `K${randomBytes(8).toString('hex')}`;
+    await sql`insert into shares (id, user_id, title) values (${shareId}, ${u.id}, 'private')`;
+    await sql`insert into share_uploads (token, share_id, object_key, started_at)
+      values ('active-token', ${shareId}, ${`shares/${shareId}/active.json.gz`}, ${app.now()})`;
+    expect(await deleteAccount(app, u.id, 'system')).toBe('pending');
+    expect(await sql`select 1 from users where id = ${u.id}`).toHaveLength(1);
+    expect(await sql`select 1 from share_uploads where share_id = ${shareId}`).toHaveLength(1);
+    await sql`update share_uploads set started_at = ${new Date(app.now().getTime() - 10 * 60_000)} where share_id = ${shareId}`;
+    expect(await deleteAccount(app, u.id, 'system')).toBe('deleted');
+  });
+
   it('keeps a half-deleted account locked, refuses to unsuspend it, and lets the retry task finish it', async () => {
     const boss = await signIn('discord', 'boss');
     const erin = await signIn('discord', 'erin');

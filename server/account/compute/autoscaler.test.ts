@@ -72,6 +72,14 @@ describe('decide', () => {
     expect(decide(fleet({ workers: [worker()], servers: { hetzner: null } }), LIMITS)).toMatchObject({ remove: [], forget: [] });
   });
 
+  it('orders no additional resources while unaccounted provider orphans await reconciliation', () => {
+    expect(decide(fleet({ servers: { hetzner: ['7'] }, queued: jobs(8) }), LIMITS).create).toBeNull();
+  });
+
+  it('orders nothing when provider inventory cannot be established', () => {
+    expect(decide(fleet({ servers: { hetzner: null }, queued: jobs(8) }), LIMITS).create).toBeNull();
+  });
+
   it('forgets rows whose server is gone or was never created, after a listing grace', () => {
     const plan = decide(fleet({
       workers: [worker({ id: 'gone' }), worker({ id: 'fresh', providerId: '2', createdAt: at(-10_000) }), worker({ id: 'failed', providerId: null })],
@@ -88,6 +96,20 @@ describe('decide', () => {
     const plan = decide(fleet({ workers: [lost, alive, neverBooted], servers: { hetzner: ['1', '2', '3'] } }), LIMITS);
     expect(plan.remove).toEqual([{ provider: 'hetzner', id: '1', reason: 'heartbeat lost' }, { provider: 'hetzner', id: '3', reason: 'heartbeat lost' }]);
     expect(plan.forget).toEqual(['w1', 'w3']);
+  });
+
+  it('reserves provider capacity for workers awaiting deletion, without offering their cores to jobs', () => {
+    const lost = worker({ lastSeenAt: at(-HEARTBEAT_LOSS_MS - 1) });
+    const pending = worker({ status: 'draining' });
+    for (const w of [lost, pending]) {
+      const state = fleet({ workers: [w], servers: { hetzner: ['1'] }, queued: jobs(8) });
+      expect(decide(state, { ...LIMITS, hetzner: { ...LIMITS.hetzner, max: 1 } }).create).toBeNull();
+      // Spare provider capacity still permits a replacement, since the retired worker cannot run it.
+      expect(decide(state, LIMITS).create).toEqual([HETZNER]);
+    }
+    const spot = worker({ provider: 'ec2', providerId: 'i-1', cores: 64, status: 'draining' });
+    expect(decide(fleet({ workers: [spot], servers: { ec2: ['i-1'] }, queued: jobs(8), offers: [SPOT_16] }),
+      { ...BOTH, ec2: { maxVcpu: 64 } as never }).create).toBeNull();
   });
 
   it('drains an idle Hetzner server only inside the window before its next billed hour, then removes it once idle', () => {
@@ -219,18 +241,21 @@ describe('hcloud client', () => {
 
   it('reads the gross hourly price for the location from server_types and caches it for an hour', async () => {
     const { api, calls } = fake({
+      'GET /v1/pricing': () => Response.json({ pricing: { currency: 'EUR', primary_ips: [{ type: 'ipv6', prices: [
+        { location: 'hel1', price_hourly: { gross: '0' } },
+      ] }] } }),
       'GET /v1/server_types': () => Response.json({ server_types: [{ cores: 32, prices: [
         { location: 'nbg1', price_hourly: { net: '0.1', gross: '0.2' } },
         { location: 'hel1', price_hourly: { net: '0.5', gross: '0.595' } },
       ] }] }),
     });
     const limits = { token: 't', location: 'hel1', snapshot: '1', serverType: 'ccx53', max: 1 };
-    expect(await serverPrice(api, limits, NOW)).toEqual({ hourlyEur: 0.595, cores: 32 });
-    expect(await serverPrice(api, limits, at(HOUR_MS - 1))).toEqual({ hourlyEur: 0.595, cores: 32 });
-    expect(calls).toHaveLength(1);
-    expect(new URL(calls[0].url).searchParams.get('name')).toBe('ccx53');
+    expect(await serverPrice(api, limits, NOW)).toEqual({ hourly: 0.595, currency: 'EUR', cores: 32 });
+    expect(await serverPrice(api, limits, at(HOUR_MS - 1))).toEqual({ hourly: 0.595, currency: 'EUR', cores: 32 });
+    expect(calls.filter((c) => new URL(c.url).pathname === '/v1/server_types')).toHaveLength(1);
+    expect(new URL(calls.find((c) => new URL(c.url).pathname === '/v1/server_types')!.url).searchParams.get('name')).toBe('ccx53');
     await serverPrice(api, limits, at(HOUR_MS + 1));
-    expect(calls).toHaveLength(2);
+    expect(calls.filter((c) => new URL(c.url).pathname === '/v1/server_types')).toHaveLength(2);
     await expect(serverPrice(api, { ...limits, location: 'ash' }, NOW)).rejects.toThrow(/no hourly price for ccx53 in ash/);
   });
 });

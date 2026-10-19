@@ -8,6 +8,8 @@ import type { Db } from '../db';
 import { HttpError } from '../http';
 import { loadEntitlements, type Period } from '../entitlements';
 import { usedCoreSeconds, usedCostUsd } from '../usage';
+import { memberRefusal } from '../guild-roles';
+import { MONEY_SCOPE_LOCK } from '../budget-locks';
 import { tryRedis } from '../redis';
 import { configured } from '../config';
 import { assembleRun, validateRequest, type AssembledRun, type SimRequest } from '../../../src/lib/simc/assemble';
@@ -39,7 +41,7 @@ const NOT_ENTITLED = 'No Frostsim Cloud plan covers this run.';
 const COST_CAP = "This period's cloud runs have reached what the plan pays for.";
 const RESTARTED = 'Frostsim Cloud: the server running this job stopped; restarting it on another server.';
 /** Advisory-lock class for per-scope locks (two-int keyspace, apart from migrate.ts's bigint lock). */
-export const SCOPE_LOCK = 0x636d7075;
+export const SCOPE_LOCK = MONEY_SCOPE_LOCK;
 
 type App = Pick<AppCtx, 'config' | 'sql' | 'redis' | 'r2' | 'log' | 'now'>;
 export type Source = 'web' | 'discord' | 'loothing' | 'patch';
@@ -86,6 +88,8 @@ export async function enqueueJob(
     /** An integration job's kind, and what its report cannot say (loothing-drop.ts DropMeta). */
     kind?: 'quick' | 'compare' | 'droptimizer';
     meta?: unknown;
+    /** Roles from the signed Discord interaction, rechecked against current stored limits at claim. */
+    guildRoleIds?: readonly string[];
   },
 ): Promise<{ ok: true; id: string } | Refusal> {
   const { userId, guildId, source, packId, request } = job;
@@ -100,6 +104,10 @@ export async function enqueueJob(
     const [user] = await app.sql`select suspended_at, role from users where id = ${userId}`;
     if (user?.suspended_at) return refuse(403, 'suspended', 'This account is suspended.');
     if (app.config.adminOnly && user?.role !== 'admin') return refuse(403, 'forbidden', 'This server is open to admins only.');
+  }
+  if (source === 'discord' && guildId && (!userId || !Array.isArray(job.guildRoleIds) || job.guildRoleIds.length > 250
+    || !job.guildRoleIds.every((id) => typeof id === 'string' && /^\d{17,20}$/.test(id)))) {
+    return refuse(400, 'invalid', 'A guild run needs the member roles from its signed interaction.');
   }
 
   const now = app.now();
@@ -132,10 +140,11 @@ export async function enqueueJob(
       where status = 'queued' and ${guildId ? tx`guild_id = ${guildId}` : tx`user_id = ${userId} and guild_id is null`}`;
     if (queued >= QUEUED_PER_SCOPE) return null;
     const [row] = await tx`insert into compute_jobs (user_id, guild_id, source, pack_id, threads, request, payload, status, created_at,
-        character_id, idempotency_key, kind, meta)
+        character_id, idempotency_key, kind, meta, guild_role_ids)
       values (${userId}, ${guildId}, ${source}, ${packId}, ${run.threads}, ${tx.json(request as unknown as postgres.JSONValue)},
         ${tx.json({ profile: run.profile, args: run.args, engineIdentity: { ...pack.identity } })}, 'queued', ${now}, ${job.characterId ?? null}, ${job.idempotencyKey ?? null},
-        ${job.kind ?? null}, ${job.meta === undefined ? null : tx.json(job.meta as postgres.JSONValue)})
+        ${job.kind ?? null}, ${job.meta === undefined ? null : tx.json(job.meta as postgres.JSONValue)},
+        ${source === 'discord' && guildId ? tx.json([...new Set(job.guildRoleIds!)]) : null})
       returning id`;
     return row.id as string;
   });
@@ -174,7 +183,7 @@ async function enqueueReserve(app: App, threads: number): Promise<number | null>
 
 /** cost_usd for a job metered `coreSeconds` (a SQL expression over compute_jobs): its worker's rate plus that provider's measured
  *  idle, never more than the reserve held for it at claim. */
-const costSql = (app: App, idle: IdleFactors, coreSeconds: postgres.PendingQuery<postgres.Row[]>) => {
+const costSql = (app: Pick<App, 'config'> & { sql: Db }, idle: IdleFactors, coreSeconds: postgres.PendingQuery<postgres.Row[]>) => {
   const usdPerEur = fleetConfig(app.config)?.usdPerEur ?? null;
   return app.sql`least(coalesce(reserve_usd, 'Infinity'::numeric), ${coreSeconds} * coalesce((select
       ${hourlyUsdSql(app.sql, usdPerEur)} / nullif(w.cores, 0) / 3600 * (1 + case w.provider when 'ec2' then ${idle.ec2}::float8 else ${idle.hetzner}::float8 end)
@@ -465,7 +474,7 @@ export async function resultBytes(app: App, id: string): Promise<Uint8Array | nu
 
 /** wall_seconds, core_seconds and cost_usd for a run stopped at `now`: threads x claim-to-now, at most RUN_MAX_S. 0 for a job never
  *  claimed. */
-const meterToNow = (app: App, now: Date, idle: IdleFactors) => {
+const meterToNow = (app: Pick<App, 'config'> & { sql: Db }, now: Date, idle: IdleFactors) => {
   const wall = app.sql`least(greatest(coalesce(extract(epoch from ${now}::timestamptz - claimed_at), 0), 0), ${RUN_MAX_S})`;
   return app.sql`wall_seconds = ${wall}, core_seconds = threads * ${wall}, cost_usd = ${costSql(app, idle, app.sql`threads * ${wall}`)}`;
 };
@@ -481,6 +490,14 @@ export async function cancelJob(app: App, id: string, by: { userId: string } | {
   return rows.length > 0;
 }
 
+/** Account deletion stops and meters its outstanding work before detaching the guild's ledger. Runs in the deletion transaction. */
+export async function cancelUserJobs(app: Pick<App, 'config' | 'now'> & { sql: Db }, userId: string): Promise<void> {
+  const now = app.now();
+  const idle = await loadIdleFactors(app.sql, now);
+  await app.sql`update compute_jobs set status = 'cancelled', finished_at = ${now}, lease_until = null, ${meterToNow(app, now, idle)}
+    where user_id = ${userId} and status in ('queued', 'running')`;
+}
+
 // ---- Worker side (DESIGN.md P1) ----
 
 export interface Claimed { id: string; threads: number; packId: string; profile: string; args: string[]; engineIdentity?: PackIdentity }
@@ -494,15 +511,17 @@ export async function claimJob(app: App, workerId: string, freeCores: number): P
   const idle = await loadIdleFactors(app.sql, now);
   let retried = false;
   const claimed = await app.sql.begin(async (tx) => {
+    // Retiring/draining a worker locks it before releasing jobs. Serialize its ready-state check with that transition,
+    // while allowing the FK's KEY SHARE locks from other job rows (FOR UPDATE would unnecessarily block those).
     const [worker] = await tx`select status, provider, cores, ${hourlyUsdSql(tx, fleet?.usdPerEur ?? null)}::float8 as hourly_usd
-      from workers where id = ${workerId} and deleted_at is null`;
+      from workers where id = ${workerId} and deleted_at is null for no key update`;
     if (!worker || worker.status === 'draining') return 'draining';
     // Cheapest first (fleet.ts): an EC2 worker is billed per second and drains when idle, while a live Hetzner server's hour is paid
     // either way, so an EC2 worker leaves a job to a Hetzner server that has room for it and polled in the last 30 s.
     const paidFor = worker.provider !== 'ec2' ? tx`true` : tx`not exists (select 1 from workers h where h.provider = 'hetzner'
       and h.status = 'ready' and h.deleted_at is null and h.last_seen_at > ${new Date(now.getTime() - 30_000)}
       and h.cores - coalesce((select sum(r.threads) from compute_jobs r where r.worker_id = h.id and r.status = 'running'), 0) >= j.threads)`;
-    const candidates = await tx`select j.id, j.threads, j.pack_id, j.payload, j.user_id, j.guild_id,
+    const candidates = await tx`select j.id, j.threads, j.pack_id, j.payload, j.user_id, j.guild_id, j.source, j.guild_role_ids,
         coalesce('g:' || j.guild_id, 'u:' || j.user_id::text) as scope
       from compute_jobs j
       where j.status = 'queued' and j.threads <= ${freeCores} and ${paidFor} and not exists (select 1 from compute_jobs r where r.status = 'running'
@@ -514,6 +533,16 @@ export async function claimJob(app: App, workerId: string, freeCores: number): P
       // Another transaction may be claiming a sibling of this scope right now; its running row is invisible until it commits.
       const [{ locked }] = await tx`select pg_try_advisory_xact_lock(${SCOPE_LOCK}::int, hashtext(${job.scope}::text)) as locked`;
       if (!locked) continue;
+      // Queued jobs can outlive a suspension or ADMIN_ONLY role change. Recheck every source in the claim transaction.
+      if (job.user_id) {
+        const [user] = await tx`select suspended_at, role from users where id = ${job.user_id}`;
+        const unauthorized = !user || user.suspended_at ? 'This account is suspended.'
+          : app.config.adminOnly && user.role !== 'admin' ? 'This server is open to admins only.' : null;
+        if (unauthorized) {
+          await tx`update compute_jobs set status = 'failed', error = ${unauthorized}, finished_at = ${now} where id = ${job.id}`;
+          continue;
+        }
+      }
       const busy = await tx`select 1 from compute_jobs where status = 'running'
         and coalesce('g:' || guild_id, 'u:' || user_id::text) = ${job.scope} limit 1`;
       if (busy.length) continue;
@@ -524,6 +553,10 @@ export async function claimJob(app: App, workerId: string, freeCores: number): P
       const reserve = worstCaseUsd(job.threads, RUN_MAX_S, coreRate(worker.hourly_usd, worker.cores || 1), idle[worker.provider as keyof IdleFactors] ?? idle.hetzner);
       const refusal = !pool || pool.maxThreads < 1 ? NOT_ENTITLED
         : (await usedCoreSeconds(tx, who, pool.periodStart, pool.periodEnd)) >= pool.coreSeconds ? NO_ALLOWANCE
+        : job.guild_id && job.source === 'discord' ? (!job.user_id || !Array.isArray(job.guild_role_ids)
+          ? 'Queued guild authorization is unavailable. Run this command again.'
+          : await memberRefusal({ sql: tx }, job.guild_id, job.user_id, job.guild_role_ids, pool))
+          || await costProblem(tx, who, pool, reserve)
         : await costProblem(tx, who, pool, reserve);
       if (refusal) {
         await tx`update compute_jobs set status = 'failed', error = ${refusal}, finished_at = ${now} where id = ${job.id}`;

@@ -10,7 +10,7 @@ import { sha256Hex } from '../signed';
 import type { SimRequest } from '../../../src/lib/simc/assemble';
 import { resolveEngineChannel } from '../../../src/lib/simc/channel';
 import { trustedPack } from './packs';
-import { cloudModel, cloudRun, expectedRunS, forgetWorker, liteColumns, liteWork } from './queue';
+import { cloudModel, cloudRun, expectedRunS, forgetWorker, liteColumns, liteWork, releaseJobs } from './queue';
 import {
   BILLING, DEFAULT_RUN_S, EC2_IDLE_S, HOUR_MS, PROVIDER_COOLDOWN_MS, cheapest, coolDown, cooling, fleetConfig, hourlyUsdSql, monthSpend, providers, rememberOffers, roomFor, spendRows,
   type FleetConfig, type Offer, type Provider, type ProviderName,
@@ -60,7 +60,7 @@ export interface Fleet {
 
 export interface Plan {
   remove: { provider: ProviderName; id: string; reason: 'orphan' | 'heartbeat lost' | 'idle' }[];
-  /** Rows to mark deleted, releasing their jobs. */
+  /** Retirement candidates; tick only marks deletion after provider absence is confirmed. */
   forget: string[];
   drain: string[];
   /** The chosen offer first, then same-size offers of its provider to fall back to; null creates nothing. */
@@ -101,6 +101,9 @@ export function decide(fleet: Fleet, limits: Pick<FleetConfig, 'capUsd' | 'hetzn
     if (lost || (w.status === 'draining' && w.busy === 0)) {
       plan.remove.push({ provider: w.provider, id: w.providerId, reason: lost ? 'heartbeat lost' : 'idle' });
       plan.forget.push(w.id);
+      // A requested deletion can fail or remain asynchronous. Reserve its provider capacity until absence is confirmed,
+      // while offering none of these cores to queued jobs. Its live row keeps monthSpend accruing too.
+      kept.push(w);
       continue;
     }
     kept.push(w);
@@ -134,7 +137,8 @@ export function decide(fleet: Fleet, limits: Pick<FleetConfig, 'capUsd' | 'hetzn
     slot.cores -= job.threads;
     return false;
   });
-  if (!unplaced.length) return plan;
+  // An orphan has no reliable local price/size record. Reconcile it before adding further billable resources.
+  if (!unplaced.length || plan.remove.some((r) => r.reason === 'orphan') || Object.values(fleet.servers).some((ids) => ids === null)) return plan;
   const [first] = unplaced;
   const affordable = fleet.offers.filter((o) => roomFor(limits, kept, o) && projected + commitment(o.billing, o.maxHourlyUsd) <= limits.capUsd);
   // ponytail: at most one new server per tick (15 s); a burst scales over a few ticks, which also bounds a runaway.
@@ -236,16 +240,42 @@ export async function tick(app: AppCtx): Promise<void> {
   let fleet: Fleet = { ...loaded, offers: loaded.offers.filter((o) => !cooling(o.provider, loaded.now)) };
   fleet = await narrowQueued(app, fleet);
   const plan = decide(fleet, fc);
+  const retiring = fleet.workers.filter((w) => plan.remove.some((r) => r.provider === w.provider && r.id === w.providerId));
+  // Stop claims/authentication and release leases independently of provider deletion. Keep deleted_at null so a failed
+  // DELETE cannot freeze spend or free its WORKER_MAX/vCPU slot. Repeating this transaction is harmless.
+  for (const worker of retiring) {
+    await app.sql.begin(async (tx) => {
+      await tx`update workers set status = 'draining', token_hash = null where id = ${worker.id} and deleted_at is null`;
+      await releaseJobs(tx, tx`worker_id = ${worker.id}`, app.now());
+    });
+  }
   for (const { provider, id, reason } of plan.remove) {
     try {
       await byName.get(provider)!.remove(id);
-      app.log(`compute: deleted ${provider} server ${id} (${reason})`);
+      app.log(`compute: requested deletion of ${provider} server ${id} (${reason})`);
     } catch (err) {
-      // Its row is still forgotten below; the server then comes back as an orphan and is retried next tick.
       app.log(`compute: deleting ${provider} server ${id} failed (${errorSummary(err)})`);
     }
   }
-  for (const id of plan.forget) await forgetWorker(app, id);
+  // DELETE may merely acknowledge an asynchronous request, or succeed despite a lost response. Only a successful
+  // subsequent listing establishes absence; failed listings and still-present servers retain their live accounting row.
+  const confirmed = new Map<ProviderName, string[]>();
+  for (const provider of new Set(retiring.map((w) => w.provider))) {
+    try {
+      confirmed.set(provider, await byName.get(provider)!.list());
+    } catch (err) {
+      app.log(`compute: confirming ${provider} deletion failed (${errorSummary(err)})`);
+    }
+  }
+  for (const id of plan.forget) {
+    const worker = retiring.find((w) => w.id === id);
+    if (worker) {
+      const remaining = confirmed.get(worker.provider);
+      if (!remaining || remaining.includes(worker.providerId!)) continue;
+    }
+    await forgetWorker(app, id);
+    if (worker) app.log(`compute: deleted ${worker.provider} server ${worker.providerId} (${plan.remove.find((r) => r.provider === worker.provider && r.id === worker.providerId)!.reason})`);
+  }
   if (plan.drain.length) {
     await app.sql`update workers set status = 'draining' where id in ${app.sql(plan.drain)} and deleted_at is null and status = 'ready'`;
   }

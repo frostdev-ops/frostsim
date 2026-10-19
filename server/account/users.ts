@@ -2,11 +2,12 @@
 // account deletion, which admin.ts shares.
 //
 // Deletion order. Every step is idempotent, so a retry resumes wherever a failure stopped:
-//   1. Lock, in one transaction: suspended_at set, an `account.delete-started` audit row written (the pending marker), shares revoked.
+//   1. Lock, in one transaction: suspended_at set, an `account.delete-started` audit row written (the pending marker), shares revoked,
+//      queued work cancelled and running work cancelled/metered.
 //      Then every session is destroyed. From here the account can neither sign in nor serve a share, whatever fails next.
 //   2. The Stripe customer is deleted (Stripe cancels its subscriptions). Before the row: the row holds the only pointer to it.
 //   3. The R2 objects go: shares/<id>.json.gz and results/<jobId>.json.gz. Before the row: its shares and jobs are the only index.
-//   4. The user's finished guild jobs are detached (user_id and the character data nulled) so they keep counting against the guild
+//   4. The user's metered guild jobs are detached (user_id and all personal job data nulled) so they keep counting against the guild
 //      pool, then the users row is deleted (everything else cascades) with an `account.deleted` audit row, in one transaction that first locks
 //      the row and re-reads the customer and the object keys: a checkout, share or job that passed auth before step 1 may have added
 //      one since, and then the row stays for the retry.
@@ -16,12 +17,14 @@
 
 import type { AppCtx, RequestCtx, Route, Task } from './app';
 import { audit } from './audit';
+import { cancelUserJobs } from './compute/queue';
 import type { Db } from './db';
 import { HttpError, errorSummary, json } from './http';
 import { HIDDEN_CHAR } from './providers/index';
 import { rateLimit } from './ratelimit';
 import { clearSessionCookie, createSession, destroyUserSessions, forgetCachedSessions } from './session';
 import { StripeError, stripe } from './stripe';
+import { UPLOAD_LEASE_MS } from './shares';
 
 const MAX_NAME = 64;
 const R2_DELETE_BATCH = 8;
@@ -84,7 +87,8 @@ export async function deletionPending(db: Db, userId: string): Promise<boolean> 
 /** R2 keys of everything the user's rows point at. */
 async function objectKeys(db: Db, userId: string): Promise<string[]> {
   return [
-    ...(await db`select id from shares where user_id = ${userId}`).map((r) => `shares/${r.id}.json.gz`),
+    ...(await db`select id, object_key from shares where user_id = ${userId}`).map((r) => r.object_key ?? `shares/${r.id}.json.gz`),
+    ...(await db`select u.object_key from share_uploads u join shares s on s.id = u.share_id where s.user_id = ${userId}`).map((r) => r.object_key),
     ...(await db`select id from compute_jobs where user_id = ${userId}`).map((r) => `results/${r.id}.json.gz`),
   ];
 }
@@ -97,6 +101,7 @@ export async function deleteAccount(app: AppCtx, userId: string, actor: string):
       returning stripe_customer_id`;
     if (!user) return null;
     if (!(await deletionPending(tx, userId))) await audit(tx, { userId, actor, action: 'account.delete-started' });
+    await cancelUserJobs({ ...app, sql: tx }, userId);
     await tx`update shares set revoked_at = coalesce(revoked_at, ${app.now()}) where user_id = ${userId}`;
     return { customer: user.stripe_customer_id as string | null };
   });
@@ -125,14 +130,20 @@ export async function deleteAccount(app: AppCtx, userId: string, actor: string):
     await app.sql.begin(async (tx) => {
       const [user] = await tx`select stripe_customer_id from users where id = ${userId} for update`;
       if (!user) return;
+      // A PUT already in flight may still write after an early object DELETE. Keep its durable key index until its lease
+      // expires; revoked shares cannot start another upload, and a retry removes any object that arrived meanwhile.
+      const activeUploads = await tx`select 1 from share_uploads u join shares s on s.id = u.share_id
+        where s.user_id = ${userId} and u.started_at > ${new Date(app.now().getTime() - UPLOAD_LEASE_MS)} limit 1`;
+      if (activeUploads.length) throw new Error('a share upload is still in flight');
       const done = new Set(keys);
       if (user.stripe_customer_id !== locked.customer || (await objectKeys(tx, userId)).some((key) => !done.has(key))) {
         throw new Error('a customer, share or job was added during deletion');
       }
-      // Metered guild jobs are the guild's usage ledger: cascading them would refill the pool on every delete and re-signup. Only
-      // 'done' rows carry core_seconds. A still-running one cascades and its completion is dropped as 'lost' (one job, unmetered).
-      await tx`update compute_jobs set user_id = null, request = null, payload = null, summary = null, meta = null
-        where user_id = ${userId} and guild_id is not null and status = 'done'`;
+      // All metered terminal guild jobs are the guild's ledger, including failures/cancels and work stopped above.
+      // Remove personal payloads while preserving usage/cost; cascading these rows would refill the pool on re-signup.
+      await tx`update compute_jobs set user_id = null, character_id = null, idempotency_key = null,
+          request = null, payload = null, summary = null, meta = null, error = null, guild_role_ids = null
+        where user_id = ${userId} and guild_id is not null and (status = 'done' or core_seconds > 0 or cost_usd > 0)`;
       await tx`delete from users where id = ${userId}`;
       // user_id null: the row it would point at is gone. The id stays in the detail so the log still says who.
       await audit(tx, { userId: null, actor, action: 'account.deleted',

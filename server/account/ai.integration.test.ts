@@ -15,6 +15,7 @@ import { createR2 } from './r2';
 import { createSession } from './session';
 import { deleteAccount, exportAccount } from './users';
 import { usedCostUsd } from './usage';
+import { SCOPE_LOCK } from './compute/queue';
 
 const PG = process.env.FROSTSIM_TEST_PG;
 const ORIGIN = 'https://sim.test';
@@ -63,7 +64,7 @@ describe.skipIf(!PG)('ai postgres integration (needs FROSTSIM_TEST_PG)', () => {
     await admin?.end();
   });
 
-  async function newUser(plan = false) {
+  async function newUser(plan = false, requestHandler = handle) {
     const [user] = await sql`insert into users (display_name) values ('Player') returning id`;
     if (plan) {
       await sql`insert into subscriptions (stripe_subscription_id, user_id, status, current_period_start, current_period_end, items)
@@ -71,7 +72,7 @@ describe.skipIf(!PG)('ai postgres integration (needs FROSTSIM_TEST_PG)', () => {
           ${sql.json([{ lookupKey: 'compute_s_monthly', quantity: 1, unitAmount: 500, currency: 'usd' }])})`;
     }
     const { cookie } = await createSession(app, user.id);
-    const explain = (envelope: unknown = { kind: 'weights', context: { weights: [] } }, raw?: Uint8Array) => handle(new Request(`${ORIGIN}/api/v1/ai/explain`, {
+    const explain = (envelope: unknown = { kind: 'weights', context: { weights: [] } }, raw?: Uint8Array) => requestHandler(new Request(`${ORIGIN}/api/v1/ai/explain`, {
       method: 'POST',
       headers: { cookie: cookie.split(';')[0], origin: ORIGIN, 'content-type': 'application/gzip' },
       body: (raw ?? new Uint8Array(gzipSync(JSON.stringify(envelope)))) as Uint8Array<ArrayBuffer>,
@@ -140,6 +141,100 @@ describe.skipIf(!PG)('ai postgres integration (needs FROSTSIM_TEST_PG)', () => {
     const { periodStart, periodEnd } = calendarMonth(new Date());
     expect(await usedCostUsd(sql, { userId: id }, periodStart, periodEnd)).toBeCloseTo(1.75, 6);
     expect(await usedCostUsd(sql, { guildId: guild }, periodStart, periodEnd)).toBeCloseTo(0.7, 6);
+  });
+
+  it('serializes AI and compute money reservations for the same plan scope', async () => {
+    let releaseCompute = () => {};
+    const gate = new Promise<void>((resolve) => (releaseCompute = resolve));
+    let compute: Promise<unknown>;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const coordinated = new Proxy(sql, {
+      get(target, key, receiver) {
+        if (key !== 'begin') return Reflect.get(target, key, receiver);
+        return (fn: (tx: Sql) => Promise<unknown>) => target.begin(async (tx) => {
+          timer = setTimeout(releaseCompute, 150);
+          const paused = new Proxy(tx, {
+            apply(query, self, args) {
+              const pending = Reflect.apply(query, self, args);
+              if (Array.isArray(args[0]) && args[0].join('').includes(')::float8 as used')) {
+                return pending.then(async (rows: unknown) => {
+                  releaseCompute();
+                  await compute;
+                  return rows;
+                });
+              }
+              return pending;
+            },
+          });
+          return fn(paused as unknown as Sql);
+        });
+      },
+    });
+    const { id, explain } = await newUser(true, createApp({ ...app, sql: coordinated }, routes));
+    await sql`insert into compute_jobs (user_id, source, pack_id, threads, status, cost_usd)
+      values (${id}, 'web', 'p', 8, 'done', ${PAID - 0.06})`;
+    let entered = () => {};
+    const started = new Promise<void>((resolve) => (entered = resolve));
+    compute = sql.begin(async (tx) => {
+      await tx`select pg_advisory_xact_lock(${SCOPE_LOCK}::int, hashtext(${`u:${id}`}::text))`;
+      await tx`insert into compute_jobs (user_id, source, pack_id, threads, status, reserve_usd)
+        values (${id}, 'web', 'p', 8, 'running', 0.04)`;
+      entered();
+      await gate;
+    });
+    await started;
+    replies.push({ fail: true });
+    try {
+      const res = await explain();
+      expect([res.status, (await res.json()).error]).toEqual([402, 'cost-cap']);
+      expect(await sql`select 1 from ai_calls where user_id = ${id}`).toHaveLength(0);
+    } finally {
+      if (timer) clearTimeout(timer);
+      releaseCompute();
+      await compute;
+      replies.length = 0;
+    }
+  });
+
+  it('serializes the last global AI reservation across different accounts', async () => {
+    const [{ spent }] = await sql`select coalesce(sum(cost_usd), 0)::float8 as spent from ai_calls`;
+    const capApp = { ...app, config: { ...app.config, env: { ...app.config.env, AI_MONTHLY_USD_CAP: String(spent + 0.050001) } } };
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    let reads = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const coordinated = new Proxy(sql, {
+      get(target, key, receiver) {
+        if (key !== 'begin') return Reflect.get(target, key, receiver);
+        return (fn: (tx: Sql) => Promise<unknown>) => target.begin(async (tx) => fn(new Proxy(tx, {
+          apply(query, self, args) {
+            const pending = Reflect.apply(query, self, args);
+            if (Array.isArray(args[0]) && args[0].join('').includes('as spent from ai_calls')) {
+              return pending.then(async (rows: unknown) => {
+                if (++reads === 2) release();
+                else timer = setTimeout(release, 150);
+                await gate;
+                return rows;
+              });
+            }
+            return pending;
+          },
+        }) as unknown as Sql));
+      },
+    });
+    const requestHandler = createApp({ ...capApp, sql: coordinated }, routes);
+    const a = await newUser(false, requestHandler);
+    const b = await newUser(false, requestHandler);
+    replies.push({ fail: true }, { fail: true });
+    try {
+      const results = await Promise.all([a.explain(), b.explain()]);
+      expect(results.map((r) => r.status).sort()).toEqual([502, 503]);
+      expect(await sql`select 1 from ai_calls where user_id in ${sql([a.id, b.id])}`).toHaveLength(1);
+    } finally {
+      if (timer) clearTimeout(timer);
+      release();
+      replies.length = 0;
+    }
   });
 
   it('saves a note, recalls it, and keeps only the newest 20 per player and character', async () => {

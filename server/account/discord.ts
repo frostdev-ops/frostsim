@@ -387,7 +387,7 @@ async function startRun(app: AppCtx, i: Interaction, discordId: string, received
   const ids: string[] = [];
   let fellBack = false;
   for (const r of requests) {
-    let job = await enqueueJob(app, { userId, guildId, source: 'discord', packId, request: r, characterId });
+    let job = await enqueueJob(app, { userId, guildId, source: 'discord', packId, request: r, characterId, guildRoleIds: i.member?.roles ?? [] });
     // The server's pool is used up for this period: run it on the member's own plan instead, if they have one.
     if (!job.ok && guildId !== null && (job.code === 'no-allowance' || job.code === 'cost-cap') && !ids.length) {
       fellBack = true;

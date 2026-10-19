@@ -66,6 +66,64 @@ export const tags = (xml: string, tag: string): string[] =>
 /** The `<item>` bodies of a list whose items hold no nested items. */
 const items = (xml: string): string[] => [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)].map((m) => m[1]);
 
+interface InventoryNode { name: string; text: string; children: InventoryNode[] }
+/** A complete inventory is evidence of absence. Validate its XML structure and required nested sets before using that evidence.
+ *  This intentionally rejects unsupported XML constructs instead of interpreting a partial document as an empty fleet. */
+function instanceInventory(xml: string): { ids: string[]; next: string | null } {
+  const invalid = () => new Error('ec2 inventory response is malformed or incomplete');
+  if (xml.length > (16 << 20)) throw invalid();
+  const scan = /<(?:[^>"']|"[^"]*"|'[^']*')*>|[^<]+/gy;
+  const stack: InventoryNode[] = [];
+  let root: InventoryNode | null = null, offset = 0, count = 0;
+  while (offset < xml.length) {
+    const match = scan.exec(xml);
+    if (!match || match.index !== offset) throw invalid();
+    const token = match[0];
+    offset = scan.lastIndex;
+    if (!token.startsWith('<')) {
+      if (stack.length) stack[stack.length - 1].text += token;
+      else if (token.trim()) throw invalid();
+      continue;
+    }
+    if (/^<\?xml\s[^?]*\?>$/.test(token) && !root) continue;
+    const close = /^<\/([A-Za-z_][\w:.-]*)\s*>$/.exec(token);
+    if (close) {
+      if (stack.pop()?.name !== close[1]) throw invalid();
+      continue;
+    }
+    const open = /^<([A-Za-z_][\w:.-]*)(?:\s[^<>]*?)?\s*(\/?)>$/.exec(token);
+    if (!open || ++count > 100_000 || stack.length >= 128) throw invalid();
+    const node: InventoryNode = { name: open[1], text: '', children: [] };
+    if (stack.length) stack[stack.length - 1].children.push(node);
+    else if (root) throw invalid();
+    else root = node;
+    if (!open[2]) stack.push(node);
+  }
+  if (stack.length || root?.name !== 'DescribeInstancesResponse') throw invalid();
+  const one = (node: InventoryNode, name: string) => {
+    const children = node.children.filter((c) => c.name === name);
+    if (children.length !== 1) throw invalid();
+    return children[0];
+  };
+  const reservations = one(root, 'reservationSet');
+  if (root.text.trim() || reservations.text.trim()) throw invalid();
+  const ids: string[] = [];
+  for (const reservation of reservations.children) {
+    if (reservation.name !== 'item' || reservation.text.trim()) throw invalid();
+    const instances = one(reservation, 'instancesSet');
+    if (instances.text.trim()) throw invalid();
+    for (const instance of instances.children) {
+      if (instance.name !== 'item' || instance.text.trim()) throw invalid();
+      const id = one(instance, 'instanceId');
+      if (id.children.length || !/^i-[a-f0-9]+$/.test(id.text)) throw invalid();
+      ids.push(id.text);
+    }
+  }
+  const next = root.children.filter((c) => c.name === 'nextToken');
+  if (next.length > 1 || next.some((n) => n.children.length)) throw invalid();
+  return { ids, next: next[0]?.text || null };
+}
+
 export class Ec2Error extends Error {
   constructor(readonly action: string, readonly status: number, readonly code: string) {
     super(`ec2 ${action} failed with status ${status} (${code})`);
@@ -138,14 +196,20 @@ export function ec2(limits: Ec2Limits, fetchFn: typeof fetch) {
         MaxResults: '1000',
       };
       const ids = new Set<string>();
+      const seenTokens = new Set<string>();
       for (let token: string | null = null, pages = 0; pages < 10; pages++) {
         const xml = await call('DescribeInstances', token ? { ...params, NextToken: token } : params);
-        for (const id of tags(xml, 'instanceId')) if (id.startsWith('i-')) ids.add(id);
-        // The response's own nextToken is its last element; nested ones do not exist in DescribeInstances.
-        token = tags(xml, 'nextToken').at(-1) || null;
-        if (!token) break;
+        const inventory = instanceInventory(xml);
+        for (const id of inventory.ids) {
+          if (ids.has(id)) throw new Error('ec2 inventory contains duplicate instance ids');
+          ids.add(id);
+        }
+        token = inventory.next;
+        if (!token) return [...ids];
+        if (seenTokens.has(token)) throw new Error('ec2 inventory pagination token repeated');
+        seenTokens.add(token);
       }
-      return [...ids];
+      throw new Error('ec2 inventory exceeds the complete-listing page limit');
     },
     /** An instance that no longer exists counts as terminated. */
     async terminate(id: string): Promise<void> {

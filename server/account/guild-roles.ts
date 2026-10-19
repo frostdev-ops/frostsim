@@ -33,12 +33,12 @@ export async function roleLimits(db: Db, guildId: string): Promise<RoleLimits> {
 }
 
 /** Why this member may not draw on the pool right now, or null. `pool` is the guild's live entitlement. */
-export async function memberRefusal(app: Pick<AppCtx, 'sql'>, guildId: string, userId: string, roleIds: readonly string[],
+export async function memberRefusal(app: { sql: Db }, guildId: string, userId: string, roleIds: readonly string[],
   pool: { periodStart: Date; periodEnd: Date }): Promise<string | null> {
   const allowance = memberAllowance(guildId, await roleLimits(app.sql, guildId), roleIds);
   if (allowance === null) return null;
   if (allowance === 0) return "Your roles in this server don't include its cloud runs.";
-  // ponytail: checked before the enqueue, so two /sim at once can both pass and overrun by one run; lock per member if that matters.
+  // enqueue provides an early refusal; claimJob repeats this check under the guild scope lock before every queued run.
   const used = await usedCoreSeconds(app.sql, { guildId, userId }, pool.periodStart, pool.periodEnd);
   return used >= allowance ? "You've used your share of this server's cloud runs this month." : null;
 }

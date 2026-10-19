@@ -49,13 +49,22 @@ export function hcloud(token: string, fetchFn: typeof fetch) {
     /** Ids of every server labelled frostsim=worker, all pages. */
     async workerServers(): Promise<number[]> {
       const ids: number[] = [];
-      for (let page: number | null = 1; page; ) {
+      const seen = new Set<number>();
+      for (let page = 1; page <= 100; page++) {
         const data = await call('GET', `/servers?label_selector=${encodeURIComponent(WORKER_LABEL)}&per_page=50&page=${page}`);
-        for (const server of data?.servers ?? []) if (Number.isSafeInteger(server?.id)) ids.push(server.id);
+        if (!Array.isArray(data?.servers) || !data?.meta?.pagination || !Object.hasOwn(data.meta.pagination, 'next_page')) {
+          throw new Error('hcloud inventory is malformed or incomplete');
+        }
+        for (const server of data.servers) {
+          if (!Number.isSafeInteger(server?.id) || server.id <= 0 || seen.has(server.id)) throw new Error('hcloud inventory contains invalid or duplicate server ids');
+          ids.push(server.id);
+          seen.add(server.id);
+        }
         const next = data?.meta?.pagination?.next_page;
-        page = Number.isSafeInteger(next) && next > page ? next : null;
+        if (next === null) return ids;
+        if (next !== page + 1) throw new Error('hcloud inventory pagination is malformed or incomplete');
       }
-      return ids;
+      throw new Error('hcloud inventory exceeds the complete-listing page limit');
     },
     async createServer(spec: ServerSpec): Promise<number> {
       const data = await call('POST', '/servers', {
@@ -80,26 +89,38 @@ export function hcloud(token: string, fetchFn: typeof fetch) {
       const data = await call('GET', `/server_types?name=${encodeURIComponent(name)}`);
       return data?.server_types?.[0] ?? null;
     },
+    async pricing(): Promise<{ currency: string; primary_ips: { type: string; prices: { location: string; price_hourly: { gross: string } }[] }[] }> {
+      const data = await call('GET', '/pricing');
+      return data?.pricing;
+    },
   };
 }
 
 export type Hcloud = ReturnType<typeof hcloud>;
 
-export interface Price { hourlyEur: number; cores: number }
+export interface Price { hourly: number; currency: 'USD' | 'EUR'; cores: number }
 
-let priceCache: { key: string; until: number; value: Price } | null = null;
+// Provider clients own their credentials/fetch surface. Never share a quote across projects or currencies.
+const priceCache = new WeakMap<Hcloud, { key: string; until: number; value: Price }>();
 
 /** Gross hourly price (VAT included: the cap must hold whatever the invoice says) and cores of the configured type, cached 1 h. */
 export async function serverPrice(api: Hcloud, limits: HetznerLimits, now: Date): Promise<Price> {
-  const key = `${limits.serverType}@${limits.location}`;
-  if (priceCache?.key === key && priceCache.until > now.getTime()) return priceCache.value;
+  const pricing = await api.pricing();
+  if (pricing?.currency !== 'USD' && pricing?.currency !== 'EUR') throw new Error('hcloud pricing currency is unsupported or missing');
+  const key = `${limits.serverType}@${limits.location}:${pricing.currency}`;
+  const cached = priceCache.get(api);
+  if (cached?.key === key && cached.until > now.getTime()) return cached.value;
   const type = await api.serverType(limits.serverType);
-  const hourlyEur = Number(type?.prices?.find((p) => p.location === limits.location)?.price_hourly?.gross);
-  if (!type || !Number.isInteger(type.cores) || !(hourlyEur > 0)) {
+  const base = Number(type?.prices?.find((p) => p.location === limits.location)?.price_hourly?.gross);
+  // createServer provisions a Primary IPv6, with IPv4/backups/volumes disabled. Include its actual price, even when zero.
+  const extra = Number(pricing.primary_ips?.find((p) => p.type === 'ipv6')?.prices?.find((p) => p.location === limits.location)?.price_hourly?.gross);
+  if (!type || !Number.isInteger(type.cores) || type.cores <= 0 || !Number.isFinite(base) || !(base > 0)
+    || !Number.isFinite(extra) || extra < 0) {
     throw new Error(`hcloud has no hourly price for ${limits.serverType} in ${limits.location}`);
   }
-  priceCache = { key, until: now.getTime() + HOUR_MS, value: { hourlyEur, cores: type.cores } };
-  return priceCache.value;
+  const value: Price = { hourly: base + extra, currency: pricing.currency, cores: type.cores };
+  priceCache.set(api, { key, until: now.getTime() + HOUR_MS, value });
+  return value;
 }
 
 /** The configured server type as a fleet provider. Its offer is priced in USD at `usdPerEur`, gross, as the invoice bills it. */
@@ -110,7 +131,8 @@ export function hetznerProvider(limits: HetznerLimits, usdPerEur: number, fetchF
     list: async () => (await api.workerServers()).map(String),
     async offers(now) {
       const price = await serverPrice(api, limits, now);
-      const hourlyUsd = price.hourlyEur * usdPerEur;
+      const hourlyUsd = price.hourly * (price.currency === 'EUR' ? usdPerEur : 1);
+      if (!Number.isFinite(hourlyUsd) || hourlyUsd <= 0) throw new Error('hcloud price conversion is unavailable');
       const offer: Offer = { provider: 'hetzner', size: limits.serverType, cores: price.cores, hourlyUsd, maxHourlyUsd: hourlyUsd, billing: 'hour', bootS: BOOT_S };
       return [offer];
     },

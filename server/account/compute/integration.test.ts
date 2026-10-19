@@ -18,9 +18,9 @@ import { createSession } from '../session';
 import { sha256Hex } from '../signed';
 import type { SimRequest } from '../../../src/lib/simc/assemble';
 import { DEFAULT_SETTINGS } from '../../../src/lib/simc/options';
-import { SCOPE_LOCK, cancelJob, claimJob, completeJob as finishJob, enqueueJob, expireJobs, failJob, jobView, progressJob, resultBytes, tasks as queueTasks } from './queue';
+import { SCOPE_LOCK, cancelJob, claimJob, completeJob as finishJob, enqueueJob, expireJobs, failJob, jobView, progressJob, releaseJobs, resultBytes, tasks as queueTasks } from './queue';
 import { HEARTBEAT_LOSS_MS, tick } from './autoscaler';
-import { PROVIDER_COOLDOWN_MS, rememberOffers } from './fleet';
+import { PROVIDER_COOLDOWN_MS, monthSpend, rememberOffers, spendRows } from './fleet';
 import { routes as clientRoutes } from './routes';
 import { routes as workerRoutes } from './worker-routes';
 
@@ -69,17 +69,26 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
   let nextServer = 1000;
   /** Status every hcloud create answers with while set. */
   let createFails = 0;
+  let deleteFails = 0;
+  let deletePending = false;
+  let listingFails = false;
+  let listingMalformed = false;
   const fakeFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const req = input instanceof Request ? input : new Request(input, init);
     const url = new URL(req.url);
     if (url.hostname === 'api.hetzner.cloud') {
       const body = req.method === 'POST' ? await req.json() : null;
       hcloudCalls.push({ method: req.method, path: url.pathname, body });
-      if (req.method === 'GET' && url.pathname === '/v1/servers') return Response.json({ servers: [...servers.values()], meta: { pagination: { next_page: null } } });
+      if (req.method === 'GET' && url.pathname === '/v1/servers') return listingFails
+        ? new Response(null, { status: 503 })
+        : Response.json(listingMalformed ? {} : { servers: [...servers.values()], meta: { pagination: { next_page: null } } });
       if (req.method === 'GET' && url.pathname === '/v1/server_types') {
         const cores = url.searchParams.get('name') === 'ccx33' ? 8 : 32;
         return Response.json({ server_types: [{ cores, prices: [{ location: 'fsn1', price_hourly: { net: '0.5', gross: '0.595' } }] }] });
       }
+      if (req.method === 'GET' && url.pathname === '/v1/pricing') return Response.json({ pricing: { currency: 'EUR', primary_ips: [
+        { type: 'ipv6', prices: [{ location: 'fsn1', price_hourly: { gross: '0.0000' } }] },
+      ] } });
       if (req.method === 'POST' && url.pathname === '/v1/servers') {
         if (createFails) return Response.json({ error: { code: 'blocked' } }, { status: createFails });
         const server = { id: nextServer++ };
@@ -87,7 +96,11 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
         return Response.json({ server, root_password: null });
       }
       const del = /^\/v1\/servers\/(\d+)$/.exec(url.pathname);
-      if (req.method === 'DELETE' && del) return new Response('{}', { status: servers.delete(Number(del[1])) ? 200 : 404 });
+      if (req.method === 'DELETE' && del) {
+        if (deleteFails) return new Response('{}', { status: deleteFails });
+        if (deletePending) return new Response('{}', { status: 200 });
+        return new Response('{}', { status: servers.delete(Number(del[1])) ? 200 : 404 });
+      }
       return new Response(null, { status: 500 });
     }
     const [, bucket, ...key] = url.pathname.split('/');
@@ -180,6 +193,10 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
     servers.clear();
     hcloudCalls.length = 0;
     uploaded.clear();
+    deleteFails = 0;
+    deletePending = false;
+    listingFails = false;
+    listingMalformed = false;
   });
 
   it('enqueues with the entitlement thread count and stores the assembled payload', async () => {
@@ -234,6 +251,25 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
     expect(await sql`select count(*)::int as n from compute_jobs where user_id = ${u}`).toEqual([{ n: 0 }]);
     await sql`update users set suspended_at = null where id = ${u}`;
     expect(await enqueue(u)).toMatchObject({ ok: true });
+  });
+
+  it('refuses queued work at claim after suspension or loss of admin authorization, including guild scopes', async () => {
+    const w = await addWorker();
+    const guild = `g${randomBytes(4).toString('hex')}`;
+    await user({ lookupKey: 'discord_guild_monthly', coreHours: 1 }, guild);
+    for (const guildId of [null, guild]) {
+      const u = await user();
+      const id = ((await enqueue(u, {}, guildId)) as { id: string }).id;
+      await sql`update users set suspended_at = ${now()} where id = ${u}`;
+      expect(await claimJob(app(), w.id, 32)).toBeNull();
+      expect(await jobRow(id)).toMatchObject({ status: 'failed', attempts: 0, worker_id: null, reserve_usd: null });
+    }
+    const u = await user();
+    await sql`update users set role = 'admin' where id = ${u}`;
+    const id = ((await enqueue(u)) as { id: string }).id;
+    await sql`update users set role = 'user' where id = ${u}`;
+    expect(await claimJob(app({ ADMIN_ONLY: '1' }), w.id, 32)).toBeNull();
+    expect(await jobRow(id)).toMatchObject({ status: 'failed', attempts: 0 });
   });
 
   it('refuses a non-admin under ADMIN_ONLY for every source, and lets an admin through', async () => {
@@ -291,6 +327,28 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
     await sql`update compute_jobs set status = 'done', core_seconds = 3600 where id = ${(first as { id: string }).id}`;
     expect(await enqueue(member, {}, guild)).toMatchObject({ ok: false, status: 402, code: 'no-allowance' });
     expect(await cancelJob(app(), (ids[1] as { id: string }).id, { guildId: guild })).toBe(true);
+  });
+
+  it('rechecks a Discord member role allowance when each queued job is claimed', async () => {
+    const guild = '12345678901234567';
+    const role = '23456789012345678';
+    await user({ lookupKey: 'discord_guild_monthly', coreHours: 1 }, guild);
+    const u = await user(null);
+    const w = await addWorker();
+    await sql`insert into guild_role_limits (guild_id, role_id, core_seconds) values (${guild}, ${role}, 8)`;
+    const input = { userId: u, guildId: guild, source: 'discord' as const, packId: PACK, request: simRequest(), guildRoleIds: [role] };
+    const first = ((await enqueueJob(app(), input)) as { id: string }).id;
+    clock += 1; // distinct queue timestamps: SQL intentionally does not promise order for ties
+    const second = ((await enqueueJob(app(), input)) as { id: string }).id;
+    expect(await claimJob(app(), w.id, 32)).toMatchObject({ id: first });
+    await sql`update compute_jobs set status = 'done', core_seconds = 8 where id = ${first}`;
+    expect(await claimJob(app(), w.id, 32)).toBeNull();
+    expect(await jobRow(second)).toMatchObject({ status: 'failed', attempts: 0, error: "You've used your share of this server's cloud runs this month." });
+    // The stored signed roles are evaluated against current configured limits, not a frozen numeric allowance.
+    const third = ((await enqueueJob(app(), input)) as { id: string }).id;
+    await sql`update guild_role_limits set core_seconds = 0 where guild_id = ${guild} and role_id = ${role}`;
+    expect(await claimJob(app(), w.id, 32)).toBeNull();
+    expect(await jobRow(third)).toMatchObject({ status: 'failed', attempts: 0, error: "Your roles in this server don't include its cloud runs." });
   });
 
   it('never gives two concurrently claiming workers the same job, and runs one job per scope', async () => {
@@ -674,6 +732,94 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
   });
 
   describe('autoscaler tick', () => {
+    it('never treats a malformed successful listing as proof that a billable worker is absent', async () => {
+      const w = await addWorker({ hcloudId: 811, createdAt: new Date(clock - 10 * 60_000) });
+      servers.set(811, { id: 811 });
+      await enqueue(await user());
+      listingMalformed = true;
+      await tick(app({ WORKER_MAX: '1' }));
+      expect((await sql`select deleted_at from workers where id = ${w.id}`)[0].deleted_at).toBeNull();
+      expect(hcloudCalls.filter((c) => c.method === 'POST')).toHaveLength(0);
+      expect(servers.has(811)).toBe(true);
+    });
+
+    it('serializes a claim against worker retirement before reading its ready state', async () => {
+      const w = await addWorker();
+      const id = ((await enqueue(await user())) as { id: string }).id;
+      let release = () => {};
+      const hold = new Promise<void>((resolve) => (release = resolve));
+      let entered = () => {};
+      const started = new Promise<void>((resolve) => (entered = resolve));
+      const retiring = sql.begin(async (tx) => {
+        await tx`update workers set status = 'draining' where id = ${w.id}`;
+        entered();
+        await hold;
+        await releaseJobs(tx, tx`worker_id = ${w.id}`, now());
+      });
+      await started;
+      // A short local database lock timeout bounds the test: a safe claim waits for the retirement's row lock.
+      // Without that serialization it sees the previously committed ready state and starts the job instead.
+      const bounded = new Proxy(sql, {
+        get(target, key, receiver) {
+          if (key !== 'begin') return Reflect.get(target, key, receiver);
+          return (fn: (tx: Sql) => Promise<unknown>) => target.begin(async (tx) => {
+            await tx`set local lock_timeout = '100ms'`;
+            return fn(tx as unknown as Sql);
+          });
+        },
+      });
+      try {
+        await expect(claimJob({ ...app(), sql: bounded }, w.id, 32)).rejects.toMatchObject({ code: '55P03' });
+      } finally {
+        release();
+        await retiring;
+      }
+      expect(await jobRow(id)).toMatchObject({ status: 'queued', worker_id: null, attempts: 0 });
+      expect(await claimJob(app(), w.id, 32)).toBe('draining');
+    });
+
+    it('retains a failed deletion in spend and WORKER_MAX, revokes its token and retries until absence is confirmed', async () => {
+      const w = await addWorker({ hcloudId: 810, createdAt: new Date(clock - 10 * 60_000) });
+      servers.set(810, { id: 810 });
+      const id = ((await enqueue(await user())) as { id: string }).id;
+      expect(await claimJob(app(), w.id, 32)).toMatchObject({ id });
+      await enqueue(await user());
+      clock += HEARTBEAT_LOSS_MS + 1000;
+      deleteFails = 503;
+      const capped = app({ WORKER_MAX: '1' });
+      await tick(capped);
+      expect((await sql`select status, deleted_at from workers where id = ${w.id}`)[0]).toEqual({ status: 'draining', deleted_at: null });
+      expect(await jobRow(id)).toMatchObject({ status: 'queued', worker_id: null, attempts: 1 });
+      const claim = await handle(capped)(new Request(`${ORIGIN}/api/v1/worker/claim`, {
+        method: 'POST', body: JSON.stringify({ freeCores: 32, agentVersion: '2' }),
+        headers: { authorization: `Bearer ${w.token}`, 'content-type': 'application/json' },
+      }), '10.0.0.81');
+      expect(claim.status).toBe(401);
+      const spend = () => spendRows(sql, now(), 1).then((rows) => monthSpend(rows, now()));
+      const before = await spend();
+      clock += 2 * 3600_000;
+      await tick(capped);
+      expect(await spend()).toBeGreaterThan(before);
+      expect(hcloudCalls.filter((c) => c.method === 'POST')).toHaveLength(0);
+      expect(hcloudCalls.filter((c) => c.method === 'DELETE')).toHaveLength(2);
+      expect(servers.has(810)).toBe(true);
+
+      // A successful DELETE may only acknowledge an asynchronous request. Until a successful
+      // listing proves absence, its row and provider slot must continue to count.
+      deleteFails = 0;
+      deletePending = true;
+      await tick(capped);
+      expect((await sql`select deleted_at from workers where id = ${w.id}`)[0].deleted_at).toBeNull();
+      expect(hcloudCalls.filter((c) => c.method === 'POST')).toHaveLength(0);
+      listingFails = true;
+      deletePending = false;
+      await tick(capped);
+      expect((await sql`select deleted_at from workers where id = ${w.id}`)[0].deleted_at).toBeNull();
+      listingFails = false;
+      await tick(capped);
+      expect((await sql`select status, deleted_at from workers where id = ${w.id}`)[0]).toEqual({ status: 'deleted', deleted_at: now() });
+    });
+
     it('creates a server when demand exceeds free cores, storing the token hash first', async () => {
       const id = ((await enqueue(await user())) as { id: string }).id;
       await tick(app());
