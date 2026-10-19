@@ -23,9 +23,9 @@ import { usedCoreSeconds } from './usage';
 const PG = process.env.FROSTSIM_TEST_PG;
 const REDIS = process.env.FROSTSIM_TEST_REDIS;
 const MIGRATIONS = new URL('./migrations/', import.meta.url);
-const VERSIONS = ['001_init', '002_indexes', '003_character_history', '004_job_idempotency', '005_guild_role_limits', '006_providers', '007_job_kind', '008_ai'];
+const VERSIONS = ['001_init', '002_indexes', '003_character_history', '004_job_idempotency', '005_guild_role_limits', '006_providers', '007_job_kind', '008_ai', '009_audit_recovery', '010_compute_member_roles'];
 const TABLES = ['ai_calls', 'ai_memory', 'audit_log', 'character_sims', 'character_snapshots', 'cloud_characters', 'compute_jobs', 'guild_role_limits', 'identities', 'integration_grants', 'schema_migrations',
-  'sessions', 'shares', 'stripe_events', 'subscriptions', 'users', 'workers'];
+  'sessions', 'share_uploads', 'shares', 'stripe_events', 'subscriptions', 'users', 'workers'];
 
 // Commands fail fast until the connection is up (enableOfflineQueue false), so wait for it before asserting.
 const ready = (r: Redis) => (r.status === 'ready' ? Promise.resolve() : new Promise<void>((resolve) => r.once('ready', () => resolve())));
