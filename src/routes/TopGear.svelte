@@ -1145,6 +1145,18 @@
     return changeList(state).map((c) => `${c.slot}: ${c.name}`).join(', ') || state.candidate.provenance.label
   }
 
+  function showSection(id: string): void {
+    const section = document.getElementById(id)
+    if (!section) return
+    // Section shortcuts also reveal the destination when it is inside a disclosure.
+    let parent: HTMLElement | null = section
+    while (parent) {
+      if (parent instanceof HTMLDetailsElement) parent.open = true
+      parent = parent.parentElement
+    }
+    section.scrollIntoView({ behavior: reducedMotion() ? 'instant' : 'smooth', block: 'start' })
+  }
+
   function changeList(state: (typeof measured)[number], reference?: (typeof measured)[number]): NonNullable<ComparisonRow['changes']> {
     const gear = state.candidate.delta.gear
     const resolved = new Map([...app.resolved, ...state.candidate.provenance.items.map((item) => [item.instanceId, item] as const)])
@@ -1225,7 +1237,7 @@
 
       <nav class="quick-nav" aria-label="Top Gear sections">
         {#each [['gear-vault', 'Great Vault'], ['gear-items', 'Gear'], ['gear-enhancements', 'Enhancements'], ['gear-consumables', 'Consumables'], ['gear-talents', 'Talents'], ['gear-options', 'Options']] as [id, label]}
-          <button class="ghost sm" onclick={() => document.getElementById(id)?.scrollIntoView({ behavior: reducedMotion() ? 'instant' : 'smooth', block: 'start' })}>{label}</button>
+          <button class="ghost sm" onclick={() => showSection(id)}>{label}</button>
         {/each}
       </nav>
 
@@ -1371,10 +1383,15 @@
       {/if}
 
       {#if character}
-        <EnhancementPicker {character} items={enhancementItems} bind:gems bind:enchants bind:consumables />
+        <details class="disclosure secondary-choices">
+          <summary>Gems, enchants &amp; consumables <span class="chip">{Object.values(gems).reduce((n, rows) => n + (rows?.length ?? 0), 0) + Object.values(enchants).reduce((n, rows) => n + (rows?.length ?? 0), 0) + Object.values(consumables).reduce((n, rows) => n + rows.length, 0)} alternatives selected</span></summary>
+          <EnhancementPicker {character} items={enhancementItems} bind:gems bind:enchants bind:consumables />
+        </details>
       {/if}
 
-      <section id="gear-talents" class="stack-sm gear-section">
+      <details id="gear-talents" class="disclosure secondary-choices gear-section">
+        <summary>Talents <span class="chip">{selectedLoadouts.length ? `${selectedLoadouts.length} alternatives selected` : 'Active loadout'}</span></summary>
+        <section class="stack-sm">
         <div class="spread"><h2>Talents</h2><a href={href('talents')}>Open talent editor →</a></div>
 
         <div class="loadout-cards">
@@ -1383,7 +1400,8 @@
             <div class="loadout-preview"><label class="loadout-card" class:picked={selectedLoadouts.includes(loadout.talents)}><input type="checkbox" bind:group={selectedLoadouts} value={loadout.talents} /><strong>{loadout.name}</strong></label><TalentPreview {character} talents={loadout.talents} /></div>
           {/each}
         </div>
-      </section>
+        </section>
+      </details>
 
       {#if embellishmentCatalog.length}
         <details class="disclosure">
@@ -1498,10 +1516,10 @@
         </details>
       {/if}
 
-      <section id="gear-options" class="stack gear-section">
-        <h2>Simulation options</h2>
+      <details id="gear-options" class="disclosure secondary-choices gear-section">
+        <summary>Simulation options <span class="small muted">{settings.fightStyle} · {settings.targets} target{settings.targets === 1 ? '' : 's'} · {settings.maxTime}s</span></summary>
         <SettingsForm settings={settings} staged perCandidate />
-      </section>
+      </details>
 
       <details class="disclosure">
         <summary>Upgrade budget</summary>

@@ -43,34 +43,22 @@
     Network, Settings, Sparkles, SquareTerminal, TriangleAlert, User, X, Zap,
   } from '@lucide/svelte'
   import Character from './routes/Character.svelte'
-  import QuickSim from './routes/QuickSim.svelte'
-  import Compare from './routes/Compare.svelte'
-  import TopGear from './routes/TopGear.svelte'
-  import Droptimizer from './routes/Droptimizer.svelte'
-  import CrestSim from './routes/CrestSim.svelte'
-  import Advanced from './routes/Advanced.svelte'
-  import Reports from './routes/Reports.svelte'
-  import SharedReport from './routes/SharedReport.svelte'
-
-  const SCREENS = {
-    character: Character,
-    quick: QuickSim,
-    compare: Compare,
-    gear: TopGear,
-    droptimizer: Droptimizer,
-    crests: CrestSim,
-    advanced: Advanced,
-    reports: Reports,
-  }
-
-  /** Talents and Help lazy-load (not on path to first result, budget constraint at 150 kB). */
+  /** Download each tool on use; importing a character does not need the other screens. */
   const LAZY: Partial<Record<RouteName, () => Promise<{ default: Component }>>> = {
+    quick: () => import('./routes/QuickSim.svelte'),
+    compare: () => import('./routes/Compare.svelte'),
+    gear: () => import('./routes/TopGear.svelte'),
+    droptimizer: () => import('./routes/Droptimizer.svelte'),
+    crests: () => import('./routes/CrestSim.svelte'),
+    advanced: () => import('./routes/Advanced.svelte'),
+    reports: () => import('./routes/Reports.svelte'),
     talents: () => import('./routes/Talents.svelte'),
     help: () => import('./routes/Help.svelte'),
     pi: () => import('./routes/PowerInfusion.svelte'),
   }
 
-  const lazyLoader = $derived(LAZY[router.name])
+  const lazyLoader = $derived(router.raw.startsWith('r/') || (import.meta.env.VITE_FEATURE_ACCOUNTS === true && router.raw.startsWith('s/'))
+    ? () => import('./routes/SharedReport.svelte') : LAZY[router.name])
 
   let settingsOpen = $state(false)
 
@@ -101,7 +89,6 @@
   const character = $derived(activeCharacter())
   const stored = $derived(activeStored())
   const busy = $derived(isBusy())
-  const Screen = $derived(SCREENS[router.name as keyof typeof SCREENS])
 
   applyTheme()
 
@@ -292,9 +279,9 @@
 
 <header class="topbar" class:scrolled>
   <div class="wrap">
-  <div class="bar">
+  <div class="bar" class:menu-open={navOpen}>
     <a class="brand" href={href('character')}>
-      <img class="brand-logo" src="/brand/frostsim-logo-web.png" width="180" height="48" alt="Frostsim" />
+      <img class="brand-logo" src="/brand/frostsim-logo-header.webp" width="336" height="112" alt="Frostsim" />
       <span class="brand-sheen" aria-hidden="true"></span>
     </a>
 
@@ -546,9 +533,7 @@
   <!-- Lazy: its popover is not on the path to first paint. -->
   {#if scope && scope !== 'character'}{#await import('./lib/ui/CharacterBar.svelte') then m}<m.default />{/await}{/if}
   <svelte:boundary onerror={(e) => trace('screen.render-failed', { message: e instanceof Error ? e.message : String(e) })}>
-    {#if router.raw.startsWith('r/') || (import.meta.env.VITE_FEATURE_ACCOUNTS === true && router.raw.startsWith('s/'))}
-      <SharedReport />
-    {:else if import.meta.env.VITE_FEATURE_ACCOUNTS === true && onPlans}
+    {#if import.meta.env.VITE_FEATURE_ACCOUNTS === true && onPlans}
       {#if router.raw === 'discord'}{#await import('./lib/account/DiscordSettings.svelte') then m}<m.default />{/await}
       {:else}{#await import('./lib/account/Plans.svelte') then m}<m.default />{/await}{/if}
     {:else if lazyLoader}
@@ -566,7 +551,7 @@
         </Banner>
       {/await}
     {:else}
-      <Screen />
+      <Character />
     {/if}
 
     {#snippet failed(error, reset)}
@@ -596,7 +581,11 @@
     class="row-tight"
     title="Frostsim builds SimulationCraft from a pinned upstream revision; the build scripts, any patches applied and the corresponding source are published alongside each release."
   >
-    <span>Runs entirely in this browser.</span>
+    {#if import.meta.env.VITE_FEATURE_ACCOUNTS === true}
+      <span>Browser simulations run locally. Cloud runs are opt-in.</span>
+    {:else}
+      <span>Browser simulations run locally.</span>
+    {/if}
     <span>·</span>
     <span>SimulationCraft is <a href="https://www.gnu.org/licenses/gpl-3.0.html" rel="license">GPL-3.0</a>{#if engineBuild}, built from {engineBuild}{/if}; sources and patches ship with each release.</span>
   </p>
@@ -911,8 +900,8 @@
     background: linear-gradient(100deg, transparent 38%, rgb(255 255 255 / 0.95) 50%, transparent 62%);
     background-size: 260% 100%;
     background-position: 130% 0;
-    -webkit-mask: url('/brand/frostsim-logo-web.png') center / cover no-repeat;
-    mask: url('/brand/frostsim-logo-web.png') center / cover no-repeat;
+    -webkit-mask: url('/brand/frostsim-logo-header.webp') center / cover no-repeat;
+    mask: url('/brand/frostsim-logo-header.webp') center / cover no-repeat;
     mix-blend-mode: overlay;
     /* Once, not on a loop: a running blend inside the blurred bar keeps the GPU compositing every frame. */
     animation: sheen 7s var(--ease) 1.2s;
@@ -1279,7 +1268,7 @@
   }
   /* Narrow: the groups fold into a menu that lists every tool under its group. */
   @media (max-width: 56rem) {
-    .nav-toggle { display: inline-flex; order: 3; }
+    .nav-toggle { display: inline-flex; order: 3; margin-left: auto; min-width: 44px; min-height: 44px; justify-content: center; }
     .groups {
       order: 5;
       flex-basis: 100%;
@@ -1290,7 +1279,7 @@
     }
     .groups.open { display: grid; animation: drop 0.4s var(--ease); }
     .groups::before, .groups::after { display: none; }
-    .group-link { padding: 0.5rem 0.4rem; font-family: var(--font-display); color: var(--text); }
+    .group-link { min-height: 44px; padding: 0.5rem 0.4rem; font-family: var(--font-display); color: var(--text); }
     .flyout, .group.multi:hover .flyout {
       position: static;
       visibility: visible;
@@ -1301,10 +1290,13 @@
     }
     .flyout-card { width: auto; padding: 0; border: 0; background: none; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
     .flyout-card::before { display: none; }
-    .flyout-item { padding: 0.45rem 0.5rem; }
+    .flyout-item { min-height: 44px; padding: 0.45rem 0.5rem; }
     .flyout-icon { width: 1.9rem; height: 1.9rem; }
     .flyout-text span { display: none; }
-    .trailing { margin-left: auto; flex-wrap: wrap; justify-content: flex-end; flex-shrink: 1; }
+    .trailing { display: none; }
+    .menu-open .trailing { display: flex; order: 6; flex-basis: 100%; flex-wrap: wrap; justify-content: flex-end; border-top: 1px solid var(--border); padding-top: var(--s2); }
+    .trailing .icon-btn, .trailing .gear-btn { min-width: 44px; min-height: 44px; }
+    .subnav a { min-height: 44px; }
     .bar { flex-wrap: wrap; padding-block: var(--s2); gap: var(--s2); }
     @keyframes drop { from { opacity: 0; transform: translateY(-6px); } }
   }

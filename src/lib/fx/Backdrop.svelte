@@ -1,6 +1,6 @@
 <script lang="ts">
-  // Mounts the WebGL backdrop behind the page. Without WebGL the canvas stays
-  // empty and body's CSS gradient shows through, so nothing depends on it.
+  // Decorative work is optional. Reduced motion and forced colors use CSS only;
+  // full motion starts after the interface has had time to become usable.
   import { onMount } from 'svelte'
   import { app, isBusy } from '../app.svelte'
   import { prefs, reducedMotion } from '../theme.svelte'
@@ -9,32 +9,40 @@
   let canvas: HTMLCanvasElement
   let scene = $state<SceneHandle | null>(null)
   let ready = $state(false)
+  let mounted = $state(false)
+  let mediaRevision = $state(0)
+  let systemLight = $state(false)
 
   onMount(() => {
-    let dead = false
-    void import('./scene').then(({ createScene, DARK, LIGHT }) => {
-      if (dead) return
-      scene = createScene(canvas, prefs.theme === 'light' ? LIGHT : DARK, reducedMotion())
-      ready = !!scene
-    })
-    return () => { dead = true; scene?.destroy() }
+    const queries = [matchMedia('(prefers-reduced-motion: reduce)'), matchMedia('(forced-colors: active)'), matchMedia('(prefers-color-scheme: light)')]
+    const sync = () => { systemLight = queries[2]!.matches; mediaRevision++ }
+    sync()
+    queries.forEach(query => query.addEventListener('change', sync))
+    mounted = true
+    return () => queries.forEach(query => query.removeEventListener('change', sync))
   })
 
   $effect(() => {
-    const light = prefs.theme === 'light'
+    void mediaRevision
+    void prefs.motion
+    if (!mounted || reducedMotion() || matchMedia('(forced-colors: active)').matches) return
+    let dead = false
+    let owned: SceneHandle | null = null
+    const timer = setTimeout(() => {
+      void import('./scene').then(({ createScene, DARK, LIGHT }) => {
+        if (dead) return
+        owned = createScene(canvas, prefs.theme === 'light' || prefs.theme === 'system' && systemLight ? LIGHT : DARK, false)
+        scene = owned
+        ready = !!owned
+      }).catch(() => { /* CSS background remains usable when optional code fails to load. */ })
+    }, 1200)
+    return () => { dead = true; clearTimeout(timer); owned?.destroy(); scene = null; ready = false }
+  })
+
+  $effect(() => {
+    const light = prefs.theme === 'light' || prefs.theme === 'system' && systemLight
     if (!scene) return
     void import('./scene').then(({ DARK, LIGHT }) => scene?.setPalette(light ? LIGHT : DARK))
-  })
-
-  // The system setting can change under us, so listen as well as read prefs.
-  $effect(() => {
-    void prefs.motion
-    if (!scene) return
-    scene.setReduced(reducedMotion())
-    const mq = matchMedia('(prefers-reduced-motion: reduce)')
-    const sync = () => scene?.setReduced(reducedMotion())
-    mq.addEventListener('change', sync)
-    return () => mq.removeEventListener('change', sync)
   })
 
   $effect(() => { scene?.setEnergy(isBusy()) })

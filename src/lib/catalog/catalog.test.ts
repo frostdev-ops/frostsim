@@ -525,8 +525,13 @@ describe.skipIf(gate)('loot sources' + gate, () => {
     const catalog = loadCatalogFromDisk(dir!);
     const manifest = JSON.parse(readFileSync(join(dir!, 'manifest.json'), 'utf8'));
     if (manifest.loot?.path && existsSync(join(dir!, manifest.loot.path))) {
-      catalog.registerLoot(JSON.parse(readFileSync(join(dir!, manifest.loot.path), 'utf8')));
-      const r = catalog.lootSources();
+      const fixture = JSON.parse(readFileSync(join(dir!, manifest.loot.path), 'utf8'));
+      catalog.registerLoot(fixture);
+      // This checks a historical artifact's shape at publication, not its
+      // availability on the machine's current date. Expiry is checked below.
+      const publishedAt = Date.parse(fixture.generatedAt);
+      expect(Number.isFinite(publishedAt)).toBe(true);
+      const r = catalog.lootSources(publishedAt);
       expect(r.sources.length).toBeGreaterThan(0);
       expect(r.unavailableReason).toBeNull();
       // Attribution mandatory wherever shown.
@@ -534,6 +539,13 @@ describe.skipIf(gate)('loot sources' + gate, () => {
       for (const source of r.sources.slice(0, 50)) {
         expect(source.itemIds.length).toBeGreaterThan(0);
         expect(source.provider).toBeTruthy();
+      }
+      if (fixture.expiresAt) {
+        const expiresAt = Date.parse(fixture.expiresAt);
+        expect(expiresAt).toBeGreaterThan(publishedAt);
+        const expired = catalog.lootSources(expiresAt + 1);
+        expect(expired.sources).toEqual([]);
+        expect(expired.unavailableReason).toMatch(/expired/);
       }
     } else {
       const r = catalog.lootSources();

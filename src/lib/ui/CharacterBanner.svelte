@@ -6,8 +6,10 @@
   import GearStrip from './GearStrip.svelte'
   import { ExternalLink } from '@lucide/svelte'
   import { fetchCharacterMedia } from '../media-cache'
+  import { isBundledSample } from '../import/sample'
   let { character, characterId = '', embedded = false, gear = character.equipped, loadout = '' }: { character: ImportedCharacter; characterId?: string; embedded?: boolean; gear?: ItemInstance[]; loadout?: string } = $props()
-  const identity = $derived(character.region && character.server && character.name)
+  const sample = $derived(isBundledSample(character))
+  const identity = $derived(!sample && character.region && character.server && character.name)
   const url = $derived(identity ? 'https://raider.io/characters/' + [character.region, character.server!.replace(/\s*\(.*\)\s*$/, '').toLowerCase().replace(/\s+/g, '-'), character.name].map((value) => encodeURIComponent(value ?? '')).join('/') : '')
   let failed = $state(false)
   let retry = $state(0)
@@ -35,8 +37,8 @@
 </script>
 <section class="character-banner" data-class={character.className}>
     <div class="identity">
-      <Portrait {characterId} region={character.region} realm={character.server} name={character.name} size={64} quiet />
-      <div class="stack-sm"><h2>{character.name}</h2><span class="small muted">{character.level} {titleCase(character.spec ?? '')} {classLabel(character)}</span>{#if loadout}<span class="small">{loadout}</span>{/if}</div>
+      {#if !sample}<Portrait {characterId} region={character.region} realm={character.server} name={character.name} size={64} quiet />{/if}
+      <div class="stack-sm"><h2>{character.name}</h2>{#if sample}<span class="chip">Sample character</span>{/if}<span class="small muted">{character.level} {titleCase(character.spec ?? '')} {classLabel(character)}</span>{#if loadout}<span class="small">{loadout}</span>{/if}</div>
       {#if url}<a class="profile-link small" href={url} target="_blank" rel="noreferrer">Raider.IO <ExternalLink size={14} /></a>{/if}
     </div>
     {#if profile}<div class="progression">{#if profile.score !== null}<div><span class="xs muted">Mythic+ score</span><strong class="score">{profile.score.toLocaleString()}</strong></div>{/if}{#each profile.progression as raid (raid.name)}<div><span class="xs muted">{titleCase(raid.name.replaceAll('-', ' '))}</span><strong>{raid.summary}</strong></div>{/each}</div>{/if}

@@ -455,6 +455,8 @@ button.danger { color: var(--bad); border-color: var(--border); }
 button.danger:where(:hover:not(:disabled)) { background: var(--bad-soft); border-color: var(--bad); }
 
 button.sm { min-height: 1.8rem; padding: 0.15rem 0.6rem; font-size: var(--fs-sm); }
+/* Primary actions remain usable by touch, including compact run/update actions. */
+button.primary, button.primary.sm { min-height: 44px; }
 
 .field { display: flex; flex-direction: column; gap: 0.3rem; min-width: 0; }
 .field > span:first-child { font-weight: 550; font-size: var(--fs-sm); }
