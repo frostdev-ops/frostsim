@@ -129,17 +129,50 @@ export function simcTokens(line: string): string[] {
   return tokens
 }
 
+/** Profileset values are option assignments too; later top-level args cannot undo their child-sim overrides. */
+function protectedOptionName(text: string, nestedOnly = false): string | null {
+  for (const raw of text.split('\n')) {
+    const line = raw.replace(/^\uFEFF/, '')
+    if (line.trimStart().startsWith('#')) continue
+    // Keep the existing tolerance for whitespace around a direct assignment.
+    const direct = OPTION_LINE.exec(line)?.[1].toLowerCase()
+    if (!nestedOnly && direct && PROTECTED_SET.has(direct)) return direct
+    for (const token of simcTokens(line)) {
+      let start = 0, nested = false
+      // Iterative descent avoids stack overflow for deeply nested user text.
+      while (start < token.length) {
+        const eq = token.indexOf('=', start)
+        if (eq <= start) break
+        const name = token.slice(start, eq).replace(/\s*\+?\s*$/, '').trim().toLowerCase()
+        if ((!nestedOnly || nested) && PROTECTED_SET.has(name)) return name
+        if (!name.startsWith('profileset.')) break
+        nested = true
+        start = eq + 1
+      }
+    }
+  }
+  return null
+}
+
+function protectedOptionProblem(text: string, nestedOnly = false): string | null {
+  const name = protectedOptionName(text, nestedOnly)
+  return name ? `"${name}" is application-owned and cannot be set here` : null
+}
+
 /** ptr is read while actors are constructed, so a later override cannot safely undo a script assignment. */
 export function channelOptionProblem(text: string): string | null {
   function problem(token: string): string | null {
-    const eq = token.indexOf('=')
-    if (eq < 1) return null
-    const name = token.slice(0, eq).replace(/\s*\+?\s*$/, '').toLowerCase()
-    if (name === 'ptr') return '"ptr" is application-owned; choose Live or PTR with the engine selector.'
-    if (name.includes('$')) return 'Template variables in option names cannot be used; they could override the engine channel.'
-    if (name.startsWith('profileset') && name.includes('.')) {
-      if (token.slice(eq + 1).includes('$')) return 'Template variables in profileset options could override the engine channel.'
-      return problem(token.slice(eq + 1))
+    let start = 0
+    const dollar = token.indexOf('$')
+    while (start < token.length) {
+      const eq = token.indexOf('=', start)
+      if (eq <= start) return null
+      const name = token.slice(start, eq).replace(/\s*\+?\s*$/, '').toLowerCase()
+      if (name === 'ptr') return '"ptr" is application-owned; choose Live or PTR with the engine selector.'
+      if (name.includes('$')) return 'Template variables in option names cannot be used; they could override the engine channel.'
+      if (!name.startsWith('profileset') || !name.includes('.')) return null
+      if (dollar > eq) return 'Template variables in profileset options could override the engine channel.'
+      start = eq + 1
     }
     return null
   }
@@ -163,9 +196,7 @@ export function sanitizeProfile(profile: string, mode: RunMode = 'guided'): Sani
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
     if (!line || line.trimStart().startsWith('#')) continue
-    const m = OPTION_LINE.exec(line)
-    if (!m) continue
-    const name = m[1].toLowerCase()
+    const name = OPTION_LINE.exec(line)?.[1].toLowerCase()
 
     const item = itemLineProblem(line)
     if (item) {
@@ -173,10 +204,11 @@ export function sanitizeProfile(profile: string, mode: RunMode = 'guided'): Sani
       warnings.push(`Line ${i + 1}: ${item}`)
     }
 
-    if (PROTECTED_SET.has(name)) {
+    const protectedName = protectedOptionName(line)
+    if (protectedName) {
       lines[i] = `# frostsim removed (application-owned): ${line.trim()}`
-      warnings.push(`Line ${i + 1}: ignored "${name}=" — the application controls that option.`)
-    } else if (STOPPING_SET.has(name)) {
+      warnings.push(`Line ${i + 1}: ignored "${protectedName}=" — the application controls that option.`)
+    } else if (name && STOPPING_SET.has(name)) {
       if (mode === 'raw') {
         warnings.push(`Line ${i + 1}: kept "${name}=" from your script.`)
       } else {
@@ -390,6 +422,10 @@ export function validateProfile(profile: unknown): ValidationIssue[] {
   }
   const channelProblem = channelOptionProblem(profile)
   if (channelProblem) return [{ field: 'profile', message: channelProblem }]
+  // Direct infrastructure assignments are sanitized with warnings; candidate
+  // overrides are refused because they change an independently constructed sim.
+  const protectedProblem = protectedOptionProblem(profile, true)
+  if (protectedProblem) return [{ field: 'profile', message: protectedProblem }]
   const bytes = new TextEncoder().encode(profile).length
   if (bytes > LIMITS.profileBytes) {
     return [
@@ -443,6 +479,8 @@ export function validateProfilesets(sets: readonly ProfilesetSpec[] | undefined)
       const item = itemLineProblem(line)
       const channelProblem = channelOptionProblem(line)
       if (channelProblem) { issues.push({ field: `${field}.lines`, message: channelProblem }); break }
+      const protectedProblem = protectedOptionProblem(line)
+      if (protectedProblem) { issues.push({ field: `${field}.lines`, message: protectedProblem }); break }
       if (item) {
         issues.push({ field: `${field}.lines`, message: item })
         break
@@ -573,11 +611,11 @@ export function validateExtraProfileLines(lines: readonly string[] | undefined):
       issues.push({ field: `extraProfileLines[${i}]`, message: 'must be a single-line non-empty option under the length limit' })
       continue
     }
-    const name = OPTION_LINE.exec(line)?.[1]?.toLowerCase()
     const channelProblem = channelOptionProblem(line)
     if (channelProblem) { issues.push({ field: `extraProfileLines[${i}]`, message: channelProblem }); continue }
-    if (name && PROTECTED_SET.has(name)) {
-      issues.push({ field: `extraProfileLines[${i}]`, message: `"${name}" is application-owned and cannot be set here` })
+    const protectedProblem = protectedOptionProblem(line)
+    if (protectedProblem) {
+      issues.push({ field: `extraProfileLines[${i}]`, message: protectedProblem })
       continue
     }
     const item = itemLineProblem(line)
@@ -608,13 +646,13 @@ export function validateSlots(slots: unknown): ValidationIssue[] {
     total += text.length
     const lines = text.split('\n')
     const channelProblem = channelOptionProblem(text)
-    if (channelProblem) issues.push({ field: `slots.${slot}`, message: channelProblem })
+    if (channelProblem) { issues.push({ field: `slots.${slot}`, message: channelProblem }); continue }
     for (let i = 0; i < lines.length; i++) {
-      const name = OPTION_LINE.exec(lines[i])?.[1]?.toLowerCase()
-      if (name && PROTECTED_SET.has(name)) {
+      const protectedProblem = protectedOptionProblem(lines[i])
+      if (protectedProblem) {
         issues.push({
           field: `slots.${slot}`,
-          message: `line ${i + 1}: "${name}" is application-owned and cannot be set here`,
+          message: `line ${i + 1}: ${protectedProblem}`,
         })
       }
     }
@@ -638,11 +676,11 @@ export function validateExtraOptions(options: readonly string[] | undefined): Va
       issues.push({ field: `extraOptions[${i}]`, message: 'must be a single-line non-empty option under the length limit' })
       continue
     }
-    const name = OPTION_LINE.exec(opt)?.[1]?.toLowerCase()
     const channelProblem = channelOptionProblem(opt)
     if (channelProblem) { issues.push({ field: `extraOptions[${i}]`, message: channelProblem }); continue }
-    if (name && PROTECTED_SET.has(name)) {
-      issues.push({ field: `extraOptions[${i}]`, message: `"${name}" is application-owned and cannot be set here` })
+    const protectedProblem = protectedOptionProblem(opt)
+    if (protectedProblem) {
+      issues.push({ field: `extraOptions[${i}]`, message: protectedProblem })
       continue
     }
     const item = itemLineProblem(opt)

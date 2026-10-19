@@ -79,6 +79,16 @@ describe('assembleRun', () => {
 })
 
 describe('validateRequest', () => {
+  it('rejects the single-candidate thread override before assembly can bypass the pool', () => {
+    const req = request({ profilesets: [{ id: 'overpool', lines: ['threads=64'] }] })
+    expect(validateRequest(req, 16)).toEqual([
+      expect.objectContaining({ field: 'profilesets[0].lines', message: expect.stringContaining('application-owned') }),
+    ])
+    expect(validateRequest(request({ mode: 'raw', profile: `${req.profile}profileset."overpool"+=threads=64` }), 16)).toEqual([
+      expect.objectContaining({ field: 'profile', message: expect.stringContaining('application-owned') }),
+    ])
+  })
+
   it('refuses a wrong schema and a Dungeon Route without a first pull', () => {
     expect(validateRequest({ ...request(), schemaVersion: 2 as 1 }, 16)[0].field).toBe('schemaVersion')
     const route = request({ settings: { ...DEFAULT_SETTINGS, fightStyle: 'DungeonRoute', threads: 4 } })
