@@ -16,6 +16,7 @@ import { createR2 } from '../r2';
 import { connectRedis, type Redis } from '../redis';
 import { createSession } from '../session';
 import { sha256Hex } from '../signed';
+import { usedCoreSeconds, usedCostUsd } from '../usage';
 import type { SimRequest } from '../../../src/lib/simc/assemble';
 import { DEFAULT_SETTINGS } from '../../../src/lib/simc/options';
 import { SCOPE_LOCK, cancelJob, claimJob, completeJob as finishJob, enqueueJob, expireJobs, failJob, jobView, progressJob, releaseJobs, resultBytes, tasks as queueTasks } from './queue';
@@ -270,6 +271,57 @@ describe.skipIf(!PG)('compute postgres integration (needs FROSTSIM_TEST_PG)', ()
     await sql`update users set role = 'user' where id = ${u}`;
     expect(await claimJob(app({ ADMIN_ONLY: '1' }), w.id, 32)).toBeNull();
     expect(await jobRow(id)).toMatchObject({ status: 'failed', attempts: 0 });
+  });
+
+  it('refuses a queued job whose thread width exceeds the current plan', async () => {
+    const u = await user();
+    const w = await addWorker();
+    const id = ((await enqueue(u)) as { id: string }).id;
+    expect(await jobRow(id)).toMatchObject({ threads: 32 });
+    await sql`update subscriptions set items = ${sql.json([{ lookupKey: 'compute_s_monthly', quantity: 1, coreHours: 10 }])}
+      where user_id = ${u}`;
+    expect(await claimJob(app(), w.id, 32)).toBeNull();
+    expect(await jobRow(id)).toMatchObject({ status: 'failed', attempts: 0, reserve_usd: null });
+  });
+
+  it.each(['grant', 'identity'])('refuses queued Loothing work after its %s is removed', async (revoked) => {
+    const u = await user();
+    const w = await addWorker();
+    await sql`insert into identities (user_id, provider, subject) values (${u}, 'discord', ${u})`;
+    await sql`insert into integration_grants (user_id, integration) values (${u}, 'loothing')`;
+    const out = await enqueueJob(app(), { userId: u, guildId: null, source: 'loothing', packId: PACK, request: simRequest() });
+    expect(out.ok).toBe(true);
+    const id = (out as { id: string }).id;
+    if (revoked === 'grant') await sql`delete from integration_grants where user_id = ${u}`;
+    else await sql`delete from identities where user_id = ${u}`;
+    expect(await claimJob(app(), w.id, 32)).toBeNull();
+    expect(await jobRow(id)).toMatchObject({ status: 'failed', attempts: 0, reserve_usd: null });
+    if (revoked === 'grant') await sql`insert into integration_grants (user_id, integration) values (${u}, 'loothing')`;
+    else await sql`insert into identities (user_id, provider, subject) values (${u}, 'discord', ${u})`;
+    const retry = await enqueueJob(app(), { userId: u, guildId: null, source: 'loothing', packId: PACK, request: simRequest() });
+    expect(retry.ok).toBe(true);
+    expect(await claimJob(app(), w.id, 32)).toMatchObject({ id: (retry as { id: string }).id });
+  });
+
+  it.each([false, true])('counts a job against the period in which it starts, including its running reserve (guild=%s)', async (guild) => {
+    const guildId = guild ? `g${randomBytes(4).toString('hex')}` : null;
+    const u = await user(guild ? { lookupKey: 'discord_guild_monthly', coreHours: 10 } : undefined, guildId);
+    const w = await addWorker();
+    const id = ((await enqueue(u, {}, guildId)) as { id: string }).id;
+    const scope = guildId ? { guildId } : { userId: u };
+    clock += 1;
+    const boundary = now();
+    clock += 1;
+    expect(await claimJob(app(), w.id, 32)).toMatchObject({ id });
+    const periodEnd = new Date(clock + 86_400_000);
+    const running = await jobRow(id);
+    expect(await usedCostUsd(sql, scope, boundary, periodEnd)).toBe(Number(running.reserve_usd));
+    clock += 10_000;
+    uploaded.add(id);
+    expect(await completeJob(app(), w.id, id, 10, {})).toBe('ok');
+    expect(await usedCoreSeconds(sql, scope, boundary, periodEnd)).toBe(running.threads * 10);
+    expect(await usedCostUsd(sql, scope, boundary, periodEnd)).toBeGreaterThan(0);
+    expect(await usedCoreSeconds(sql, scope, PERIOD.start, boundary)).toBe(0);
   });
 
   it('refuses a non-admin under ADMIN_ONLY for every source, and lets an admin through', async () => {

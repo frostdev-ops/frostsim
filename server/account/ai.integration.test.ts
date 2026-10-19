@@ -3,9 +3,10 @@
 // at fetch. Each run owns a fresh schema and removes it.
 
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { gzipSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { routes } from './ai';
+import { routes, takeaway } from './ai';
 import { createApp, type AppCtx } from './app';
 import { loadConfig } from './config';
 import { connectDb, type Sql } from './db';
@@ -141,6 +142,26 @@ describe.skipIf(!PG)('ai postgres integration (needs FROSTSIM_TEST_PG)', () => {
     const { periodStart, periodEnd } = calendarMonth(new Date());
     expect(await usedCostUsd(sql, { userId: id }, periodStart, periodEnd)).toBeCloseTo(1.75, 6);
     expect(await usedCostUsd(sql, { guildId: guild }, periodStart, periodEnd)).toBeCloseTo(0.7, 6);
+  });
+
+  it.each([false, true])('keeps a pre-renewal queued compute reservation in the current AI budget (guild=%s)', async (guild) => {
+    const { id, explain } = await newUser(true);
+    const guildId = guild ? `g-${randomBytes(3).toString('hex')}` : null;
+    if (guildId) await sql`update subscriptions set guild_id = ${guildId},
+      items = ${sql.json([{ lookupKey: 'discord_guild_monthly', quantity: 1, unitAmount: 500, currency: 'usd' }])}
+      where user_id = ${id}`;
+    const [sub] = await sql`select current_period_start from subscriptions where user_id = ${id}`;
+    await sql`insert into compute_jobs (user_id, guild_id, source, pack_id, threads, status, reserve_usd, created_at, claimed_at)
+      values (${id}, ${guildId}, 'web', 'p', 8, 'running', ${PAID - 0.01},
+        ${new Date(sub.current_period_start.getTime() - 1)}, ${app.now()})`;
+    if (guildId) {
+      const report = JSON.parse(readFileSync(new URL('../../tests/fixtures/simc-report-affliction.json', import.meta.url), 'utf8'));
+      expect(await takeaway(app, { userId: id, guildId, report })).toBeNull();
+    } else {
+      const res = await explain();
+      expect([res.status, (await res.json()).error]).toEqual([402, 'cost-cap']);
+    }
+    expect(await sql`select 1 from ai_calls where user_id = ${id}`).toHaveLength(0);
   });
 
   it('serializes AI and compute money reservations for the same plan scope', async () => {

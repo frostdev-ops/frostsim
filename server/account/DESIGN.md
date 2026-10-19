@@ -62,7 +62,10 @@ pairs on login. `R2_ENDPOINT` overrides the R2 account endpoint (jurisdiction en
 **C4 Storage.** Postgres is the record: a pool of 5, plain `.sql` migrations applied at startup under an advisory
 lock, each compatible with the previous release. R2 is reached only by the server; the browser gets our own
 URLs. Engines bucket: `engines/<packId>/simc-linux-x64.zst` with `x-amz-meta-sha256` and a sibling `.sha256`.
-Data bucket: `shares/<id>.json.gz`, `results/<jobId>.json.gz` (a 1-day lifecycle rule).
+Data bucket: legacy shares use `shares/<id>.json.gz`; migration 009 uploads use immutable
+`shares/<id>/<attempt>.json.gz` keys stored in `shares.object_key`, with unfinished attempts indexed in `share_uploads`.
+Results use `results/<jobId>.json.gz` (a 1-day lifecycle rule). Once immutable shares exist, an account-server rollback must retain
+an object-key-aware reader; an additive schema alone does not make older fixed-key readers compatible.
 
 **C5 Data model** (`migrations/`): `users` (role, suspension, Stripe customer, comped allowance), `identities`
 (unique per provider per user), `sessions` (sha256 of the cookie only), `subscriptions` (items with lookup key,
@@ -104,10 +107,16 @@ Slots do not stack across plans: an account has 1 plus its best plan's extra, up
 the limit after a downgrade stay (download, replace, delete), and a new save waits for a free slot. A Price's `core_hours` metadata overrides the table's hours, so a promotion needs no
 deploy. `entitlementsFor` is pure. Active statuses are `active`, `trialing`, `past_due`; a subscription stops granting 3
 days after its stored period ends (a missed renewal webhook), and an hourly task re-reads such rows from Stripe. Usage is
-`SUM(core_seconds)` over the current period, and 6-month and yearly periods are metered in monthly slices from their start
+`SUM(core_seconds)` over jobs claimed in the current period (falling back to creation time for legacy rows without a claim time),
+and 6-month and yearly periods are metered in monthly slices from their start
 (the day clamped to short months), so the allowance is monthly on every term. Guild jobs count only against the guild.
 Admins can comp core-hours and threads. Without a plan an account has 1 slot and no compute or hosted shares. "Standard sim" is 4,000
 iterations of a typical profile, about 11.2 CPU seconds (Phase 0); the dialog shows allowances and remainders in it.
+
+Claim rechecks the current plan's thread ceiling, suspension/admin restrictions, Discord member allowances, and for Loothing a
+linked Discord identity and live grant. A queued job that lost authorization fails before reserving money or starting a worker.
+Compute and AI reserve against the same plan money lock; compute reserves follow claim time so renewal cannot hide an old queued
+job from the newly authorized period's budget.
 
 **C7 Auth.** `__Host-fs_sid`: 32 random bytes, only its sha256 stored, `HttpOnly; Secure; SameSite=Lax; Path=/`,
 30 days. `__Host-fs_oauth`: an HMAC-signed state, PKCE verifier, mode and return path, same attributes, 10 minutes,

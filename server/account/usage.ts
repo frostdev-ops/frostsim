@@ -8,22 +8,25 @@ type Who = { userId: string } | { guildId: string; userId?: string };
 const scopeOf = (db: Db, who: Who) => !('guildId' in who) ? db`user_id = ${who.userId} and guild_id is null`
   : who.userId ? db`guild_id = ${who.guildId} and user_id = ${who.userId}` : db`guild_id = ${who.guildId}`;
 
-/** SUM(core_seconds) for jobs created in [from, to). Guild jobs never count against the personal allowance; with both ids, one
- *  member's use of a guild pool. */
+/** SUM(core_seconds) for jobs started in [from, to). The creation fallback preserves older ledger rows without a claim timestamp.
+ *  A job queued before renewal must reserve and meter against the period in which claim authorizes it. Guild jobs never count
+ *  against the personal allowance; with both ids, one member's use of a guild pool. */
 export async function usedCoreSeconds(db: Db, who: Who, from: Date, to: Date): Promise<number> {
   const scope = scopeOf(db, who);
   const [row] = await db`select coalesce(sum(core_seconds), 0)::float8 as used from compute_jobs
-    where ${scope} and status in ('running', 'done', 'failed', 'cancelled') and created_at >= ${from} and created_at < ${to}`;
+    where ${scope} and status in ('running', 'done', 'failed', 'cancelled')
+      and coalesce(claimed_at, created_at) >= ${from} and coalesce(claimed_at, created_at) < ${to}`;
   return Number(row.used);
 }
 
-/** USD our servers and the AI calls cost for the jobs and calls created in [from, to): finished jobs at their cost_usd, a running job at
+/** USD our servers and the AI calls cost for jobs started and calls created in [from, to): finished jobs at their cost_usd, a running job at
  *  the worst case reserved for it at claim (queue.ts costProblem), an AI call at its billed cost (or its reserve while it runs). Same
  *  scopes as usedCoreSeconds. */
 export async function usedCostUsd(db: Db, who: Who, from: Date, to: Date): Promise<number> {
   const [row] = await db`select (
     (select coalesce(sum(case when status = 'running' then coalesce(reserve_usd, 0) else cost_usd end), 0) from compute_jobs
-      where ${scopeOf(db, who)} and status in ('running', 'done', 'failed', 'cancelled') and created_at >= ${from} and created_at < ${to})
+      where ${scopeOf(db, who)} and status in ('running', 'done', 'failed', 'cancelled')
+        and coalesce(claimed_at, created_at) >= ${from} and coalesce(claimed_at, created_at) < ${to})
     + (select coalesce(sum(cost_usd), 0) from ai_calls where ${scopeOf(db, who)} and created_at >= ${from} and created_at < ${to})
   )::float8 as used`;
   return Number(row.used);

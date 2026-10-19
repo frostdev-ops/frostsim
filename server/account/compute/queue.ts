@@ -543,6 +543,15 @@ export async function claimJob(app: App, workerId: string, freeCores: number): P
           continue;
         }
       }
+      if (job.source === 'loothing') {
+        const [allowed] = await tx`select 1 from integration_grants g where g.user_id = ${job.user_id}
+          and g.integration = 'loothing' and exists (select 1 from identities i where i.user_id = g.user_id and i.provider = 'discord')`;
+        if (!allowed) {
+          await tx`update compute_jobs set status = 'failed', error = 'Loothing access was removed while this run was queued.',
+            finished_at = ${now} where id = ${job.id}`;
+          continue;
+        }
+      }
       const busy = await tx`select 1 from compute_jobs where status = 'running'
         and coalesce('g:' || guild_id, 'u:' || user_id::text) = ${job.scope} limit 1`;
       if (busy.length) continue;
@@ -552,6 +561,7 @@ export async function claimJob(app: App, workerId: string, freeCores: number): P
       // The worst case on this worker, held as the job's reserve while it runs.
       const reserve = worstCaseUsd(job.threads, RUN_MAX_S, coreRate(worker.hourly_usd, worker.cores || 1), idle[worker.provider as keyof IdleFactors] ?? idle.hetzner);
       const refusal = !pool || pool.maxThreads < 1 ? NOT_ENTITLED
+        : job.threads > pool.maxThreads ? 'The plan changed while this run was queued. Run it again with the current plan.'
         : (await usedCoreSeconds(tx, who, pool.periodStart, pool.periodEnd)) >= pool.coreSeconds ? NO_ALLOWANCE
         : job.guild_id && job.source === 'discord' ? (!job.user_id || !Array.isArray(job.guild_role_ids)
           ? 'Queued guild authorization is unavailable. Run this command again.'
