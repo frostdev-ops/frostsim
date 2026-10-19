@@ -93,19 +93,31 @@ let observer: IntersectionObserver | undefined
 /** Svelte action; successful bytes use data: URLs (CSP-permitted). Intersection observer defers off-screen loads, gen token prevents stale updates. */
 export function deferredIcon(node: HTMLImageElement, url: string) {
   let generation = 0, current: string | undefined
+  const visibility = node.style.visibility
+  function paint(src: string, token: number) {
+    node.src = src
+    // Even a cached byte response may not be a decoded image yet. Keep the
+    // browser's empty/broken-image decoration out of the pending state.
+    void node.decode().then(() => {
+      if (token === generation) node.style.visibility = visibility
+    }).catch(() => { if (token === generation) node.dispatchEvent(new Event('error')) })
+  }
   function watch(next: string) {
     if (next === current) return
     current = next
     const token = ++generation
+    // Visibility preserves layout and IntersectionObserver geometry while the
+    // request waits for the visible-image queue or its bytes finish decoding.
+    node.style.visibility = 'hidden'
     observer?.unobserve(node); waiting.delete(node)
     const ready = peekIcon(next)
-    if (ready) { node.src = ready; return }
+    if (ready) { paint(ready, token); return }
     node.removeAttribute('src')
     const start = () => {
       observer?.unobserve(node); waiting.delete(node)
       void loadIcon(next, () => token === generation).then(src => {
         if (token !== generation) return
-        if (src) node.src = src
+        if (src) paint(src, token)
         else node.dispatchEvent(new Event('error'))
       }).catch(() => { if (token === generation) node.dispatchEvent(new CustomEvent('error', { detail: { transient: true } })) })
     }
