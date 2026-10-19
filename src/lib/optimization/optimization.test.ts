@@ -914,16 +914,21 @@ describe('staged runner', () => {
     it('fires nothing after an honoured cancellation, however long we wait', async () => {
       vi.useFakeTimers();
       try {
+        let markStarted!: () => void;
+        const started = new Promise<void>((resolve) => { markStarted = resolve; });
         const honours: RunBatch = (req) => new Promise((_, reject) => {
           req.signal?.addEventListener('abort', () =>
             reject(Object.assign(new Error('cancelled'), { name: 'AbortError' })));
+          markStarted();
         });
         const promise = runStagedSearch([candidate('a')], {
           ...base, plan: ONE_STAGE, runBatch: honours, batchTimeoutMs: 20, abortGraceMs: 1000,
         });
+        // The native request hash completes outside the fake clock. Start timing only once the adapter is armed.
+        await started;
         await vi.advanceTimersByTimeAsync(25);      // timeout fires, adapter honours it
-        await vi.advanceTimersByTimeAsync(5000);    // well past the grace
         const r = await promise;
+        await vi.advanceTimersByTimeAsync(5000);    // well past the grace after settlement
         expect(r.warnings.join(' ')).not.toMatch(/cancellation was not honoured/);
         expect(r.incomplete?.message).toMatch(/did not settle within/);
         expect(vi.getTimerCount()).toBe(0);
