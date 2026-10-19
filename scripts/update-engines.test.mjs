@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { issueAction, pickGreenRun, readIndex, retainedPacks, seasonBody } from './update-engines.mjs';
 import { engineCompat } from './engine-compat.mjs';
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -269,6 +269,17 @@ describe('EC2 builds', async () => {
   const { builderUserData, buildPools, ec2BuildCredentials, ec2Builders, engineJobScript, nativeJobScript, presignV4, runOnBuilder, runRemote, sweepEc2Builders } = await import('./update-engines.mjs');
   const { execFileSync } = await import('node:child_process');
   const tmp = mkdtempSync(join(tmpdir(), 'frostsim-ec2-test-'));
+  beforeEach(() => {
+    const ledger = join(mkdtempSync(join(tmp, 'budget-')), 'ledger.json');
+    writeFileSync(ledger, JSON.stringify({ schemaVersion: 1, entries: [] }));
+    vi.stubEnv('FROSTSIM_UPDATER_LEDGER', ledger);
+    vi.stubEnv('FROSTSIM_UPDATER_MONTHLY_USD_CAP', '100');
+    vi.stubEnv('FROSTSIM_UPDATER_RUN_USD_CAP', '100');
+    for (const [name, value] of Object.entries({ HOURLY_USD: '2', MINIMUM_SECONDS: '3600', BILLING_UNIT_SECONDS: '3600', CLEANUP_SECONDS: '60' })) {
+      vi.stubEnv(`FROSTSIM_UPDATER_EC2_${name}`, value);
+    }
+  });
+  afterEach(() => vi.unstubAllEnvs());
   const env = (name, text, mode = 0o640) => { const file = join(tmp, name); writeFileSync(file, text, { mode }); chmodSync(file, mode); return file; };
   const ec2 = { region: 'us-east-1', accessKeyId: 'AKID', secretAccessKey: 'secret', securityGroup: 'sg-1',
     subnets: new Map([['us-east-1a', 'subnet-a'], ['us-east-1b', 'subnet-b']]), types: ['c7a.16xlarge', 'c8a.16xlarge'] };
@@ -311,7 +322,7 @@ describe('EC2 builds', async () => {
     const script = engineJobScript({ node: '26.8.2', emsdk: { version: '6.0.9' } });
     for (const step of ['node-v26.8.2-linux-x64.tar.xz', 'sha256sum -c -', '--branch 6.0.9', 'npm ci --ignore-scripts', 'bash scripts/bootstrap-engine.sh',
       'bash scripts/build-engine.sh\n', 'bash scripts/build-engine.sh --fallback', '--fallback vendor/simc/profiles/MID2/MID2_Mage_Frost.simc',
-      'FROSTSIM_ENGINE=1 FROSTSIM_ENGINE_CHANNEL=live npx vitest run src/lib/simc', 'src/lib/simc\nnpm run check', 'cp -R public/engine ../out/engine']) expect(script).toContain(step);
+      'FROSTSIM_ENGINE=1 FROSTSIM_ENGINE_CHANNEL=live npx vitest run src/lib/simc', 'echo FROSTSIM_PHASE=types\nnpm run check', 'cp -R public/engine ../out/engine']) expect(script).toContain(step);
     expect(script).toContain('CCACHE_COMPILERCHECK=string:emsdk-6.0.9');
     expect(script.indexOf('ccache restored')).toBeLessThan(script.indexOf('build-engine.sh'));
     // Saved on any exit, so a job that fails after its compile still leaves a warm cache.
@@ -331,7 +342,7 @@ describe('EC2 builds', async () => {
     mkdirSync(join(out, 'out'), { recursive: true });
     writeFileSync(join(out, 'out/simc'), 'ELF');
     const outTgz = execFileSync('tar', ['-czf', '-', '-C', out, 'out']);
-    let polls = 0;
+    let polls = 0, terminated = false;
     const fetchFn = async (url, init) => {
       const u = new URL(url);
       if (u.host.endsWith('r2.cloudflarestorage.com')) {
@@ -358,8 +369,8 @@ describe('EC2 builds', async () => {
         expect(new URLSearchParams(body).get('InstanceMarketOptions.MarketType')).toBe('spot');
         return new Response('<r><instancesSet><item><instanceId>i-0b</instanceId></item></instancesSet></r>');
       }
-      if (action === 'DescribeInstances') return new Response(`<r><instanceState><code>48</code><name>${vanish ? 'terminated' : 'running'}</name></instanceState></r>`);
-      if (action === 'TerminateInstances') return new Response('<r/>');
+      if (action === 'DescribeInstances') return new Response(`<r><instanceState><code>48</code><name>${vanish || terminated ? 'terminated' : 'running'}</name></instanceState></r>`);
+      if (action === 'TerminateInstances') { terminated = true; return new Response('<r/>'); }
       throw new Error(`unexpected ${action}`);
     };
     return { fetchFn, calls, objects };
@@ -441,7 +452,8 @@ describe('EC2 builds', async () => {
 
   it('falls back through the providers in order and reports which one built the job', async () => {
     const c = cloud();
-    const refused = { name: 'EC2 Spot', launch: async () => { throw new Error('quota'); }, gone: async () => false, remove: async () => {}, sweep: async () => [] };
+    const refused = { name: 'EC2 Spot', budget: { hourlyUsd: 2, minimumMs: 3600000, billingUnitMs: 3600000, cleanupMs: 60000 },
+      launch: async () => { throw Object.assign(new Error('quota'), { launchRefused: true }); }, gone: async () => false, remove: async () => {}, sweep: async () => [] };
     const second = { ...ec2Builders(ec2, c.fetchFn), name: 'Hetzner' };
     const into = mkdtempSync(join(tmp, 'into-'));
     expect(await runRemote({ r2, providers: [refused, second] }, job(), into, { name: 't5', timeoutMs: 60_000, fetchFn: c.fetchFn, sleep: async () => {} })).toBe('Hetzner');

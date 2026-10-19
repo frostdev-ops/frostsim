@@ -10,7 +10,31 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import assert from 'node:assert/strict';
 import { engineCompat } from './engine-compat.mjs';
-import { chat, decide, openrouterKey } from './openrouter.mjs';
+import { nativeRetentionReport } from './native-retention.mjs';
+import { BudgetError, buildFailureDetail, updaterBudgetFromEnv } from './update-operations.mjs';
+export { buildFailureDetail, reconcileNativeRetention } from './update-operations.mjs';
+import { chat as rawChat, openrouterKey } from './openrouter.mjs';
+
+// The decisions API currently has no enforceable per-request price ceiling in our client.
+// Do not send a billable request based on an invented price or reuse the account AI allowance.
+export async function updaterDecision() {
+  const error = new BudgetError('Updater decisions disabled: an enforceable provider per-call price ceiling is not configured');
+  budgetHealth = { state: 'blocked', reason: error.message };
+  throw error;
+}
+const decide = updaterDecision;
+export async function updaterChat(args, call = rawChat) {
+  const budget = updaterBudgetFromEnv();
+  const maxPrice = { prompt: 3, completion: 15 }; // Existing D17 ceiling, never raised.
+  const maximumUsd = (Buffer.byteLength(JSON.stringify(args.messages)) + 4096) * maxPrice.prompt / 1e6
+    + args.maxTokens * maxPrice.completion / 1e6;
+  const reservation = budget.reserveAi({ maximumUsd, callUsdCap: Number(process.env.FROSTSIM_UPDATER_AI_CALL_USD_CAP) });
+  const result = await call({ ...args, maxPrice });
+  budget.settleAi(reservation, result.cost);
+  return result;
+}
+const chat = updaterChat;
+let budgetHealth = null;
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const api = 'https://api.github.com/repos/simulationcraft/simc';
@@ -22,6 +46,17 @@ const writeJson = (file, value) => writeFileSync(file, JSON.stringify(value, nul
 const run = (cwd, command, args, extra = {}) => execFileSync(command, args, {
   cwd, stdio: 'inherit', env: { ...process.env, CMAKE_BUILD_PARALLEL_LEVEL: process.env.CMAKE_BUILD_PARALLEL_LEVEL || '1' }, ...extra,
 });
+
+export function runBuildPhase(phase, cwd, command, args, extra = {}) {
+  try {
+    const output = run(cwd, command, args, { ...extra, stdio: 'pipe', maxBuffer: 64 * 1024 * 1024 });
+    if (output?.length) process.stdout.write(output);
+  } catch (error) {
+    const detail = { ...buildFailureDetail([error.stdout, error.stderr].filter(Boolean).join('\n') || error.message), phase };
+    console.error(detail.logTail);
+    throw Object.assign(new Error(`Engine ${phase} failed: ${detail.reason}`), { detail, cause: error });
+  }
+}
 
 /** Upstream changed something only an application update can absorb. Reported as `blocked`. */
 export class GateError extends Error {}
@@ -142,9 +177,16 @@ export function retainedPacks(packs, now = Date.now()) {
 
 /** What the single alert issue should do, given the open issue (if any), the last and the new status. */
 export function issueAction(openIssue, previous, status) {
+  status = alertStatus(status);
+  previous = previous ? alertStatus(previous) : null;
   if (status.state === 'current' || status.state === 'building') return openIssue ? 'close' : null;
   if (!openIssue) return 'open';
   return previous?.state === status.state && previous?.reason === status.reason ? null : 'comment';
+}
+
+function alertStatus(status) {
+  return status.budgetHealth?.state === 'blocked'
+    ? { ...status, state: 'failed', reason: `Updater budget blocked: ${status.budgetHealth.reason}` } : status;
 }
 
 /** A completed channel is not a crash, even when the other channel/native phase took hours. */
@@ -552,8 +594,8 @@ async function build(candidate, commit, output, id, canTriage, channel) {
     const remote = builtOn !== 'host';
     if (!remote) {
       const env = { ...process.env, FROSTSIM_ENGINE_DIR: 'public/engine' };
-      run(work, 'bash', ['scripts/build-engine.sh', '--channel', channel], { env });
-      run(work, 'bash', ['scripts/build-engine.sh', '--channel', channel, '--fallback'], { env });
+      runBuildPhase('threaded-build', work, 'bash', ['scripts/build-engine.sh', '--channel', channel], { env });
+      runBuildPhase('fallback-build', work, 'bash', ['scripts/build-engine.sh', '--channel', channel, '--fallback'], { env });
     }
     const dataEnv = process.env.FROSTSIM_DATA_ENV_FILE;
     if (channel === 'live' && (!dataEnv || !existsSync(dataEnv))) throw new Error('FROSTSIM_DATA_ENV_FILE must name the protected Blizzard data credential file');
@@ -576,7 +618,7 @@ async function build(candidate, commit, output, id, canTriage, channel) {
     if (!remote) {
       for (const variant of ['', '--fallback']) {
         const report = join(work, variant ? 'fallback-report.json' : 'threaded-report.json');
-        run(work, 'bash', ['scripts/engine-smoke.sh', '--channel', channel, ...(variant ? [variant] : []),
+        runBuildPhase(variant ? 'fallback-smoke' : 'threaded-smoke', work, 'bash', ['scripts/engine-smoke.sh', '--channel', channel, ...(variant ? [variant] : []),
           'vendor/simc/profiles/MID2/MID2_Mage_Frost.simc', 'iterations=50', `threads=${variant ? 1 : 4}`, `json=${report},version=2`],
         { env: { ...process.env, FROSTSIM_ENGINE_DIR: 'public/engine' } });
         const dps = json(report).sim.players[0].collected_data.dps;
@@ -660,22 +702,30 @@ function describe(status) {
     `**Checked:** ${status.checkedAt}`, '', 'Logs: `journalctl -u frostsim-engine-update.service` on the VPS.'].join('\n');
 }
 
-async function notify(previous, status, label = ALERT_LABEL) {
+export async function notify(previous, status, label = ALERT_LABEL, send = alertApi) {
+  status.alertHealth = { state: 'failed', delivered: false, checkedAt: new Date().toISOString() };
+  try {
   const token = githubToken();
-  if (!token) { console.log('Alerts disabled: no GitHub token file (FROSTSIM_GITHUB_ENV_FILE)'); return; }
-  const [open] = await alertApi(token, `/issues?labels=${label}&state=open&per_page=1`);
+  if (!token) {
+    status.alertHealth.state = 'unconfigured';
+    throw new Error('Updater alert configuration missing: FROSTSIM_GITHUB_ENV_FILE must provide a delivery token');
+  }
+  const [open] = await send(token, `/issues?labels=${label}&state=open&per_page=1`);
   const action = issueAction(open, previous, status);
+  const effective = alertStatus(status);
   if (action === 'open') {
-    const issue = await alertApi(token, '/issues', { method: 'POST', body: JSON.stringify({
-      title: `Engine updater ${status.state}: ${status.reason}`.slice(0, 200), labels: [label], body: describe(status) }) });
+    const issue = await send(token, '/issues', { method: 'POST', body: JSON.stringify({
+      title: `Engine updater ${effective.state}: ${effective.reason}`.slice(0, 200), labels: [label], body: describe(effective) }) });
     status.issueUrl = issue.html_url;
   } else if (action === 'comment') {
-    await alertApi(token, `/issues/${open.number}/comments`, { method: 'POST', body: JSON.stringify({ body: describe(status) }) });
+    await send(token, `/issues/${open.number}/comments`, { method: 'POST', body: JSON.stringify({ body: describe(effective) }) });
     status.issueUrl = open.html_url;
   } else if (action === 'close') {
-    await alertApi(token, `/issues/${open.number}/comments`, { method: 'POST', body: JSON.stringify({ body: `Recovered.\n\n${describe(status)}` }) });
-    await alertApi(token, `/issues/${open.number}`, { method: 'PATCH', body: JSON.stringify({ state: 'closed' }) });
-  } else if (open && status.state !== 'current') status.issueUrl = open.html_url;
+    await send(token, `/issues/${open.number}/comments`, { method: 'POST', body: JSON.stringify({ body: `Recovered.\n\n${describe(status)}` }) });
+    await send(token, `/issues/${open.number}`, { method: 'PATCH', body: JSON.stringify({ state: 'closed' }) });
+  } else if (open && effective.state !== 'current') status.issueUrl = open.html_url;
+  Object.assign(status.alertHealth, { state: 'healthy', delivered: action !== null, action: action ?? 'unchanged' });
+  } catch (error) { status.alertHealth.reason = error.message; throw error; }
 }
 
 // Native simc for the compute workers (CLAUDE.md D14): built from each pack's own source archive with
@@ -759,6 +809,13 @@ const HCLOUD_API = 'https://api.hetzner.cloud/v1';
 const BUILDER_LABEL = { frostsim: 'engine-build' };
 /** A builder older than this is a leak from a crashed run; each run removes those first. */
 const BUILDER_MAX_AGE_MS = 2 * 3600_000;
+const withSignal = (fetchFn, signal) => !signal ? fetchFn : (url, init = {}) => fetchFn(url,
+  { ...init, signal: AbortSignal.any([signal, ...(init.signal ? [init.signal] : [])]) });
+function builderBudgetConfig(provider) {
+  const value = name => Number(process.env[`FROSTSIM_UPDATER_${provider}_${name}`]);
+  return { hourlyUsd: value('HOURLY_USD'), minimumMs: value('MINIMUM_SECONDS') * 1000,
+    billingUnitMs: value('BILLING_UNIT_SECONDS') * 1000, cleanupMs: value('CLEANUP_SECONDS') * 1000 };
+}
 /** scripts/update-engines.mjs's native flags without the launcher: the builder is fresh, so ccache would only cost time. */
 const NATIVE_CMAKE = ['-S', 'vendor/simc', '-B', 'build/native', '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', '-DBUILD_GUI=OFF',
   '-DBUILD_TESTING=OFF', '-DSC_NO_NETWORKING=ON', '-DCMAKE_CXX_FLAGS=-DSC_USE_PTR=0'];
@@ -782,7 +839,8 @@ async function hcloudCall(hc, method, path, body, fetchFn) {
     body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(60_000),
   });
   if ((method === 'DELETE' || method === 'GET') && response.status === 404) return null;
-  if (!response.ok) throw new Error(`hcloud ${method} ${path.split('?')[0]}: HTTP ${response.status}`);
+  if (!response.ok) throw Object.assign(new Error(`hcloud ${method} ${path.split('?')[0]}: HTTP ${response.status}`),
+    { launchRefused: response.status >= 400 && response.status < 500 && response.status !== 408 });
   const text = await response.text();
   return text ? JSON.parse(text) : {};
 }
@@ -799,15 +857,18 @@ export async function sweepBuilders(hc, { fetchFn = fetch, now = Date.now() } = 
 export function hetznerBuilders(hc, fetchFn = fetch) {
   return {
     name: 'Hetzner',
-    async launch(userData, name) {
+    budget: builderBudgetConfig('HETZNER'),
+    async launch(userData, name, { signal } = {}) {
       // Default public networking: the builder needs IPv4 (GitHub and nodejs.org), and R2 did not answer over IPv6 in Phase 0.
       const { server } = await hcloudCall(hc, 'POST', '/servers', { name: `frostsim-${name}`, server_type: hc.serverType, image: 'ubuntu-24.04',
-        location: hc.location, labels: BUILDER_LABEL, user_data: userData }, fetchFn);
+        location: hc.location, labels: BUILDER_LABEL, user_data: userData }, withSignal(fetchFn, signal));
+      if (!Number.isSafeInteger(server?.id) || server.id <= 0) throw new Error('hcloud create returned no valid server id; launch outcome unknown');
       console.log(`Builder hcloud ${server.id}: ${hc.serverType} in ${hc.location}`);
       return String(server.id);
     },
-    gone: async id => { const data = await hcloudCall(hc, 'GET', `/servers/${id}`, null, fetchFn); return !data?.server || data.server.status === 'off'; },
-    remove: async id => { await hcloudCall(hc, 'DELETE', `/servers/${id}`, null, fetchFn); },
+    gone: async (id, { signal } = {}) => { const data = await hcloudCall(hc, 'GET', `/servers/${id}`, null, withSignal(fetchFn, signal)); return !data?.server || data.server.status === 'off'; },
+    remove: async (id, { signal } = {}) => { await hcloudCall(hc, 'DELETE', `/servers/${id}`, null, withSignal(fetchFn, signal)); },
+    absent: async (id, { signal } = {}) => !(await hcloudCall(hc, 'GET', `/servers/${id}`, null, withSignal(fetchFn, signal)))?.server,
     sweep: () => sweepBuilders(hc, { fetchFn }),
   };
 }
@@ -859,6 +920,7 @@ async function awsCall(creds, service, body, headers, fetchFn) {
     const code = xmlTags(text, 'Code')[0] ?? (() => { try { return JSON.parse(text).__type?.split('#').pop(); } catch { return undefined; } })();
     const err = new Error(`${service} ${headers['x-amz-target'] ?? body.split('&')[0]}: HTTP ${response.status} (${code ?? 'unknown'})`);
     err.code = code;
+    err.launchRefused = EC2_TRY_NEXT.has(code) || ['MaxSpotInstanceCountExceeded', 'UnauthorizedOperation', 'AuthFailure', 'InvalidParameterValue'].includes(code);
     throw err;
   }
   return text;
@@ -923,6 +985,8 @@ async function launchOnce(creds, userData, name, fetchFn) {
         ImageId: ami, InstanceType: pool.type, MinCount: '1', MaxCount: '1', SubnetId: creds.subnets.get(pool.zone),
         'SecurityGroupId.1': creds.securityGroup, 'InstanceMarketOptions.MarketType': 'spot',
         'InstanceMarketOptions.SpotOptions.SpotInstanceType': 'one-time', 'InstanceMarketOptions.SpotOptions.InstanceInterruptionBehavior': 'terminate',
+        ...(Number(process.env.FROSTSIM_UPDATER_EC2_HOURLY_USD) > 0
+          ? { 'InstanceMarketOptions.SpotOptions.MaxPrice': process.env.FROSTSIM_UPDATER_EC2_HOURLY_USD } : {}),
         InstanceInitiatedShutdownBehavior: 'terminate', 'MetadataOptions.HttpTokens': 'required',
         // Room for Node, emsdk, the simc checkout and two LTO build trees.
         'BlockDeviceMapping.1.DeviceName': '/dev/sda1', 'BlockDeviceMapping.1.Ebs.VolumeSize': '60',
@@ -959,9 +1023,14 @@ async function terminate(creds, id, fetchFn) {
 export function ec2Builders(creds, fetchFn = fetch, sleep = undefined) {
   return {
     name: 'EC2 Spot',
-    launch: (userData, name) => launchBuilder(creds, userData, name, fetchFn, sleep),
-    gone: async id => ['shutting-down', 'terminated', 'stopped', 'stopping'].includes(await instanceState(creds, id, fetchFn)),
-    remove: id => terminate(creds, id, fetchFn),
+    budget: builderBudgetConfig('EC2'),
+    launch: (userData, name, { signal } = {}) => launchBuilder(creds, userData, name, withSignal(fetchFn, signal), sleep),
+    gone: async (id, { signal } = {}) => ['shutting-down', 'terminated', 'stopped', 'stopping'].includes(await instanceState(creds, id, withSignal(fetchFn, signal))),
+    remove: (id, { signal } = {}) => terminate(creds, id, withSignal(fetchFn, signal)),
+    absent: async (id, { signal } = {}) => {
+      try { return (await instanceState(creds, id, withSignal(fetchFn, signal))) === 'terminated'; }
+      catch (error) { if (error.code === 'InvalidInstanceID.NotFound') return true; throw error; }
+    },
     sweep: () => sweepEc2Builders(creds, { fetchFn }),
   };
 }
@@ -995,6 +1064,11 @@ export function builderUserData(urls) {
  */
 export async function runOnBuilder(provider, r2, dir, into, { name, timeoutMs, cache, fetchFn = fetch, exec = run, now = Date.now,
   sleep = ms => new Promise(done => setTimeout(done, ms)) }) {
+  const budget = updaterBudgetFromEnv();
+  for (const pending of budget.pendingBuilders(provider.name)) {
+    if (provider.absent && await provider.absent(pending.resourceId)) budget.confirmDeleted(pending.id, { confirmed: true });
+  }
+  const reservation = budget.reserveBuilder({ provider: provider.name, ...provider.budget, timeoutMs });
   const prefix = `builds/${name}`;
   const keys = { input: `${prefix}/in.tgz`, output: `${prefix}/out.tgz`, log: `${prefix}/build.log`, exit: `${prefix}/exit` };
   const expires = Math.ceil(timeoutMs / 1000) + 3600;
@@ -1008,36 +1082,75 @@ export async function runOnBuilder(provider, r2, dir, into, { name, timeoutMs, c
       + `CACHE_PUT='${presignV4(r2Url(r2, key), 'PUT', r2Auth, expires)}'\n`);
   }
   let id = null;
+  let dispatched = false;
+  let workError;
   try {
     const tarball = execFileSync('tar', ['-czf', '-', '-C', dir, '.'], { maxBuffer: 1 << 30 });
     await r2Request(r2, 'PUT', keys.input, { body: tarball, headers: { 'content-type': 'application/gzip' }, fetchFn });
-    id = await provider.launch(builderUserData(urls), name);
     const deadline = now() + timeoutMs;
+    const signal = AbortSignal.timeout(timeoutMs);
+    const buildFetch = withSignal(fetchFn, signal);
+    budget.launching(reservation);
+    dispatched = true;
+    try { id = await provider.launch(builderUserData(urls), name, { signal }); }
+    catch (error) {
+      if (error.launchRefused) { budget.launchRefused(reservation); throw error; }
+      throw Object.assign(new BudgetError(`Builder launch outcome unresolved: ${error.message}`), { cause: error });
+    }
+    if (!id) throw new BudgetError('Builder launch outcome unresolved: provider returned no resource id');
+    budget.launched(reservation, id);
     let goneSince = null;
     for (;;) {
-      await sleep(EC2_POLL_MS);
-      const exit = await r2Request(r2, 'GET', keys.exit, { fetchFn });
+      if (now() >= deadline) throw new Error(`Builder ${id} did not finish within ${Math.round(timeoutMs / 60_000)} min`);
+      await sleep(Math.min(EC2_POLL_MS, Math.max(0, deadline - now())));
+      signal.throwIfAborted();
+      if (now() >= deadline) throw new Error(`Builder ${id} did not finish within ${Math.round(timeoutMs / 60_000)} min`);
+      const exit = await r2Request(r2, 'GET', keys.exit, { fetchFn: buildFetch });
       if (exit !== null) {
         const code = exit.toString().trim();
         if (code !== '0') {
-          const log = (await r2Request(r2, 'GET', keys.log, { fetchFn }))?.toString() ?? '';
-          throw new Error(`Builder exited with ${code}: ${log.split('\n').slice(-30).join('\n')}`);
+          const log = (await r2Request(r2, 'GET', keys.log, { fetchFn: buildFetch }))?.toString() ?? '';
+          const detail = buildFailureDetail(log);
+          throw Object.assign(new Error(`Builder exited with ${code}: ${detail.reason}\n${detail.logTail}`), { detail });
         }
-        const out = await r2Request(r2, 'GET', keys.output, { fetchFn });
+        const out = await r2Request(r2, 'GET', keys.output, { fetchFn: buildFetch });
         if (!out) throw new Error('Builder reported success but uploaded no output');
         mkdirSync(into, { recursive: true });
-        exec(into, 'tar', ['-xzf', '-'], { input: out, stdio: ['pipe', 'inherit', 'inherit'] });
-        return;
+        exec(into, 'tar', ['-xzf', '-'], { input: out, stdio: ['pipe', 'inherit', 'inherit'], timeout: Math.max(1, deadline - now()) });
+        break;
       }
       if (now() > deadline) throw new Error(`Builder ${id} did not finish within ${Math.round(timeoutMs / 60_000)} min`);
-      if (await provider.gone(id)) {
+      if (await provider.gone(id, { signal })) {
         goneSince ??= now();
         if (now() - goneSince > EC2_LOST_MS) throw new Error(`Builder ${id} stopped without reporting (a Spot interruption?)`);
       } else goneSince = null;
     }
-  } finally {
-    if (id) await provider.remove(id).catch(err => console.error(`Builder ${id} NOT removed: ${err.message}`));
+  } catch (error) { workError = error; }
+  {
+    let cleanupError;
+    if (id) {
+      try {
+        const signal = AbortSignal.timeout(provider.budget.cleanupMs);
+        const cleanupDeadline = now() + provider.budget.cleanupMs;
+        await provider.remove(id, { signal });
+        let absent = false;
+        const attempts = Math.max(1, Math.ceil(provider.budget.cleanupMs / EC2_POLL_MS));
+        for (let attempt = 0; attempt < attempts; attempt++) {
+          signal.throwIfAborted();
+          if (now() >= cleanupDeadline) throw new Error(`Builder ${id} cleanup deadline elapsed`);
+          if (provider.absent && await provider.absent(id, { signal })) { absent = true; break; }
+          if (attempt + 1 < attempts) await sleep(Math.min(EC2_POLL_MS, Math.max(0, cleanupDeadline - now())));
+        }
+        if (!absent) throw new Error(`Builder ${id} deletion is not confirmed`);
+        budget.confirmDeleted(reservation, { confirmed: true });
+      } catch (error) {
+        budget.cleanupFailed(reservation);
+        cleanupError = new BudgetError(`Builder cleanup unresolved: ${error.message}`);
+      }
+    } else if (!dispatched) budget.cancelUnlaunched(reservation);
     for (const key of Object.values(keys)) await r2Request(r2, 'DELETE', key, { fetchFn }).catch(() => {});
+    if (cleanupError) { cleanupError.cause = workError; throw cleanupError; }
+    if (workError) throw workError;
   }
 }
 
@@ -1054,7 +1167,7 @@ const SAVE_CACHE = ['save_cache() { if [ -n "${CACHE_PUT:-}" ]; then ccache -s |
  * mtimes every run, so the engine job keys on its pinned version.
  */
 function builderPrelude({ node, emsdk, compilerCheck = 'content' } = {}) {
-  return ['set -euo pipefail', 'export DEBIAN_FRONTEND=noninteractive HOME=/root',
+    return ['set -euo pipefail', 'echo FROSTSIM_PHASE=host-preparation', 'export DEBIAN_FRONTEND=noninteractive HOME=/root',
     'apt-get update -qq', 'apt-get install -y -qq --no-install-recommends cmake ninja-build g++ git python3 xz-utils ca-certificates curl ccache zstd >/dev/null',
     `export CCACHE_DIR=/root/ccache CCACHE_BASEDIR=/root/w CCACHE_NOHASHDIR=1 CCACHE_MAXSIZE=8G CCACHE_COMPILERCHECK=${compilerCheck}`,
     'if [ -f cache.env ]; then . ./cache.env; fi',
@@ -1080,9 +1193,12 @@ export function engineJobScript(toolchain, channel = 'live') {
   return [...builderPrelude({ node: toolchain.node, emsdk: toolchain.emsdk.version, compilerCheck: `string:emsdk-${toolchain.emsdk.version}` }),
     'cd ws', 'npm ci --ignore-scripts', 'bash scripts/bootstrap-engine.sh', 'export CMAKE_BUILD_PARALLEL_LEVEL=$(nproc)',
     'export FROSTSIM_ENGINE_DIR=public/engine',
-    `bash scripts/build-engine.sh${channelFlag ? ' --channel ptr' : ''}`, `bash scripts/build-engine.sh ${channelFlag}--fallback`, 'mkdir -p ../out', smoke(false), smoke(true),
+    'echo FROSTSIM_PHASE=threaded-build', `bash scripts/build-engine.sh${channelFlag ? ' --channel ptr' : ''}`,
+    'echo FROSTSIM_PHASE=fallback-build', `bash scripts/build-engine.sh ${channelFlag}--fallback`, 'mkdir -p ../out',
+    'echo FROSTSIM_PHASE=threaded-smoke', smoke(false), 'echo FROSTSIM_PHASE=fallback-smoke', smoke(true),
     // The workspace carries public/presentation.json, which the type check imports: the host generates it first.
-    `FROSTSIM_ENGINE=1 FROSTSIM_ENGINE_CHANNEL=${channel} npx vitest run src/lib/simc`, 'npm run check', 'cp -R public/engine ../out/engine',
+    'echo FROSTSIM_PHASE=tests', `FROSTSIM_ENGINE=1 FROSTSIM_ENGINE_CHANNEL=${channel} npx vitest run src/lib/simc`,
+    'echo FROSTSIM_PHASE=types', 'npm run check', 'cp -R public/engine ../out/engine',
     ''].join('\n');
 }
 
@@ -1094,8 +1210,8 @@ export function nativeJobScript(channel = 'live', commit = null) {
     // The archive has no checkout metadata. Pin what upstream CMake's rev-parse embeds in reports.
     ...(commit ? ['mkdir -p vendor/simc/.git/objects vendor/simc/.git/refs/heads',
       `printf 'ref: refs/heads/midnight\\n' > vendor/simc/.git/HEAD`, `printf '${commit}\\n' > vendor/simc/.git/refs/heads/midnight`] : []),
-    `cmake ${flags.join(' ')} -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache >/dev/null`,
-    `cmake --build build/native${channel === 'ptr' ? '-ptr' : ''}`, `cp build/native${channel === 'ptr' ? '-ptr' : ''}/simc out/simc`, ''].join('\n');
+    'echo FROSTSIM_PHASE=native-configure', `cmake ${flags.join(' ')} -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DCMAKE_C_COMPILER_LAUNCHER=ccache >/dev/null`,
+    'echo FROSTSIM_PHASE=native-build', `cmake --build build/native${channel === 'ptr' ? '-ptr' : ''}`, `cp build/native${channel === 'ptr' ? '-ptr' : ''}/simc out/simc`, ''].join('\n');
 }
 
 /** R2 and the builder providers in fallback order (EC2 Spot, then Hetzner), or null when none is configured: this host builds. */
@@ -1121,16 +1237,23 @@ async function sweepAll(chain) {
 /** Runs a job on the first provider that completes it. Returns that provider's name; throws with every failure when none did. */
 export async function runRemote(chain, dir, into, opts) {
   const failures = [];
+  let detail;
   for (const provider of chain.providers) {
     try {
       await runOnBuilder(provider, chain.r2, dir, into, opts);
       return provider.name;
     } catch (err) {
+      detail ??= err.detail;
+      if (err instanceof BudgetError) {
+        budgetHealth = { state: 'blocked', reason: err.message };
+        process.exitCode = 1;
+        throw err;
+      }
       failures.push(`${provider.name}: ${err.message}`);
       console.error(`${provider.name} builder failed: ${err.message}`);
     }
   }
-  throw new Error(failures.join('; '));
+  throw Object.assign(new Error(failures.join('; ')), { detail });
 }
 
 /**
@@ -1160,7 +1283,10 @@ async function remoteEngineBuild(work, toolchain, { canTriage = true, channel = 
     // A failure in the code itself fails the same way here, after hours of this host's cores. Not judged when there is no base pack to keep serving (triageAllowed).
     const kind = canTriage ? await triage(err.message, { key: aiKey() }) : 'unknown';
     if (kind === 'upstream_code' || kind === 'our_integration') {
-      throw new BuildFailure(kind, `Engine build failed (${kind}): ${err.message.trim().split('\n').filter(Boolean).at(-1).slice(0, 160)}`);
+      const detail = err.detail ?? buildFailureDetail(err.message);
+      const failure = new BuildFailure(kind, `Engine build failed (${kind}, ${detail.phase}): ${detail.reason}`);
+      failure.detail = detail;
+      throw failure;
     }
     console.error('Building here instead');
     return null;
@@ -1307,8 +1433,9 @@ async function nativeBuilds(output, index, indexPath, channel) {
     } finally { await builder?.close(); }
     if (failures.length) Object.assign(status, { state: 'failed', reason: `Native build failed for ${failures.join('; ')}` });
   } catch (err) { Object.assign(status, { state: 'failed', reason: `Native builds: ${err.message}` }); }
+  if (budgetHealth) { status.budgetHealth = budgetHealth; process.exitCode = 1; }
   try { await notify(index.nativeStatusByChannel?.[channel] ?? null, status, `${NATIVE_ALERT_LABEL}${channel === 'ptr' ? '-ptr' : ''}`); }
-  catch (err) { console.error(`Native alert failed: ${err.message}`); }
+  catch (err) { console.error(`Native alert failed: ${err.message}`); process.exitCode = 1; }
   try { writeNativeStatus(indexPath, status, channel); }
   catch (err) { console.error(`Native status not recorded: ${err.message}`); }
 }
@@ -1317,6 +1444,18 @@ async function main() {
   const args = process.argv.slice(2);
   const option = name => { const i = args.indexOf(name); return i === -1 ? undefined : args[i + 1]; };
   const output = resolve(option('--output') ?? 'public');
+  if (args.includes('--native-retention')) {
+    const file = option('--native-retention');
+    if (!file || file.startsWith('--')) throw new Error('--native-retention requires a complete inventory JSON file');
+    const purge = args.includes('--purge-native');
+    const creds = purge ? r2Credentials() : null;
+    if (purge && !creds) throw new Error('Native purge requires R2 credentials');
+    console.log(JSON.stringify(await nativeRetentionReport(output, json(resolve(file)), {
+      purge, deleteObject: key => r2Request(creds, 'DELETE', key),
+    }), null, 2));
+    return;
+  }
+  if (args.includes('--purge-native')) throw new Error('--purge-native requires --native-retention <inventory.json>');
   const channel = option('--channel') ?? 'live';
   if (args.includes('--channel') && option('--channel') === undefined) throw new Error('--channel requires live or ptr');
   if (!['live', 'ptr'].includes(channel)) throw new Error('--channel requires live or ptr');
@@ -1330,7 +1469,7 @@ async function main() {
   if (args.includes('--alert-crash')) {
     const marker = join(output, '.engine-update-started-at');
     const startedAt = existsSync(marker) ? Number(readFileSync(marker, 'utf8')) : undefined;
-    if (!crashAlertNeeded(previous, Number.isFinite(startedAt) ? startedAt : undefined)) return;
+    if (!crashAlertNeeded(previous, Number.isFinite(startedAt) ? startedAt : undefined) && previous?.alertHealth?.state === 'healthy') return;
     await notify(previous, { checkedAt: new Date().toISOString(), engineChannel: channel, state: 'failed', upstreamHead: previous?.upstreamHead,
       reason: 'The updater exited before recording a result' }, alertLabel);
     return;
@@ -1356,7 +1495,8 @@ async function main() {
     if (index.packs.some(p => p.id === id)) return;
     // This commit already failed for a reason in upstream's own code. Only upstream moving, or a patch or build fix (both change the id), can help.
     if (!explicit && previous?.failedPack === id) {
-      Object.assign(status, { failedPack: id, failureKind: previous.failureKind });
+      Object.assign(status, { failedPack: id, failureKind: previous.failureKind,
+        ...(previous.failurePhase ? { failurePhase: previous.failurePhase, failureLogTail: previous.failureLogTail } : {}) });
       throw new BuildFailure(previous.failureKind, previous.reason ?? 'Engine build failed earlier');
     }
     // The gate and the notes run when a pack for this compat exists to compare against; --ref always builds.
@@ -1388,7 +1528,9 @@ async function main() {
     } else {
       try { expected = await build(candidate, commit, output, id, triageAllowed({ explicit, base }), channel); }
       catch (err) {
-        if (err instanceof BuildFailure) Object.assign(status, { failureKind: err.kind, ...(err.kind === 'upstream_code' ? { failedPack: id } : {}) });
+        if (err instanceof BuildFailure) Object.assign(status, { failureKind: err.kind,
+          ...(err.detail ? { failurePhase: err.detail.phase, failureLogTail: err.detail.logTail } : {}),
+          ...(err.kind === 'upstream_code' ? { failedPack: id } : {}) });
         throw err;
       }
     }
@@ -1426,12 +1568,14 @@ async function main() {
       if (!args.includes('--discover')) await publish(candidate, commit, ref !== undefined);
     }
   } catch (err) {
-    Object.assign(status, { state: err instanceof GateError ? 'blocked' : 'failed', reason: err.message });
+    Object.assign(status, { state: err instanceof GateError ? 'blocked' : 'failed', reason: err.message,
+      ...(err.detail ? { failurePhase: err.detail.phase, failureLogTail: err.detail.logTail } : {}) });
     console.error(err.stack ?? err.message);
   }
   if (args.includes('--discover')) return;
 
   index.packs = retainedPacks(index.packs);
+  if (budgetHealth) { status.budgetHealth = budgetHealth; process.exitCode = 1; }
   try { await notify(previous, status, alertLabel); }
   catch (err) { console.error(`Alert failed: ${err.message}`); process.exitCode = 1; }
   index.statusByChannel[channel] = status;
