@@ -19,6 +19,20 @@ function provider(currency: string | undefined, gross = '0.2452', ipv6 = '0.0000
 }
 
 describe('Hetzner provider currency', () => {
+  it('accepts the actual USD quote that omits free Primary IPv6 pricing', async () => {
+    const fetchFn = (async (input: RequestInfo | URL) => {
+      const path = new URL(String(input)).pathname;
+      if (path === '/v1/pricing') return Response.json({ pricing: { currency: 'USD', primary_ips: [
+        { type: 'ipv4', prices: [{ location: 'nbg1', price_hourly: { net: '0.0010000000', gross: '0.0010000000000000' } }] },
+      ] } });
+      if (path === '/v1/server_types') return Response.json({ server_types: [{ name: 'cpx62', cores: 16,
+        prices: [{ location: 'nbg1', price_hourly: { net: '0.2452000000', gross: '0.2452000000000000' } }] }] });
+      throw new Error(`unexpected fake provider path ${path}`);
+    }) as typeof fetch;
+    const [quote] = await hetznerProvider({ ...limits, location: 'nbg1' }, 1.17, fetchFn).offers(NOW);
+    expect(quote).toMatchObject({ size: 'cpx62', cores: 16, hourlyUsd: 0.2452, maxHourlyUsd: 0.2452 });
+  });
+
   it('refuses malformed or incomplete inventories instead of asserting provider absence', async () => {
     for (const body of [{}, { servers: [], meta: {} },
       { servers: [{ id: 'invalid' }], meta: { pagination: { next_page: null } } },
@@ -41,10 +55,41 @@ describe('Hetzner provider currency', () => {
     await expect(provider('USD', '0.2452', '-0.01').offers(NOW)).rejects.toThrow(/price/);
   });
 
+  it('refuses malformed Primary IP data and explicit IPv6 quotes without a valid local price', async () => {
+    for (const primaryIPs of [undefined, null, {}, [null], [{ type: 'ipv6', prices: null }], [{ type: 'ipv6', prices: [null] }],
+      [{ type: 'ipv6', prices: [{ location: 'fsn1', price_hourly: { gross: '0' } }, { location: 'fsn1', price_hourly: { gross: '0.01' } }] }],
+      [{ type: 'ipv6', prices: [] }], [{ type: 'ipv6', prices: [{ location: 'other', price_hourly: { gross: '0' } }] }],
+      ...[null, '', 'Infinity'].map((gross) => [{ type: 'ipv6', prices: [{ location: 'fsn1', price_hourly: { gross } }] }])]) {
+      const fetchFn = (async (input: RequestInfo | URL) => new URL(String(input)).pathname === '/v1/pricing'
+        ? Response.json({ pricing: { currency: 'USD', primary_ips: primaryIPs } })
+        : Response.json({ server_types: [{ cores: 16, prices: [{ location: 'fsn1', price_hourly: { gross: '0.2452' } }] }] })) as typeof fetch;
+      await expect(hetznerProvider(limits, 1.17, fetchFn).offers(NOW)).rejects.toThrow(/pric/);
+    }
+  });
+
   it('isolates cached quotes by provider identity and currency', async () => {
     const a = provider('EUR', '0.2');
     const b = provider('USD', '0.3');
     expect((await a.offers(NOW))[0].hourlyUsd).toBeCloseTo(0.234, 8);
     expect((await b.offers(NOW))[0].hourlyUsd).toBeCloseTo(0.3, 8);
+  });
+
+  it('validates fresh IP pricing before reusing the same client cache and refreshes a changed extra', async () => {
+    let primaryIPs: unknown = [{ type: 'ipv4', prices: [] }];
+    let serverReads = 0;
+    const fetchFn = (async (input: RequestInfo | URL) => {
+      if (new URL(String(input)).pathname === '/v1/pricing') return Response.json({ pricing: { currency: 'USD', primary_ips: primaryIPs } });
+      serverReads++;
+      return Response.json({ server_types: [{ cores: 16, prices: [{ location: 'fsn1', price_hourly: { gross: '0.2452' } }] }] });
+    }) as typeof fetch;
+    const same = hetznerProvider(limits, 1.17, fetchFn);
+    expect((await same.offers(NOW))[0].hourlyUsd).toBeCloseTo(0.2452, 8);
+    primaryIPs = [{ type: 'ipv6', prices: [] }];
+    await expect(same.offers(new Date(NOW.getTime() + 1000))).rejects.toThrow(/price/);
+    primaryIPs = [{ type: 'ipv6', prices: [{ location: 'fsn1', price_hourly: { gross: '0.01' } }] }];
+    expect((await same.offers(new Date(NOW.getTime() + 2000)))[0].hourlyUsd).toBeCloseTo(0.2552, 8);
+    expect(serverReads).toBe(1);
+    expect((await same.offers(new Date(NOW.getTime() + 3_600_000)))[0].hourlyUsd).toBeCloseTo(0.2552, 8);
+    expect(serverReads).toBe(2);
   });
 });

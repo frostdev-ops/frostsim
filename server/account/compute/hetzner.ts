@@ -100,7 +100,8 @@ export type Hcloud = ReturnType<typeof hcloud>;
 
 export interface Price { hourly: number; currency: 'USD' | 'EUR'; cores: number }
 
-// Provider clients own their credentials/fetch surface. Never share a quote across projects or currencies.
+// Provider clients own their credentials/fetch surface. Cache only the server's base quote; IP pricing is read fresh every time.
+// Never share a quote across projects or currencies.
 const priceCache = new WeakMap<Hcloud, { key: string; until: number; value: Price }>();
 
 /** Gross hourly price (VAT included: the cap must hold whatever the invoice says) and cores of the configured type, cached 1 h. */
@@ -108,19 +109,29 @@ export async function serverPrice(api: Hcloud, limits: HetznerLimits, now: Date)
   const pricing = await api.pricing();
   if (pricing?.currency !== 'USD' && pricing?.currency !== 'EUR') throw new Error('hcloud pricing currency is unsupported or missing');
   const key = `${limits.serverType}@${limits.location}:${pricing.currency}`;
+  // Primary IPv6 is free and the real /pricing response omits its type entirely:
+  // https://docs.hetzner.com/cloud/servers/primary-ips/overview/#pricing
+  // createServer disables IPv4/backups/volumes. Still honor an explicit IPv6 quote and refuse malformed/missing prices in it.
+  if (!Array.isArray(pricing.primary_ips) || !pricing.primary_ips.every((ip) => ip &&
+    (ip.type === 'ipv4' || ip.type === 'ipv6') && Array.isArray(ip.prices))) throw new Error('hcloud Primary IP pricing is malformed or missing');
+  const ipv6 = pricing.primary_ips.filter((p) => p.type === 'ipv6');
+  if (ipv6.length > 1) throw new Error('hcloud Primary IPv6 pricing is duplicated');
+  if (ipv6[0]?.prices.some((p) => !p || typeof p.location !== 'string')) throw new Error('hcloud Primary IPv6 prices are malformed');
+  const local = ipv6[0]?.prices.filter((p) => p.location === limits.location) ?? [];
+  if (ipv6.length && local.length !== 1) throw new Error(`hcloud has no hourly price for ${limits.serverType} in ${limits.location} (Primary IPv6 price missing or duplicated)`);
+  const gross = local[0]?.price_hourly?.gross;
+  const extra = !ipv6.length ? 0 : typeof gross === 'string' && gross.trim() ? Number(gross) : NaN;
+  if (!Number.isFinite(extra) || extra < 0) throw new Error('hcloud Primary IPv6 price is invalid');
   const cached = priceCache.get(api);
-  if (cached?.key === key && cached.until > now.getTime()) return cached.value;
+  if (cached?.key === key && cached.until > now.getTime()) return { ...cached.value, hourly: cached.value.hourly + extra };
   const type = await api.serverType(limits.serverType);
   const base = Number(type?.prices?.find((p) => p.location === limits.location)?.price_hourly?.gross);
-  // createServer provisions a Primary IPv6, with IPv4/backups/volumes disabled. Include its actual price, even when zero.
-  const extra = Number(pricing.primary_ips?.find((p) => p.type === 'ipv6')?.prices?.find((p) => p.location === limits.location)?.price_hourly?.gross);
-  if (!type || !Number.isInteger(type.cores) || type.cores <= 0 || !Number.isFinite(base) || !(base > 0)
-    || !Number.isFinite(extra) || extra < 0) {
+  if (!type || !Number.isInteger(type.cores) || type.cores <= 0 || !Number.isFinite(base) || !(base > 0)) {
     throw new Error(`hcloud has no hourly price for ${limits.serverType} in ${limits.location}`);
   }
-  const value: Price = { hourly: base + extra, currency: pricing.currency, cores: type.cores };
+  const value: Price = { hourly: base, currency: pricing.currency, cores: type.cores };
   priceCache.set(api, { key, until: now.getTime() + HOUR_MS, value });
-  return value;
+  return { ...value, hourly: value.hourly + extra };
 }
 
 /** The configured server type as a fleet provider. Its offer is priced in USD at `usdPerEur`, gross, as the invoice bills it. */
