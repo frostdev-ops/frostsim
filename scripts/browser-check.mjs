@@ -49,7 +49,7 @@ try {
   await build({ entryPoints: [join(root, 'src/lib/simc/report-worker.ts')], bundle: true, format: 'esm', platform: 'browser', outfile: join(dist, '__ci__/report-worker.mjs') });
   writeFileSync(join(dist, '__ci__/index.html'), '<!doctype html><html><head><title>Frostsim CI engine harness</title></head><body><main>Production-policy engine validation</main></body></html>');
   writeFileSync(join(dist, '__ci__/observer-child.js'), "setInterval(()=>{},1000); postMessage('child-ready');");
-  writeFileSync(join(dist, '__ci__/observer-parent.js'), "const child=new Worker('/__ci__/observer-child.js'); child.onmessage=()=>postMessage('parent-ready'); onmessage=({data})=>{ if(data==='stop'){ child.terminate(); postMessage('parent-stopped'); } };");
+  writeFileSync(join(dist, '__ci__/observer-parent.js'), "const child=new Worker('/__ci__/observer-child.js'); child.onmessage=()=>postMessage('parent-ready');");
   const registry = { schemaVersion: 3, packs: [], status: null, statusByChannel: { live: null, ptr: null } };
   const catalogs = {};
   for (const channel of channels) {
@@ -215,19 +215,14 @@ try {
       const childTarget = controlTargets.find(t => t.url.endsWith('/observer-child.js'));
       assert.ok(parentTarget && childTarget, 'observer control URLs must identify actual parent and child');
       assert.equal(childTarget.parentId, parentTarget.targetId, 'observer control must prove nested worker topology');
-      await page.evaluate(() => new Promise((resolve, reject) => {
+      // Let the owning page terminate the nested graph in order, as with production coordinators.
+      // Terminating the child just before its parent can retain the parent in Chromium.
+      await page.evaluate(() => {
         const parent = globalThis.__observerParent;
-        const deadline = setTimeout(() => reject(new Error('observer parent did not acknowledge child termination')), 5000);
-        parent.onmessage = ({ data }) => {
-          if (data !== 'parent-stopped') return;
-          clearTimeout(deadline);
-          parent.onmessage = null;
-          parent.terminate();
-          globalThis.__observerParent = null;
-          resolve(true);
-        };
-        parent.postMessage('stop');
-      }));
+        parent.onmessage = null;
+        parent.terminate();
+        globalThis.__observerParent = null;
+      });
       const controlCloseDeadline = Date.now() + 5000;
       let closedControls;
       do {
