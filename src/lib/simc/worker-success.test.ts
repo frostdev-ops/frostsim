@@ -16,7 +16,7 @@ it('confirms ordinary local shutdown before the report can make the controller t
       close,
       onmessage: undefined as unknown as (event: { data: unknown }) => Promise<void>,
     },
-    URL, URLSearchParams, WebAssembly, Uint8Array, AbortController,
+    URL, URLSearchParams, WebAssembly, Uint8Array, AbortController, TextDecoder,
     importScripts: () => {},
     createSimc: async () => ({
       FS: { writeFile: vi.fn(), readFile: (path: string) => path === '/out.html' ? html : bytes },
