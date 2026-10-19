@@ -6,7 +6,7 @@ import {
   coarseTargetError, cvOf, estimateCv, projectedSamples, quantizeTargetError, requiredTargetError,
   runAdaptiveSearch, samplesForTargetError,
 } from './adaptive';
-import { DEFAULT_MAX_ITERATIONS, runPassSearch, type ProfilesetOutcome, type RunBatch } from './runner';
+import { DEFAULT_MAX_ITERATIONS, runPassSearch, type ProfilesetOutcome, type RunBatch, type SearchLedger } from './runner';
 import type { Candidate, CandidateMeasurement, StagePlan } from './types';
 
 /** Reviewer findings F1, F3-F7. One test per finding, named by it. */
@@ -391,6 +391,43 @@ describe('cancellation still loses only the batch in flight', () => {
 });
 
 describe('verifyOnly re-measures exactly what it was given', () => {
+  it('marks a resumed verification complete only after every selected candidate returns', async () => {
+    const engine = fakeEngine({ a: 200_000, b: 100_000 });
+    let checkpoint: SearchLedger | undefined, calls = 0;
+    const runBatch: RunBatch = async req => {
+      if (++calls === 2) throw new Error('second verification batch failed');
+      return engine.runBatch(req);
+    };
+    const ctx = { ...CTX(runBatch), onCheckpoint: async (ledger: SearchLedger) => { checkpoint = ledger; } };
+    const options = { targetError: 0.2, verifyOnly: true, batchSize: 1 };
+    const first = await runAdaptiveSearch([candidate('a'), candidate('b')], ctx, options);
+    expect(first.verified).toBe(false);
+    expect(checkpoint?.pass?.plan.label).toBe('Verify');
+    const resumed = await runAdaptiveSearch([candidate('a'), candidate('b')], { ...ctx, ledger: checkpoint }, options);
+    expect(resumed.verified).toBe(true);
+    expect(resumed.candidates.every(s => s.status === 'measured')).toBe(true);
+    const complete = await runAdaptiveSearch([candidate('a'), candidate('b')], { ...ctx, ledger: checkpoint }, options);
+    expect(complete.verified).toBe(true);
+    expect(calls).toBe(3);
+  });
+
+  it.each(['error', 'cancelled', 'missing', 'partial'] as const)('does not claim verification after %s', async (failure) => {
+    const controller = new AbortController();
+    const engine = fakeEngine({ a: 200_000, b: 100_000 });
+    let calls = 0;
+    const runBatch: RunBatch = async (req) => {
+      calls++;
+      if (failure === 'error' || (failure === 'partial' && calls === 2)) throw new Error('verification failed');
+      if (failure === 'cancelled') { controller.abort(); throw new Error('cancelled'); }
+      const outcome = await engine.runBatch(req);
+      return failure === 'missing' ? { ...outcome, results: [] } : outcome;
+    };
+    const result = await runAdaptiveSearch([candidate('a'), candidate('b')], CTX(runBatch), {
+      targetError: 0.2, verifyOnly: true, batchSize: 1,
+    }, controller.signal);
+    expect(result.verified).toBe(false);
+  });
+
   it('runs one pass, at the requested precision, and eliminates nothing', async () => {
     const { runBatch, jobs } = fakeEngine({ baseline: 100_000, a: 200_000, b: 100_000 });
     const result = await runAdaptiveSearch(
