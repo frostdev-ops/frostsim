@@ -1,6 +1,27 @@
 // Progress across independently measured phases; projection never establishes completion.
-import type { Accuracy } from './options'
+import { simcTokens, type Accuracy } from './options'
+import { assembleRun, type SimRequest } from './assemble'
 import type { EngineProgress } from './progress'
+
+/** Character/role decomposition is valid only when the effective engine options make actors independent. */
+export function canSplitCharacters(req: SimRequest): boolean {
+  // Use the actual assembly order: profile/slots first, guided defaults next,
+  // expert arguments last. A single_actor_batch=0 argument wins in guided mode.
+  const run = assembleRun(req, 1, null)
+  let independent = false
+  for (const text of [run.profile, ...run.args]) {
+    for (const line of text.split('\n')) {
+      if (line.trimStart().startsWith('#')) continue
+      for (const token of simcTokens(line)) {
+        if (token.startsWith('single_actor_batch=')) {
+          // Unknown/template-dependent values cannot establish independence.
+          independent = token.slice('single_actor_batch='.length) === '1'
+        }
+      }
+    }
+  }
+  return independent
+}
 
 export function runFraction(p: EngineProgress | null, accuracy: Accuracy): number | undefined {
   if (!p || !(p.phaseTotal > 0)) return undefined
