@@ -331,9 +331,20 @@
          unverifiable to a reader and not quite true. -->
     <ul class="small">
       <li>
-        <strong>Simulations run locally.</strong> There is no simulation server. Profile text,
-        custom scripts and simulation results are processed and saved in this browser.
+        <strong>Browser simulations run locally.</strong> Profile text, custom scripts and
+        simulation results for browser runs are processed and saved on this device. No account
+        is required for browser simulation.
       </li>
+      {#if import.meta.env.VITE_FEATURE_ACCOUNTS === true}
+        <li><strong>Cloud runs are opt-in.</strong> Starting a cloud run sends its profile, settings
+          and simulation results to Frostsim's cloud service and compute workers. Browser runs
+          remain available without sending the profile to cloud compute.</li>
+        <li><strong>Account sync sends saved characters to your account.</strong> Hosted report
+          sharing uploads the report you choose; people with its link can read it. Review the
+          contents before sharing or syncing.</li>
+        <li><strong>AI explanations are opt-in.</strong> Requesting an explanation sends the
+          report context used for that explanation to the configured AI provider.</li>
+      {/if}
       <li>
         <strong>Item and spell ID numbers do leave</strong>, to this same site's
         <code>/api/</code> path, which asks Blizzard's game data service for names and icons.
@@ -347,7 +358,8 @@
       </li>
       <li>
         <strong>Links and exports carry what you chose to put in them.</strong> The sample
-        character that ships has had its name and realm stripped; your own export is your own data.
+        character has an anonymized placeholder identity and does not request an external
+        character profile; your own export is your own data.
       </li>
     </ul>
     {#if app.capability?.ok}
