@@ -38,6 +38,7 @@ export function readSearchCheckpoint(value: unknown): SearchCheckpoint | null {
         && (s.status !== 'measured' || s.measurement !== null)
         && Array.isArray(s.history) && s.history.every(m => measurement(m) && m.candidateId === id && m.stageIndex <= (l.stageIndex as number)) && (s.note === undefined || typeof s.note === 'string'))
       || !['activeIds', 'droppedWhileAlive', 'warnings', 'problems'].every(k => Array.isArray(l[k]) && l[k].every(v => typeof v === 'string'))
+      || (l.verificationIds !== undefined && (!Array.isArray(l.verificationIds) || !l.verificationIds.every(id => typeof id === 'string' && Object.hasOwn(l.states as object, id))))
       || (l.finished !== undefined && typeof l.finished !== 'boolean')) return null
     if (l.pass !== undefined) {
       if (!object(l.pass) || !object(l.pass.plan) || !object(l.pass.accuracies) || !Object.values(l.pass.accuracies).every(accuracy)) return null
